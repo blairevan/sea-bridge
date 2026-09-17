@@ -1,0 +1,8 @@
+{
+  "continue": true,
+  "decision": "block",
+  "reason": "User requested next step via Telegram continuation queue.",
+  "stopReason": null,
+  "suppressOutput": false,
+  "systemMessage": null
+}

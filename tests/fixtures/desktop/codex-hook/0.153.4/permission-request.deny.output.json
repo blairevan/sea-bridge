@@ -1,0 +1,13 @@
+{
+  "continue": true,
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": {
+      "behavior": "deny",
+      "message": "Rejected by user via Telegram remote approval"
+    }
+  },
+  "stopReason": null,
+  "suppressOutput": false,
+  "systemMessage": null
+}

@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "019c7a00-1111-7000-8000-000000000001",
+  "turn_id": "turn-001",
+  "cwd": "/opt/app/aitools/sea-bridge",
+  "model": "gpt-5.6",
+  "permission_mode": "default",
+  "tool_name": "exec_command",
+  "tool_input": {
+    "cmd": "bun test"
+  },
+  "transcript_path": "/Users/<username>/.codex/sessions/2026/09/11/rollout-001.jsonl"
+}

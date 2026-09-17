@@ -1,0 +1,12 @@
+{
+  "continue": true,
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": {
+      "behavior": "allow"
+    }
+  },
+  "stopReason": null,
+  "suppressOutput": false,
+  "systemMessage": null
+}
