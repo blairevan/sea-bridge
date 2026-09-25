@@ -40,3 +40,8 @@
 - **CI / 本地门禁**：
   - 维持 31 个测试用例 100% 自动回归通过，`bun run typecheck` 保持 0 类型警告。
 
+
+### 5. 增量迭代 (2026-09-25 追加优化)
+- **需求**：投递成功提示文案由固定文案改为包含会话真实标题：`已投递到对应的 Codex Desktop 会话：{会话标题}`
+- **关联 PR**：https://github.com/blairevan/sea-bridge/pull/2
+- **测试验证**：单测矩阵扩展为 32 个，新增 `tests/telegram-service.test.ts` 端到端会话标题动态拼装断言。
