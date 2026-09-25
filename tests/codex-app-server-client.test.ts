@@ -122,6 +122,9 @@ describe("CodexAppServerClient", () => {
     let registeredThread: string | null = null;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
       if (message.method === "thread/start") {
         expect(message.params).toEqual({
           projectId: "p1",
@@ -158,7 +161,13 @@ describe("CodexAppServerClient", () => {
       model: "gpt-5.3-codex",
     });
 
-    expect(proc.writes.map((m) => m.method)).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
+    expect(proc.writes.map((m) => m.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/start",
+      "turn/start",
+      "thread/unsubscribe",
+    ]);
   });
 
   test("handles app-server approval requests while the first turn is running", async () => {
@@ -166,6 +175,9 @@ describe("CodexAppServerClient", () => {
     let proc!: MockProcess;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
       if (message.method === "thread/start") {
         return proc.send({ id: message.id, result: { thread: { id: "thread-approve" }, model: "gpt-5-codex" } });
       }
@@ -222,6 +234,9 @@ describe("CodexAppServerClient", () => {
     let approvalResponded = false;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
       if (message.method === "thread/start") {
         proc.send({
           id: message.id,
@@ -271,6 +286,9 @@ describe("CodexAppServerClient", () => {
     let stringIdResponseSeen = false;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
       if (message.method === "thread/start") {
         return proc.send({ id: message.id, result: { thread: { id: "thread-string" } } });
       }
@@ -315,6 +333,9 @@ describe("CodexAppServerClient", () => {
     let proc!: MockProcess;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
       if (message.method === "thread/start") {
         return proc.send({ id: message.id, result: { thread: { id: "thread-long" } } });
       }

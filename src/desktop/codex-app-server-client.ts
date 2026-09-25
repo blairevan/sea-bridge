@@ -75,6 +75,10 @@ interface ModelListResponse {
   nextCursor?: string | null;
 }
 
+interface ThreadUnsubscribeResponse {
+  status?: "notLoaded" | "notSubscribed" | "unsubscribed";
+}
+
 interface PendingRequest {
   method: string;
   resolve: (value: any) => void;
@@ -498,7 +502,13 @@ export class CodexAppServerClient {
           && message.params?.threadId === threadId
           && message.params?.turn?.id === turnId,
         this.turnLifetimeTimeoutMs,
-      ).catch(() => undefined).finally(() => void this.releaseSession(session));
+      ).then(async () => {
+        try {
+          await session.request<ThreadUnsubscribeResponse>("thread/unsubscribe", { threadId });
+        } catch {
+          // Closing the app-server process below is still the final ownership release boundary.
+        }
+      }).catch(() => undefined).finally(() => void this.releaseSession(session));
 
       return {
         threadId,

@@ -260,6 +260,7 @@ export interface CodexAppServerClient {
   - turn/start ack: 15s
 - 成功结束普通查询时优先关闭 stdin 并给进程短暂 graceful-exit 窗口，再升级到 SIGTERM/SIGKILL；
 - 首轮 `turn/start` 后的 app-server 生命周期按 Phase 0 真机结果实现；实现时必须保留对 turn 已成功启动/产生 rollout 的确认，禁止仅凭 RPC ack 立即强杀进程并假定执行一定继续。
+- Codex thread 采用单写者（active writer）所有权。Sea-Bridge 创建并执行首轮期间，独立 app-server 是该 thread 的 writer；收到匹配的 `turn/completed` 后必须显式调用 `thread/unsubscribe` 释放订阅/所有权，再关闭 app-server 进程。否则 Codex Desktop 重新打开该 thread 时可能提示“已在另一个应用中打开 / already has an active writer”。活跃 turn 尚未结束时不应强行释放 writer，否则可能中断正在执行的任务。
 
 ---
 

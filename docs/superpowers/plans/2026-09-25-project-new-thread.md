@@ -674,3 +674,4 @@ git commit -m "feat: support project-scoped Codex thread creation from Telegram"
 3. `StateDb` currently has no generic preferences table; migration must be additive and idempotent.
 4. Current `TelegramService.run()` processes fetched updates sequentially, so do not add an in-memory “session mutex” unless a concrete race remains after persistent pending-state/idempotency handling.
 5. Do not couple this feature to `state_5.sqlite.projects` / `project_roots`; app-server `project/list` is the protocol surface for this design.
+6. Codex threads are single-writer. For Sea-Bridge-created threads, keep the app-server alive while the first turn is active, but after the matching `turn/completed` explicitly call `thread/unsubscribe` before closing the app-server process. This is required to hand writer ownership back cleanly to Codex Desktop and avoid the “open in another app / already has an active writer” state.
