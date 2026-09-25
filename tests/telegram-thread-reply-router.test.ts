@@ -12,11 +12,37 @@ function linkedStore(): { state: StateDb; store: DesktopMessageStore } {
 }
 
 describe("routeThreadReply", () => {
-  test("requires a reply to a mapped Sea-Bridge message", async () => {
-    const { state, store } = linkedStore();
+  test("returns missing_reply when no reply_to_message and no prior message links exist", async () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
     const queueClient = new ProcessCodexQueueClient("/codex", async () => ({ exitCode: 0, signal: null, stderr: "" }));
 
-    await expect(routeThreadReply(10, { message_id: 10, chat: { id: 42, type: "private" }, text: "continue" }, store, queueClient)).resolves.toEqual({ status: "missing_reply" });
+    await expect(
+      routeThreadReply(10, { message_id: 10, chat: { id: 42, type: "private" }, text: "continue" }, store, queueClient),
+    ).resolves.toEqual({ status: "missing_reply" });
+    state.close();
+  });
+
+  test("delivers direct message without reply_to_message to the latest active thread", async () => {
+    const { state, store } = linkedStore();
+    store.link({ chatId: "42", messageId: 105, threadId: "thread-b", turnId: "turn-b", eventKind: "completed", eventFingerprint: "event-b" });
+
+    const calls: string[][] = [];
+    const queueClient = new ProcessCodexQueueClient("/codex", async (_command, args) => {
+      calls.push(args);
+      return { exitCode: 0, signal: null, stderr: "" };
+    });
+
+    const message = {
+      message_id: 200,
+      chat: { id: 42, type: "private" },
+      text: "hello direct reply",
+    };
+
+    const result = await routeThreadReply(50, message, store, queueClient);
+    expect(result).toEqual({ status: "delivered", threadId: "thread-b" });
+    expect(calls).toEqual([["queue", "--thread", "thread-b", "--message", "[Telegram reply]\nhello direct reply"]]);
+    expect(store.getDelivery(50)?.threadId).toBe("thread-b");
     state.close();
   });
 
