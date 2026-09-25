@@ -28,7 +28,7 @@
 - 检索条件：`telegram_chat_id = ?`
 - 排序条件：`ORDER BY sent_at DESC, telegram_message_id DESC`
 - 限制条数：`LIMIT 1`
-- 索引支撑：利用表主键 `(telegram_chat_id, telegram_message_id)` 的前缀索引起效，单用户通知量级毫秒级响应。
+- 查询性能：主键 `(telegram_chat_id, telegram_message_id)` 可用于按 `telegram_chat_id` 缩小扫描范围；`sent_at` 排序在当前单聊天低数据量场景下成本可控，如后续通知量显著增长再增加 `(telegram_chat_id, sent_at DESC, telegram_message_id DESC)` 复合索引。
 
 ### 2.2 路由适配改造 (`routeThreadReply`)
 在 `src/telegram/thread-reply-router.ts` 中重构 link 定位逻辑：
@@ -36,8 +36,9 @@
    - 维持既有逻辑，通过 `store.findLink(chatId, replyMessageId)` 精确匹配；
    - 若未匹配到，返回 `{ status: "unmapped_reply" }`。
 2. 若不存在 `message.reply_to_message`（即直接回复）：
-   - 调用 `store.findLatestLink(chatId)` 查找最近一条通知关联；
-   - 若找到目标会话 link，则以该 link 对应的 `link.messageId` 作为上下文记录推进投递；
+   - 调用 `store.findLatestLink(chatId)` 查找当前 Telegram Chat 最近一条 Sea-Bridge 映射消息；
+   - 直接使用该 link 对应的 `threadId` 作为投递目标，并以 `link.messageId` 作为上下文记录推进投递；
+   - **不判断该 Codex thread 当前是否 active / idle / completed，也不尝试重新选择“最近活跃会话”**；路由语义只取决于“该 Chat 最近一条已映射消息”；
    - 若未找到任何历史通知（全新聊天或无任何通知记录），则安全回退返回 `{ status: "missing_reply" }`。
 
 ### 2.3 幂等与交付状态追踪
@@ -69,6 +70,5 @@
    - 当显式回复未映射消息时，保持返回 `unmapped_reply`；
    - 幂等性断言：重复请求返回 `duplicate`。
 3. **全量回归**：
-   - 运行 `bun test` 保持现有 28 个用例及新增用例 100% 通过；
+   - 运行 `bun test`，确保全部现有与新增用例 100% 通过；
    - 运行 `bun run typecheck` 保持 0 类型错误。
-

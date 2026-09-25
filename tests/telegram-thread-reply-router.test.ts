@@ -23,7 +23,23 @@ describe("routeThreadReply", () => {
     state.close();
   });
 
-  test("delivers direct message without reply_to_message to the latest active thread", async () => {
+  test("returns unmapped_reply when an explicit reply does not map to a Sea-Bridge message", async () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
+    const queueClient = new ProcessCodexQueueClient("/codex", async () => ({ exitCode: 0, signal: null, stderr: "" }));
+
+    const message = {
+      message_id: 11,
+      chat: { id: 42, type: "private" },
+      text: "continue",
+      reply_to_message: { message_id: 999, chat: { id: 42, type: "private" } },
+    };
+
+    await expect(routeThreadReply(11, message, store, queueClient)).resolves.toEqual({ status: "unmapped_reply" });
+    state.close();
+  });
+
+  test("delivers direct message without reply_to_message to the latest linked thread", async () => {
     const { state, store } = linkedStore();
     store.link({ chatId: "42", messageId: 105, threadId: "thread-b", turnId: "turn-b", eventKind: "completed", eventFingerprint: "event-b" });
 

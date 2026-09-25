@@ -8,11 +8,9 @@
 - [x] 阶段 6：Brainstorming 头脑风暴使用确认门禁 (已完成头脑风暴与方案选型)
 - [x] 阶段 7：规范化方案设计与归档 (已落盘 Design Spec 与 Implementation Plan)
 - [x] 阶段 8：分支安全与工作区隔离 (已在当前工作区新建并切换至 feature/direct-reply 分支)
-- [x] 阶段 9：TDD 测试驱动与精准代码改造 (30/30 单测通过，typecheck 0 错误)
+- [x] 阶段 9：TDD 测试驱动与精准代码改造 (31/31 单测通过，typecheck 0 错误)
 - [x] 阶段 10：AGENTS.md 规范符合性检查门禁 (核心红线与规范逐项核验通过)
-- [x] 阶段 11：代码深度审查与复审 (已完成深度语义审查，0 缺陷)
+- [x] 阶段 11：代码深度审查与复审 (复审发现并修复 2 项非阻断问题：Todo 命令残留、显式未映射回复缺少回归用例)
 - [ ] 阶段 12：飞书文档协同回写与状态闭环 (标准模式：等待用户明确指示“更新飞书文档”)
 - [ ] 阶段 13：Git 审查提交与 PR 合并 (标准模式：等待用户确认 Push 与合并)
 - [ ] 阶段 14：任务复盘与分支清理确认 (Retrospective)
-
-EOF && git add docs/ai/2026-09-25-direct-reply-todo.md && git commit -m "docs(todo): update checklist to completion of tdd and review"
