@@ -142,7 +142,7 @@ describe("Telegram project new-thread flow", () => {
   });
 
   test("/new <index> <prompt> starts first turn and links the success message", async () => {
-    const { state, starts, messages, service } = setup();
+    const { state, starts, messages, client, service } = setup();
 
     await (service as any).processUpdate(messageUpdate(3, "/new 1 review this"));
 
@@ -154,6 +154,8 @@ describe("Telegram project new-thread flow", () => {
     expect(messages.getCursor("thread-1")?.byteOffset).toBe(0);
     expect(messages.findLatestLink("456")?.threadId).toBe("thread-1");
     expect(messages.findLatestLink("456")?.eventKind).toBe("thread_created");
+    expect(client.sent.at(-1)?.text).toContain("可能会提示“在另一个应用中打开”");
+    expect(client.sent.at(-1)?.text).toContain("待收到任务结束通知后");
 
     state.close();
   });

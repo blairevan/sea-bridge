@@ -497,7 +497,7 @@ export class TelegramService {
           `会话: ${started.threadId}`,
           `模型: ${started.model ?? "Codex 默认"}`,
           "",
-          "💡 提示：首轮任务正在后台执行中；执行期间 Desktop 会提示“在另一个应用中打开”，待收到完成通知后在 Desktop 点击「重试」即可正常接管。",
+          "💡 提示：首轮任务正在 Sea-Bridge 后台执行。如果此时在 Codex Desktop 打开该会话，可能会提示“在另一个应用中打开”。待收到任务结束通知后，再在 Desktop 点击「重试」继续该会话。",
         ].join("\n"),
       );
     } catch (error) {
