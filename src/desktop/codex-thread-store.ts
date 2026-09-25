@@ -9,10 +9,29 @@ export interface CodexThread {
 
 export interface CodexThreadReader {
   listActive(): CodexThread[];
+  getThread?(threadId: string): CodexThread | null;
 }
 
 export class CodexThreadStore implements CodexThreadReader {
   constructor(private readonly path: string) {}
+
+  getThread(threadId: string): CodexThread | null {
+    const db = new Database(this.path, { readonly: true, strict: true });
+    try {
+      const row = db.query(
+        "SELECT id,rollout_path,COALESCE(NULLIF(name, ''), NULLIF(title, ''), id) AS title,recency_at_ms FROM threads WHERE id=?",
+      ).get(threadId) as { id: string; rollout_path: string; title: string; recency_at_ms: number } | null;
+      if (!row) return null;
+      return {
+        id: row.id,
+        rolloutPath: row.rollout_path,
+        title: row.title,
+        updatedAtMs: Number(row.recency_at_ms),
+      };
+    } finally {
+      db.close(false);
+    }
+  }
 
   listActive(): CodexThread[] {
     const db = new Database(this.path, { readonly: true, strict: true });
