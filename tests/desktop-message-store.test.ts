@@ -41,4 +41,25 @@ describe("DesktopMessageStore", () => {
     });
     state.close();
   });
+
+  test("finds the latest message link for a given chat", () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
+
+    expect(store.findLatestLink("chat-1")).toBeNull();
+
+    store.link({ chatId: "chat-1", messageId: 10, threadId: "thread-1", turnId: "turn-1", eventKind: "started", eventFingerprint: "fp-1" });
+    store.link({ chatId: "chat-1", messageId: 20, threadId: "thread-2", turnId: "turn-2", eventKind: "completed", eventFingerprint: "fp-2" });
+    store.link({ chatId: "chat-2", messageId: 30, threadId: "thread-3", turnId: "turn-3", eventKind: "completed", eventFingerprint: "fp-3" });
+
+    const latest1 = store.findLatestLink("chat-1");
+    expect(latest1?.threadId).toBe("thread-2");
+    expect(latest1?.messageId).toBe(20);
+
+    const latest2 = store.findLatestLink("chat-2");
+    expect(latest2?.threadId).toBe("thread-3");
+    expect(latest2?.messageId).toBe(30);
+
+    state.close();
+  });
 });

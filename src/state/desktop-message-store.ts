@@ -61,6 +61,28 @@ export class DesktopMessageStore {
     };
   }
 
+  findLatestLink(chatId: string): DesktopMessageLink | null {
+    const row = this.state.db.query(
+      "SELECT telegram_chat_id,telegram_message_id,thread_id,turn_id,event_kind,event_fingerprint FROM desktop_message_links WHERE telegram_chat_id=? ORDER BY sent_at DESC, telegram_message_id DESC LIMIT 1",
+    ).get(chatId) as {
+      telegram_chat_id: string;
+      telegram_message_id: number;
+      thread_id: string;
+      turn_id: string | null;
+      event_kind: DesktopMessageEventKind;
+      event_fingerprint: string;
+    } | null;
+    if (!row) return null;
+    return {
+      chatId: row.telegram_chat_id,
+      messageId: row.telegram_message_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      eventKind: row.event_kind,
+      eventFingerprint: row.event_fingerprint,
+    };
+  }
+
   hasEventFingerprint(eventFingerprint: string): boolean {
     const row = this.state.db.query(
       "SELECT 1 AS found FROM desktop_message_links WHERE event_fingerprint=?",
