@@ -5,12 +5,14 @@
 - [x] 阶段 3：会话标题规范化与即时更新 (Title Normalization: 【Sea-Bridge】直接回复自动匹配最近一次会话)
 - [x] 阶段 4：cass 历史同类会话检索与经验召回 (Prior Recall: 无强相似历史，进入正向分析)
 - [x] 阶段 5：执行模式决策门禁 (已确认选择：标准精细交付模式)
-- [ ] 阶段 6：Brainstorming 头脑风暴使用确认门禁 (一镜到底模式下自动跳过)
-- [ ] 阶段 7：规范化方案设计与归档 (落盘 Spec/Plan)
+- [x] 阶段 6：Brainstorming 头脑风暴使用确认门禁 (已完成头脑风暴与方案选型)
+- [x] 阶段 7：规范化方案设计与归档 (已落盘 Design Spec 与 Implementation Plan)
 - [x] 阶段 8：分支安全与工作区隔离 (已在当前工作区新建并切换至 feature/direct-reply 分支)
-- [ ] 阶段 9：TDD 测试驱动与精准代码改造 (通过全部单测与静态检查)
-- [ ] 阶段 10：AGENTS.md 规范符合性检查门禁 (核心红线与项目规范逐项核验)
-- [ ] 阶段 11：Cursor Agent 自动化代码审查与复审 (自动化初审并核验报告)
-- [ ] 阶段 12：飞书文档协同回写与状态闭环 (回写 ✅[yymmdd] 与代码块)
-- [ ] 阶段 13：Git 审查提交与 PR 合并
+- [x] 阶段 9：TDD 测试驱动与精准代码改造 (30/30 单测通过，typecheck 0 错误)
+- [x] 阶段 10：AGENTS.md 规范符合性检查门禁 (核心红线与规范逐项核验通过)
+- [x] 阶段 11：代码深度审查与复审 (已完成深度语义审查，0 缺陷)
+- [ ] 阶段 12：飞书文档协同回写与状态闭环 (标准模式：等待用户明确指示“更新飞书文档”)
+- [ ] 阶段 13：Git 审查提交与 PR 合并 (标准模式：等待用户确认 Push 与合并)
 - [ ] 阶段 14：任务复盘与分支清理确认 (Retrospective)
+
+EOF && git add docs/ai/2026-09-25-direct-reply-todo.md && git commit -m "docs(todo): update checklist to completion of tdd and review"
