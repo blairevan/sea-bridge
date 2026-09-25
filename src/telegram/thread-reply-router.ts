@@ -24,14 +24,18 @@ export async function routeThreadReply(
   queueClient: QueueClient,
 ): Promise<ThreadReplyRouteResult> {
   const reply = message.reply_to_message;
-  if (!reply) return { status: "missing_reply" };
+  const link = reply
+    ? store.findLink(String(reply.chat.id), reply.message_id)
+    : store.findLatestLink(String(message.chat.id));
 
-  const link = store.findLink(String(reply.chat.id), reply.message_id);
-  if (!link) return { status: "unmapped_reply" };
+  if (!link) {
+    return reply ? { status: "unmapped_reply" } : { status: "missing_reply" };
+  }
 
   const text = message.text?.trim();
   if (!text) return { status: "failed", threadId: link.threadId };
-  if (store.beginDelivery(updateId, reply.message_id, link.threadId, textHash(link.threadId, text)) === "duplicate") {
+  const targetMessageId = reply?.message_id ?? link.messageId;
+  if (store.beginDelivery(updateId, targetMessageId, link.threadId, textHash(link.threadId, text)) === "duplicate") {
     return { status: "duplicate" };
   }
   if (!store.markDispatching(updateId)) return { status: "duplicate" };
