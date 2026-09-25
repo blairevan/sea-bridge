@@ -2,299 +2,139 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enable Telegram users to list projects, switch default AI models, and create new Codex Desktop threads under specific projects with automatic first-turn prompt delivery.
+**Goal:** Let an authorized Telegram user inspect Codex projects/models and create a new project-scoped thread whose first turn actually starts, while preserving the existing Sea-Bridge reply routing semantics.
 
-**Architecture:** Use `CodexProjectStore` to query local projects directly from `state_5.sqlite`, `CodexAppServerClient` to interact with Codex Desktop's underlying `codex app-server --stdio` JSON-RPC protocol for model discovery and `thread/start`, and integrate these into `TelegramService` to handle `/projects`, `/model`, and `/new` commands while reusing existing `ProcessCodexQueueClient` and `DesktopMessageStore`.
+**Architecture:** Treat `codex app-server` as the protocol authority for project discovery, model discovery, thread creation, and first-turn startup. Do not read/write Codex project tables directly. Add persistent state for model preference and the interactive `/new` ForceReply flow. The 2026-09-25 target-host PoC confirmed that, after `thread/start + turn/start` establishes the thread and rollout, follow-up messages can reuse the existing `ProcessCodexQueueClient` / `codex queue` path.
 
-**Tech Stack:** TypeScript, Bun, SQLite (bun:sqlite), Node child_process, Telegram Bot API.
+**Tech Stack:** TypeScript, Bun, SQLite (`bun:sqlite`), Node child_process, Telegram Bot API.
 
 **Spec:** `docs/superpowers/specs/2026-09-25-project-new-thread-design.md`
 
+**Implementation Status (2026-09-25):** Code implementation is complete on `feature/project-new-thread`. Automated verification passes: `bun test` 48/48, `bun run typecheck`, `bun run build`, and `git diff --check`. Target-host Telegram/Desktop final acceptance remains pending. The detailed checkboxes below are retained as the implementation recipe and historical checklist.
+
 ## Global Constraints
 
-- Never commit secrets, API keys, or personal tokens.
-- Maintain existing TDD workflow; write failing tests before implementation.
-- All commands and timeouts must have explicit bounds (app-server JSON-RPC timeout: 5000ms).
-- Zero hallucination of CLI commands: use tested `codex app-server --stdio` JSON-RPC methods (`initialize`, `model/list`, `thread/start`).
+- Never commit secrets, API keys, tokens, account data, or raw private prompts.
+- Maintain TDD: failing test first, minimal implementation, regression test last.
+- Do not infer Codex behavior from private SQLite tables when an app-server API exists.
+- app-server handshake order is mandatory: `initialize` → successful response → `initialized` → other RPCs.
+- Initial prompt must use `turn/start` on the same app-server context as `thread/start`.
+- Do not use a hard-coded fallback model list.
+- Phase 0 protocol PoC has passed on the target Mac; keep Desktop sidebar/open/restart behavior in final acceptance to detect version-specific regressions.
+- Do not silently swallow malformed JSON-RPC or process failures.
+- Existing semantics remain unchanged: direct Telegram text routes to the latest Sea-Bridge message link in that chat; no “active-thread” check is added.
 
 ---
 
-### Task 1: CodexProjectStore (Query projects & roots)
+## Task 0: Target-host protocol/Desktop PoC — **Completed / Gate Passed**
+
+**Purpose:** Validate the exact ChatGPT/Codex Desktop build and bundled Codex binary on the machine that actually runs Sea-Bridge.
+
+**Status (2026-09-25):** Core protocol gate passed on the current Mac. The checklist below is retained as a reproducible verification procedure; Desktop sidebar/open/restart behavior remains part of Task 7 acceptance.
 
 **Files:**
-- Create: `src/desktop/codex-project-store.ts`
-- Test: `tests/codex-project-store.test.ts`
+- Create only if useful: `scripts/poc-project-new-thread.ts`
+- Update after run: `docs/superpowers/specs/2026-09-25-project-new-thread-design.md`
 
-**Interfaces:**
-- Consumes: `Database` from `bun:sqlite`
-- Produces:
-  ```ts
-  export interface ProjectItem {
-    index: number;
-    id: string;
-    name: string;
-    rootPath: string;
-    position: number;
-  }
-  export class CodexProjectStore {
-    constructor(db: Database, existsSyncFn?: (path: string) => boolean);
-    listProjects(): ProjectItem[];
-    findProject(query: string): ProjectItem | null;
-  }
-  ```
+- [ ] **Step 1: Record target versions** _(protocol Gate 已通过；仍需补录具体 Desktop 与 bundled Codex 版本，便于后续复现/回归)_
 
-- [ ] **Step 1: Write the failing test**
-
-```ts
-import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { CodexProjectStore } from "../src/desktop/codex-project-store.ts";
-
-describe("CodexProjectStore", () => {
-  function createTestDb(): Database {
-    const db = new Database(":memory:");
-    db.run(`
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        metadata TEXT NOT NULL DEFAULT '{}',
-        position INTEGER NOT NULL,
-        created_at_ms INTEGER NOT NULL,
-        updated_at_ms INTEGER NOT NULL
-      );
-      CREATE TABLE project_roots (
-        project_id TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        path TEXT NOT NULL,
-        PRIMARY KEY (project_id, position)
-      );
-    `);
-    db.run("INSERT INTO projects (id, name, position, created_at_ms, updated_at_ms) VALUES ('p1', 'sea-bridge', 0, 100, 100)");
-    db.run("INSERT INTO project_roots (project_id, position, path) VALUES ('p1', 0, '/path/to/sea-bridge')");
-    db.run("INSERT INTO projects (id, name, position, created_at_ms, updated_at_ms) VALUES ('p2', 'toolhub', 1, 100, 100)");
-    db.run("INSERT INTO project_roots (project_id, position, path) VALUES ('p2', 0, '/path/to/toolhub')");
-    return db;
-  }
-
-  test("lists projects with 1-based index and verified paths", () => {
-    const db = createTestDb();
-    const store = new CodexProjectStore(db, () => true);
-    const list = store.listProjects();
-    expect(list).toHaveLength(2);
-    expect(list[0]).toEqual({ index: 1, id: "p1", name: "sea-bridge", rootPath: "/path/to/sea-bridge", position: 0 });
-    expect(list[1]).toEqual({ index: 2, id: "p2", name: "toolhub", rootPath: "/path/to/toolhub", position: 1 });
-  });
-
-  test("filters out projects whose paths do not exist", () => {
-    const db = createTestDb();
-    const store = new CodexProjectStore(db, (p) => p.includes("sea-bridge"));
-    const list = store.listProjects();
-    expect(list).toHaveLength(1);
-    expect(list[0].name).toBe("sea-bridge");
-  });
-
-  test("findProject matches by index number, exact name, or case-insensitive name", () => {
-    const db = createTestDb();
-    const store = new CodexProjectStore(db, () => true);
-    expect(store.findProject("1")?.name).toBe("sea-bridge");
-    expect(store.findProject("toolhub")?.id).toBe("p2");
-    expect(store.findProject("TOOLHUB")?.id).toBe("p2");
-    expect(store.findProject("non-existent")).toBeNull();
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `bun test tests/codex-project-store.test.ts`
-Expected: FAIL with module not found
-
-- [ ] **Step 3: Write minimal implementation**
-
-Create `src/desktop/codex-project-store.ts`:
-```ts
-import { existsSync } from "node:fs";
-import type { Database } from "bun:sqlite";
-
-export interface ProjectItem {
-  index: number;
-  id: string;
-  name: string;
-  rootPath: string;
-  position: number;
-}
-
-export class CodexProjectStore {
-  constructor(
-    private readonly db: Database,
-    private readonly pathExists: (path: string) => boolean = existsSync,
-  ) {}
-
-  listProjects(): ProjectItem[] {
-    const rows = this.db.query(`
-      SELECT p.id, p.name, p.position, pr.path AS rootPath
-      FROM projects p
-      LEFT JOIN project_roots pr ON p.id = pr.project_id
-      ORDER BY p.position ASC
-    `).all() as Array<{ id: string; name: string; position: number; rootPath: string | null }>;
-
-    const valid: ProjectItem[] = [];
-    let index = 1;
-    for (const row of rows) {
-      if (!row.rootPath || !this.pathExists(row.rootPath)) continue;
-      valid.push({
-        index: index++,
-        id: row.id,
-        name: row.name,
-        rootPath: row.rootPath,
-        position: row.position,
-      });
-    }
-    return valid;
-  }
-
-  findProject(query: string): ProjectItem | null {
-    const list = this.listProjects();
-    const trimmed = query.trim();
-    const num = parseInt(trimmed, 10);
-    if (!Number.isNaN(num) && String(num) === trimmed) {
-      return list.find((p) => p.index === num) ?? null;
-    }
-    const lower = trimmed.toLowerCase();
-    return list.find((p) => p.name.toLowerCase() === lower) ?? null;
-  }
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `bun test tests/codex-project-store.test.ts`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
+Run on the macOS host, outside the DevSpace container:
 
 ```bash
-git add src/desktop/codex-project-store.ts tests/codex-project-store.test.ts
-git commit -m "feat(desktop): add CodexProjectStore for state_5 projects discovery"
+/Applications/ChatGPT.app/Contents/Resources/codex --version
+/Applications/ChatGPT.app/Contents/Resources/codex app-server --help
+```
+
+Also record the Desktop app version from the app.
+
+- [x] **Step 2: Verify mandatory handshake**
+
+PoC sequence:
+
+```text
+initialize(id=1, experimentalApi=true)
+wait initialize response
+initialized notification
+model/list
+project/list
+```
+
+Expected:
+- no “Not initialized” error;
+- model/list returns live model data;
+- project/list returns the target project with correct `id`, `roots`, and `position`.
+
+- [x] **Step 3: Verify thread + first turn**
+
+With Desktop already open:
+
+```text
+thread/start(projectId=<id>, cwd=<roots[0].path>, model=<optional>)
+turn/start(threadId=<new id>, input=[{type:"text", text:"PoC: reply with a short confirmation", textElements:[]}])
+```
+
+Wait for a terminal turn event.
+
+Expected:
+- thread/start returns thread.id;
+- turn/start returns turn.id;
+- the first turn reaches completed or a clearly classified failure.
+
+- [ ] **Step 4: Verify live Desktop integration (final acceptance / regression check)**
+
+Without restarting Desktop:
+- confirm the new thread appears in the intended project/sidebar;
+- open it;
+- confirm history renders;
+- send one Desktop message and verify the thread continues normally.
+
+- [x] **Step 5: Verify Sea-Bridge observation**
+
+Confirm the current `DesktopObserver` can discover the new rollout and produce the expected Telegram notification lifecycle.
+
+- [x] **Step 6: Verify follow-up dispatch after creation**
+
+After first turn completes:
+- test `codex queue --thread <id> --message <text>`;
+- verify a new turn actually starts, not merely that the CLI exits zero;
+- inspect queue/thread state if needed.
+
+- [x] **Step 7: Gate decision**
+
+**Protocol Gate PASS criteria:**
+1. `project/list` and `thread/start.projectId` work on the bundled version;
+2. `turn/start` starts the first turn with the validated text payload shape;
+3. rollout/observer state is produced;
+4. `codex queue` is proven to start a real follow-up turn.
+
+These protocol criteria passed on 2026-09-25. Desktop sidebar discovery/open behavior remains a Task 7 final acceptance and regression check; a UI regression should be reported separately rather than silently changing the proven transport.
+
+**Commit only if a PoC script/doc update was created:**
+
+```bash
+git add scripts/poc-project-new-thread.ts docs/superpowers/specs/2026-09-25-project-new-thread-design.md
+git commit -m "docs: record project new-thread compatibility PoC"
 ```
 
 ---
 
-### Task 2: CodexAppServerClient (JSON-RPC stdio client)
+## Task 1: CodexAppServerClient — Protocol-correct JSON-RPC client — **Completed**
 
 **Files:**
 - Create: `src/desktop/codex-app-server-client.ts`
 - Test: `tests/codex-app-server-client.test.ts`
 
 **Interfaces:**
-- Consumes: Node `child_process.spawn`
-- Produces:
-  ```ts
-  export interface ModelOption {
-    id: string;
-    displayName: string;
-    isDefault: boolean;
-  }
-  export class CodexAppServerClient {
-    constructor(codexCliPath: string, timeoutMs?: number);
-    listModels(): Promise<ModelOption[]>;
-    startThread(params: { projectId: string; cwd: string; model?: string }): Promise<{ threadId: string }>;
-  }
-  ```
-
-- [ ] **Step 1: Write the failing test**
 
 ```ts
-import { describe, expect, test } from "bun:test";
-import { EventEmitter } from "node:events";
-import { CodexAppServerClient } from "../src/desktop/codex-app-server-client.ts";
-
-class MockProcess extends EventEmitter {
-  stdin = {
-    write: (data: string) => {
-      this.handleInput(data);
-    },
-    end: () => {},
-  };
-  stdout = new EventEmitter();
-  stderr = new EventEmitter();
-  killed = false;
-
-  kill(signal?: string) {
-    this.killed = true;
-    this.emit("close", 0, signal ?? null);
-  }
-
-  handleInput(data: string) {
-    const lines = data.trim().split("\n");
-    for (const line of lines) {
-      if (!line) continue;
-      const msg = JSON.parse(line);
-      if (msg.method === "initialize") {
-        this.stdout.emit("data", JSON.stringify({ id: msg.id, jsonrpc: "2.0", result: { clientInfo: { name: "codex" } } }) + "\n");
-      } else if (msg.method === "model/list") {
-        this.stdout.emit("data", JSON.stringify({
-          id: msg.id,
-          jsonrpc: "2.0",
-          result: {
-            data: [
-              { id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true },
-              { id: "o3", displayName: "o3", isDefault: false },
-            ]
-          }
-        }) + "\n");
-      } else if (msg.method === "thread/start") {
-        this.stdout.emit("data", JSON.stringify({
-          id: msg.id,
-          jsonrpc: "2.0",
-          result: {
-            thread: { id: "01a0-mock-thread-id" }
-          }
-        }) + "\n");
-      }
-    }
-  }
+export interface ProjectItem {
+  index: number;
+  id: string;
+  name: string;
+  roots: string[];
+  primaryRoot: string;
+  position: number;
 }
-
-describe("CodexAppServerClient", () => {
-  test("listModels performs initialize and returns model options", async () => {
-    let mockProc: MockProcess | null = null;
-    const runner = () => {
-      mockProc = new MockProcess();
-      return mockProc as any;
-    };
-    const client = new CodexAppServerClient("/dummy/path", 1000, runner);
-    const models = await client.listModels();
-    expect(models).toHaveLength(2);
-    expect(models[0].id).toBe("gpt-5-codex");
-    expect(models[0].isDefault).toBe(true);
-    expect(mockProc?.killed).toBe(true);
-  });
-
-  test("startThread passes projectId, cwd and model and returns threadId", async () => {
-    let mockProc: MockProcess | null = null;
-    const runner = () => {
-      mockProc = new MockProcess();
-      return mockProc as any;
-    };
-    const client = new CodexAppServerClient("/dummy/path", 1000, runner);
-    const result = await client.startThread({ projectId: "p1", cwd: "/tmp", model: "o3" });
-    expect(result.threadId).toBe("01a0-mock-thread-id");
-    expect(mockProc?.killed).toBe(true);
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `bun test tests/codex-app-server-client.test.ts`
-Expected: FAIL with module not found
-
-- [ ] **Step 3: Write minimal implementation**
-
-Create `src/desktop/codex-app-server-client.ts`:
-```ts
-import { spawn, type ChildProcess } from "node:child_process";
 
 export interface ModelOption {
   id: string;
@@ -302,502 +142,535 @@ export interface ModelOption {
   isDefault: boolean;
 }
 
-type SpawnRunner = (command: string, args: string[]) => ChildProcess;
-
-const DEFAULT_MODELS: ModelOption[] = [
-  { id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true },
-  { id: "o3", displayName: "o3", isDefault: false },
-  { id: "gpt-5", displayName: "GPT-5", isDefault: false },
-];
+export interface StartedThread {
+  threadId: string;
+  turnId: string;
+  projectId: string;
+  cwd: string;
+  model: string | null;
+}
 
 export class CodexAppServerClient {
-  constructor(
-    private readonly codexCliPath: string,
-    private readonly timeoutMs: number = 5000,
-    private readonly spawner: SpawnRunner = spawn,
-  ) {}
+  constructor(codexCliPath: string, options?: CodexAppServerClientOptions);
 
-  async listModels(): Promise<ModelOption[]> {
-    try {
-      const response = await this.callRpc<{ data: Array<{ id: string; displayName?: string; isDefault?: boolean }> }>(
-        "model/list",
-        {},
-      );
-      if (!response?.data || !Array.isArray(response.data)) {
-        return DEFAULT_MODELS;
-      }
-      return response.data.map((m) => ({
-        id: m.id,
-        displayName: m.displayName || m.id,
-        isDefault: Boolean(m.isDefault),
-      }));
-    } catch {
-      return DEFAULT_MODELS;
-    }
-  }
-
-  async startThread(params: { projectId: string; cwd: string; model?: string }): Promise<{ threadId: string }> {
-    const threadParams: Record<string, unknown> = {
-      projectId: params.projectId,
-      cwd: params.cwd,
-    };
-    if (params.model) {
-      threadParams.model = params.model;
-    }
-
-    const response = await this.callRpc<{ thread: { id: string } }>("thread/start", threadParams);
-    if (!response?.thread?.id) {
-      throw new Error("app_server_thread_start_missing_id");
-    }
-    return { threadId: response.thread.id };
-  }
-
-  private callRpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      let child: ChildProcess;
-      try {
-        child = this.spawner(this.codexCliPath, ["app-server", "--stdio"]);
-      } catch (err) {
-        return reject(err);
-      }
-
-      let resolved = false;
-      let buffer = "";
-
-      const cleanup = () => {
-        clearTimeout(timer);
-        if (!child.killed) {
-          try {
-            child.kill("SIGKILL");
-          } catch {}
-        }
-      };
-
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          reject(new Error("app_server_rpc_timeout"));
-        }
-      }, this.timeoutMs);
-
-      child.stdout?.on("data", (chunk: Buffer | string) => {
-        buffer += chunk.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const msg = JSON.parse(line);
-            if (msg.id === 1) {
-              // initialize finished, send target RPC
-              const req = { method, id: 2, params };
-              child.stdin?.write(JSON.stringify(req) + "\n");
-            } else if (msg.id === 2) {
-              if (!resolved) {
-                resolved = true;
-                cleanup();
-                if (msg.error) {
-                  reject(new Error(msg.error.message || "app_server_rpc_error"));
-                } else {
-                  resolve(msg.result as T);
-                }
-              }
-            }
-          } catch {}
-        }
-      });
-
-      child.on("error", (err) => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          reject(err);
-        }
-      });
-
-      child.on("close", (code) => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          reject(new Error(`app_server_closed_with_code_${code}`));
-        }
-      });
-
-      // Send initialize request
-      const initReq = {
-        method: "initialize",
-        id: 1,
-        params: {
-          clientInfo: { name: "sea-bridge", version: "1.0.0" },
-          capabilities: { experimentalApi: true },
-        },
-      };
-      child.stdin?.write(JSON.stringify(initReq) + "\n");
-    });
-  }
+  listProjects(): Promise<ProjectItem[]>;
+  listModels(): Promise<ModelOption[]>;
+  startThreadAndTurn(params: {
+    projectId: string;
+    cwd: string;
+    model?: string;
+    prompt: string;
+  }): Promise<StartedThread>;
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 1: Write handshake test first**
 
-Run: `bun test tests/codex-app-server-client.test.ts`
-Expected: PASS
+Test must assert exact ordering:
+1. client writes `initialize`;
+2. mock returns initialize result;
+3. client writes `initialized`;
+4. only then client writes target RPC.
 
-- [ ] **Step 5: Commit**
+The test must fail if `model/list`, `project/list`, `thread/start`, or `turn/start` is sent before `initialized`.
+
+- [ ] **Step 2: Test JSONL framing and interleaved notifications**
+
+Cover:
+- multiple JSON objects in one stdout chunk;
+- one JSON object split across chunks;
+- unrelated notifications between request and response;
+- `\n` and `\r\n`;
+- malformed JSON produces a classified/loggable failure rather than silent ignore.
+
+- [ ] **Step 3: Implement request-id correlation**
+
+Do not hard-code all target RPCs to id=2.
+
+Maintain monotonically increasing request ids per process/connection and resolve responses by matching id.
+
+- [ ] **Step 4: Implement `listProjects()`**
+
+Use `project/list` with `experimentalApi: true`.
+
+Requirements:
+- paginate until `nextCursor === null`;
+- bounded maximum number of pages/items to protect against protocol bugs;
+- preserve `position` ordering;
+- ignore projects with zero roots for `/new`;
+- `primaryRoot = roots[0]`;
+- assign 1-based Telegram indices after filtering.
+
+Tests:
+- single page;
+- multi-page;
+- zero-root project filtered;
+- duplicate project names preserved as separate items.
+
+- [ ] **Step 5: Implement `listModels()`**
+
+Use live `model/list`.
+
+Requirements:
+- return live `id`, `displayName`, `isDefault`;
+- exclude hidden models if the response includes them;
+- no hard-coded fallback list;
+- RPC failure propagates as a typed/classified error so Telegram can show a useful message.
+
+- [ ] **Step 6: Implement `startThreadAndTurn()`**
+
+Within the same app-server session:
+1. `thread/start`;
+2. validate `result.thread.id`;
+3. `turn/start` using the returned thread id;
+4. validate returned turn id;
+5. return `StartedThread`.
+
+First prompt format remains:
+
+```text
+[Telegram init]
+<user prompt>
+```
+
+Tests:
+- projectId/cwd/model passed correctly;
+- model omitted when no preference exists;
+- turn/start never runs if thread/start fails;
+- success is not returned if turn/start fails;
+- threadId is retained in the thrown diagnostic context if thread/start succeeded but turn/start failed.
+
+- [ ] **Step 7: Implement bounded shutdown**
+
+For query-only sessions:
+- close stdin;
+- wait briefly for normal exit;
+- SIGTERM if needed;
+- SIGKILL only as the final fallback.
+
+For a session with an active turn:
+- implement exactly the lifecycle proven by Task 0;
+- do not kill the process immediately after turn/start merely because the RPC response arrived.
+
+- [ ] **Step 8: Run focused tests**
+
+```bash
+bun test tests/codex-app-server-client.test.ts
+```
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/desktop/codex-app-server-client.ts tests/codex-app-server-client.test.ts
-git commit -m "feat(desktop): add CodexAppServerClient for stdio JSON-RPC"
+git commit -m "feat(desktop): add protocol-correct Codex app-server client"
 ```
 
 ---
 
-### Task 3: User Preference Store in StateDb
+## Task 2: StateDb settings + pending new-thread prompt state — **Completed**
 
 **Files:**
 - Modify: `src/state/db.ts`
-- Test: `tests/user-preference-store.test.ts`
+- Create: `src/state/new-thread-state-store.ts`
+- Test: `tests/new-thread-state-store.test.ts`
 
-**Interfaces:**
-- Produces:
-  ```ts
-  // In StateDb:
-  getUserPreference(key: string): string | null;
-  setUserPreference(key: string, value: string): void;
-  ```
+- [ ] **Step 1: Write migration tests first**
 
-- [ ] **Step 1: Write the failing test**
+Add schema:
 
-```ts
-import { describe, expect, test } from "bun:test";
-import { StateDb } from "../src/state/db.ts";
-
-describe("StateDb - user preferences", () => {
-  test("stores and retrieves user preferences", () => {
-    const state = new StateDb(":memory:");
-    expect(state.getUserPreference("default_model")).toBeNull();
-    state.setUserPreference("default_model", "o3");
-    expect(state.getUserPreference("default_model")).toBe("o3");
-    state.setUserPreference("default_model", "gpt-5-codex");
-    expect(state.getUserPreference("default_model")).toBe("gpt-5-codex");
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `bun test tests/user-preference-store.test.ts`
-Expected: FAIL with method not defined
-
-- [ ] **Step 3: Modify StateDb implementation**
-
-In `src/state/db.ts`:
-Add table creation:
 ```sql
-CREATE TABLE IF NOT EXISTS user_preferences (
+CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_new_thread_prompts (
+  telegram_chat_id TEXT NOT NULL,
+  prompt_message_id INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','consumed','expired')),
+  PRIMARY KEY (telegram_chat_id, prompt_message_id)
+);
 ```
-Add methods:
+
+Migration must be safe when `StateDb` opens the same DB more than once.
+
+- [ ] **Step 2: Add settings API**
+
+Suggested interface:
+
 ```ts
-getUserPreference(key: string): string | null {
-  const row = this.db.query("SELECT value FROM user_preferences WHERE key=?").get(key) as { value: string } | null;
-  return row?.value ?? null;
-}
-
-setUserPreference(key: string, value: string): void {
-  this.db.query(`
-    INSERT INTO user_preferences (key, value, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-  `).run(key, value, Date.now());
-}
+getSetting(key: string): string | null;
+setSetting(key: string, value: string): void;
+deleteSetting(key: string): void;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Use:
+- `default_model`
 
-Run: `bun test tests/user-preference-store.test.ts`
-Expected: PASS
+Tests:
+- missing → null;
+- insert;
+- overwrite;
+- delete restores null.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Implement NewThreadStateStore**
+
+Suggested API:
+
+```ts
+createPendingPrompt(input: {
+  chatId: string;
+  promptMessageId: number;
+  projectId: string;
+  projectName: string;
+  cwd: string;
+  ttlMs: number; // use 15 * 60_000 for this feature
+}): void;
+
+consumePendingPrompt(
+  chatId: string,
+  promptMessageId: number,
+  now?: number,
+): PendingNewThreadPrompt | null;
+```
+
+`consumePendingPrompt` must be atomic:
+- return pending row once;
+- transition to consumed in the same transaction;
+- expired rows must not be returned as usable.
+
+- [ ] **Step 4: Test idempotency + TTL**
+
+Cover:
+- first consume succeeds;
+- second consume returns null;
+- expired prompt returns null and is marked expired;
+- different chats/message ids do not collide.
+
+- [ ] **Step 5: Run tests**
 
 ```bash
-git add src/state/db.ts tests/user-preference-store.test.ts
-git commit -m "feat(state): add user preferences table to StateDb"
+bun test tests/new-thread-state-store.test.ts
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/state/db.ts src/state/new-thread-state-store.ts tests/new-thread-state-store.test.ts
+git commit -m "feat(state): persist new-thread prompts and model setting"
 ```
 
 ---
 
-### Task 4: Telegram commands: /projects and /model
+## Task 3: Telegram `/projects` and `/model` — **Completed**
 
 **Files:**
 - Modify: `src/telegram/service.ts`
 - Test: `tests/telegram-model-projects.test.ts`
 
-**Interfaces:**
-- Consumes: `CodexProjectStore`, `CodexAppServerClient`, `StateDb`
-- Produces: Handling for `/projects`, `/model`, and callback `model:<id>`
+**Important compatibility note:** Existing `TelegramClient.sendMessage()` accepts `InlineButton[][]` as its third argument, not a raw Telegram `reply_markup` object. Tests must use the existing client contract.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write `/projects` failing test**
 
-```ts
-import { describe, expect, test, mock } from "bun:test";
-import { TelegramService } from "../src/telegram/service.ts";
-import { StateDb } from "../src/state/db.ts";
+Inject a mock app-server client whose `listProjects()` returns:
+- normal projects;
+- duplicate names;
+- enough projects to exercise message splitting if implemented in this task.
 
-describe("TelegramService - /projects and /model", () => {
-  test("handles /projects by listing available projects", async () => {
-    const sent: any[] = [];
-    const mockClient: any = {
-      sendMessage: mock(async (chatId, text) => {
-        sent.push({ chatId, text });
-        return { message_id: 101, chat: { id: chatId } };
-      }),
-    };
-    const mockProjectStore: any = {
-      listProjects: () => [
-        { index: 1, id: "p1", name: "sea-bridge", rootPath: "/opt/app/aitools/sea-bridge" },
-      ],
-    };
-    const state = new StateDb(":memory:");
-    const service = new TelegramService(
-      { allowedUserId: "1", allowedChatId: "2" } as any,
-      state,
-      mockClient,
-      {} as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      { info: () => {}, warn: () => {} } as any,
-      undefined,
-      mockProjectStore,
-    );
+Assert:
+- index, name, and primaryRoot are shown;
+- help text recommends `/new <index> <prompt>`;
+- no SQL/private state DB dependency exists.
 
-    await (service as any).handleMessage({
-      update_id: 1,
-      message: { message_id: 1, chat: { id: 2 }, from: { id: 1 }, text: "/projects" },
-    });
+- [ ] **Step 2: Implement `/projects`**
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0].text).toContain("[1] sea-bridge");
-    expect(sent[0].text).toContain("/opt/app/aitools/sea-bridge");
-  });
+Rules:
+- fetch live projects;
+- split output into Telegram-safe message chunks;
+- if app-server fails, send an explicit unavailable/error message.
 
-  test("handles /model by sending keyboard with current default marked", async () => {
-    const sent: any[] = [];
-    const mockClient: any = {
-      sendMessage: mock(async (chatId, text, replyMarkup) => {
-        sent.push({ chatId, text, replyMarkup });
-        return { message_id: 102, chat: { id: chatId } };
-      }),
-    };
-    const mockAppServerClient: any = {
-      listModels: async () => [
-        { id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true },
-        { id: "o3", displayName: "o3", isDefault: false },
-      ],
-    };
-    const state = new StateDb(":memory:");
-    state.setUserPreference("default_model", "o3");
+- [ ] **Step 3: Write `/model` failing test**
 
-    const service = new TelegramService(
-      { allowedUserId: "1", allowedChatId: "2" } as any,
-      state,
-      mockClient,
-      {} as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      { info: () => {}, warn: () => {} } as any,
-      undefined,
-      undefined,
-      mockAppServerClient,
-    );
+Cases:
+- no stored model → “Codex 默认” marked selected;
+- stored model → that model marked selected;
+- live list failure → no fabricated model list.
 
-    await (service as any).handleMessage({
-      update_id: 2,
-      message: { message_id: 2, chat: { id: 2 }, from: { id: 1 }, text: "/model" },
-    });
+- [ ] **Step 4: Implement `/model`**
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0].text).toContain("当前选用: o3");
-    const buttons = sent[0].replyMarkup.inline_keyboard.flat();
-    expect(buttons.find((b: any) => b.text.includes("o3")).text).toContain("🔘");
-  });
-});
+Buttons:
+- first row: Codex default;
+- following rows: live models.
+
+Callback format should remain within Telegram's callback-data size limit. Use a compact prefix.
+
+- [ ] **Step 5: Implement model callback**
+
+On specific model:
+- store `default_model`.
+
+On default:
+- delete `default_model`.
+
+Then:
+- answer callback;
+- update keyboard with `editMessageReplyMarkup`.
+
+If a callback references a model no longer present in the live catalog:
+- do not save it;
+- answer with “模型列表已变化，请重新打开 /model”.
+
+- [ ] **Step 6: Run focused tests**
+
+```bash
+bun test tests/telegram-model-projects.test.ts
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+Expected: PASS.
 
-Run: `bun test tests/telegram-model-projects.test.ts`
-Expected: FAIL with unsupported command or missing store
-
-- [ ] **Step 3: Modify TelegramService to support /projects, /model, and model: callback**
-
-Update `src/telegram/service.ts`:
-- Inject `projectStore?: CodexProjectStore` and `appServerClient?: CodexAppServerClient` in constructor.
-- Add handler methods:
-  - `sendProjects(chatId: number)`
-  - `sendModelMenu(chatId: number)`
-  - `handleModelCallback(callback: TelegramCallbackQuery)`
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `bun test tests/telegram-model-projects.test.ts`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/telegram/service.ts tests/telegram-model-projects.test.ts
-git commit -m "feat(telegram): add /projects and /model command handlers"
+git commit -m "feat(telegram): add project and model menus"
 ```
 
 ---
 
-### Task 5: Telegram /new command & project selection flow
+## Task 4: Direct `/new <index> <prompt>` — **Completed**
 
 **Files:**
 - Modify: `src/telegram/service.ts`
-- Modify: `src/main.ts`
 - Test: `tests/telegram-new-thread.test.ts`
 
-**Interfaces:**
-- Consumes: `CodexProjectStore`, `CodexAppServerClient`, `ProcessCodexQueueClient`, `DesktopMessageStore`
-- Produces: Complete flow for `/new <project> <prompt>`, `/new` button picker, and callback `proj:<id>`.
+- [ ] **Step 1: Write direct-create failing test**
 
-- [ ] **Step 1: Write the failing test**
+Input:
 
-```ts
-import { describe, expect, test, mock } from "bun:test";
-import { TelegramService } from "../src/telegram/service.ts";
-import { StateDb } from "../src/state/db.ts";
-
-describe("TelegramService - /new thread creation", () => {
-  test("direct creation /new 1 <prompt> starts thread and queues initial message", async () => {
-    const sent: any[] = [];
-    const mockClient: any = {
-      sendMessage: mock(async (chatId, text, replyMarkup) => {
-        sent.push({ chatId, text, replyMarkup });
-        return { message_id: 201, chat: { id: chatId } };
-      }),
-    };
-    const mockProjectStore: any = {
-      listProjects: () => [{ index: 1, id: "p1", name: "sea-bridge", rootPath: "/opt/app/aitools/sea-bridge" }],
-      findProject: (q: string) => q === "1" || q === "sea-bridge" ? { index: 1, id: "p1", name: "sea-bridge", rootPath: "/opt/app/aitools/sea-bridge" } : null,
-    };
-    const mockAppServerClient: any = {
-      startThread: mock(async (params) => ({ threadId: "01a0-new-thread-123" })),
-    };
-    const mockQueueClient: any = {
-      queue: mock(async (threadId, text) => ({ status: "delivered", exitCode: 0 })),
-    };
-    const mockMessageStore: any = {
-      link: mock(() => {}),
-    };
-
-    const state = new StateDb(":memory:");
-    state.setUserPreference("default_model", "gpt-5-codex");
-
-    const service = new TelegramService(
-      { allowedUserId: "1", allowedChatId: "2" } as any,
-      state,
-      mockClient,
-      {} as any,
-      {} as any,
-      mockMessageStore,
-      mockQueueClient,
-      { info: () => {}, warn: () => {} } as any,
-      undefined,
-      mockProjectStore,
-      mockAppServerClient,
-    );
-
-    await (service as any).handleMessage({
-      update_id: 10,
-      message: { message_id: 10, chat: { id: 2 }, from: { id: 1 }, text: "/new 1 帮我写单元测试" },
-    });
-
-    expect(mockAppServerClient.startThread).toHaveBeenCalledWith({
-      projectId: "p1",
-      cwd: "/opt/app/aitools/sea-bridge",
-      model: "gpt-5-codex",
-    });
-    expect(mockQueueClient.queue).toHaveBeenCalledWith(
-      "01a0-new-thread-123",
-      "[Telegram init]\n帮我写单元测试"
-    );
-    expect(mockMessageStore.link).toHaveBeenCalled();
-    expect(sent[0].text).toContain("已在项目 [sea-bridge] 下创建新会话");
-  });
-
-  test("empty /new prompts user with project buttons", async () => {
-    const sent: any[] = [];
-    const mockClient: any = {
-      sendMessage: mock(async (chatId, text, replyMarkup) => {
-        sent.push({ chatId, text, replyMarkup });
-        return { message_id: 202, chat: { id: chatId } };
-      }),
-    };
-    const mockProjectStore: any = {
-      listProjects: () => [{ index: 1, id: "p1", name: "sea-bridge", rootPath: "/opt/app/aitools/sea-bridge" }],
-      findProject: () => null,
-    };
-    const state = new StateDb(":memory:");
-    const service = new TelegramService(
-      { allowedUserId: "1", allowedChatId: "2" } as any,
-      state,
-      mockClient,
-      {} as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      { info: () => {}, warn: () => {} } as any,
-      undefined,
-      mockProjectStore,
-    );
-
-    await (service as any).handleMessage({
-      update_id: 11,
-      message: { message_id: 11, chat: { id: 2 }, from: { id: 1 }, text: "/new" },
-    });
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0].text).toContain("请选择要在哪个项目下新建会话");
-    expect(sent[0].replyMarkup.inline_keyboard[0][0].text).toContain("sea-bridge");
-  });
-});
+```text
+/new 1 帮我写单元测试
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+Assert:
+- current project list is fetched;
+- index 1 resolves to the expected project;
+- setting `default_model` is read;
+- `startThreadAndTurn()` receives projectId, primaryRoot, optional model, and prompt;
+- **`ProcessCodexQueueClient.queue()` is not called for the initial prompt**.
 
-Run: `bun test tests/telegram-new-thread.test.ts`
-Expected: FAIL with /new unsupported
+- [ ] **Step 2: Implement parser**
 
-- [ ] **Step 3: Implement /new handling & proj: callback, update main.ts wiring**
+Supported direct forms:
+- `/new <numeric-index> <prompt>`
+- optional exact unique project name for simple names.
 
-In `src/telegram/service.ts`:
-- Add regex matching for `/new(?:\s+(\S+)(?:\s+([\s\S]+))?)?`
-- Implement `handleNewCommand(chatId, projectQuery, prompt)`
-- Implement `handleProjectCallback(callbackQuery)`
-In `src/main.ts`:
-- Instantiate `CodexProjectStore` using existing `codexStateDbPath`
-- Instantiate `CodexAppServerClient` using existing `codexCliPath`
-- Pass them into `TelegramService`
+Rules:
+- numeric index is the documented/recommended path;
+- ambiguous name → explain ambiguity and ask user to use index;
+- missing prompt → enter interactive project flow, do not create an empty thread;
+- no fuzzy/partial project matching.
 
-- [ ] **Step 4: Run all tests to verify full regression safety**
+- [ ] **Step 3: Implement success mapping**
 
-Run: `bun test`
-Expected: PASS (all tests pass)
+After `startThreadAndTurn()` succeeds:
+1. send success message;
+2. link the sent Telegram message to threadId/turnId in `DesktopMessageStore`.
 
-- [ ] **Step 5: Commit**
+The success message must say “已创建会话并开始执行”, not merely “已创建”.
+
+- [ ] **Step 4: Implement failure semantics**
+
+Cases:
+- invalid project index;
+- app-server unavailable;
+- thread/start failure;
+- turn/start failure;
+- stale/unsupported stored model.
+
+No failed create attempt may become the latest DesktopMessageStore mapping.
+
+- [ ] **Step 5: Run focused test**
 
 ```bash
-git add src/telegram/service.ts src/main.ts tests/telegram-new-thread.test.ts
-git commit -m "feat(telegram): support /new project session creation and initial prompt delivery"
+bun test tests/telegram-new-thread.test.ts
 ```
 
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/telegram/service.ts tests/telegram-new-thread.test.ts
+git commit -m "feat(telegram): create Codex thread and first turn from /new"
+```
+
+---
+
+## Task 5: Interactive `/new` → project callback → ForceReply → create — **Completed**
+
+**Files:**
+- Modify: `src/telegram/service.ts`
+- Modify: `src/state/new-thread-state-store.ts`
+- Test: `tests/telegram-new-thread.test.ts`
+
+- [ ] **Step 1: Test empty `/new`**
+
+Assert:
+- sends project buttons with at most 8 projects per page;
+- shows previous/next pagination buttons when needed;
+- callback data contains projectId, not display index;
+- pagination callback data uses a distinct prefix from project-selection callbacks.
+
+- [ ] **Step 2: Test project callback**
+
+On project callback:
+1. answer callback;
+2. re-fetch project data by projectId;
+3. send ForceReply prompt;
+4. persist `pending_new_thread_prompts` using the ForceReply message id.
+
+- [ ] **Step 3: Route ForceReply before normal thread-reply routing**
+
+When a text message replies to a Telegram message:
+1. first check whether the replied-to message is a pending new-thread prompt;
+2. if yes, atomically consume it and create the new thread;
+3. only when no pending-new-thread record exists should the existing `routeThreadReply()` path run.
+
+This ordering prevents the ForceReply from being misclassified as an unmapped Desktop reply.
+
+- [ ] **Step 4: Test TTL and duplicate consumption**
+
+- expired pending prompt → ask user to send `/new` again;
+- duplicate reply/update → never create a second thread;
+- service restart between project selection and user reply still works because state is in SQLite.
+
+- [ ] **Step 5: Run focused tests**
+
+```bash
+bun test tests/telegram-new-thread.test.ts
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/telegram/service.ts src/state/new-thread-state-store.ts tests/telegram-new-thread.test.ts
+git commit -m "feat(telegram): add persistent interactive new-thread flow"
+```
+
+---
+
+## Task 6: Follow-up transport for Sea-Bridge-created threads — **Completed**
+
+**PoC-selected transport:** reuse the existing `ProcessCodexQueueClient` after the first `thread/start + turn/start` has successfully established the thread and produced rollout state. No long-lived second app-server dispatcher is planned for this version.
+
+**Files:**
+- Modify only if needed: `src/telegram/thread-reply-router.ts`
+- Test: `tests/telegram-thread-reply-router.test.ts`
+
+- [x] **Step 1: Record PoC-selected transport in the design**
+
+Selected behavior: reuse current `ProcessCodexQueueClient`. The target-host PoC confirmed that `codex queue` starts follow-up turns after the initial app-server-created turn is established. No app-server ownership table and no second follow-up dispatcher are required.
+
+- [ ] **Step 2: Write a regression test for direct text routing**
+
+Existing behavior must remain:
+
+```text
+message has reply_to_message -> explicit mapped thread
+message has no reply_to_message -> DesktopMessageStore.findLatestLink(chatId)
+```
+
+No “thread active” condition is introduced.
+
+- [ ] **Step 3: Verify real execution, not process exit**
+
+Integration verification must prove that a follow-up creates/starts the next Codex turn. Exit code 0 from `codex queue` alone is insufficient.
+
+- [ ] **Step 4: Commit if applicable**
+
+Commit message depends on the selected transport.
+
+---
+
+## Task 7: Main wiring, shutdown, and full regression — **Implementation Complete / Target-host Acceptance Pending**
+
+**Files:**
+- Modify: `src/main.ts`
+- Possibly modify: `src/config.ts`
+- Test: existing suites + new integration-focused tests
+
+- [ ] **Step 1: Wire new dependencies**
+
+Instantiate:
+- `CodexAppServerClient`
+- `NewThreadStateStore`
+
+Pass them into `TelegramService` without disturbing existing constructor dependencies.
+
+Prefer an options/dependencies object if constructor positional arguments become difficult to read; do not append an unbounded list of optional positional parameters.
+
+- [ ] **Step 2: Add clean shutdown**
+
+If the final `CodexAppServerClient` implementation keeps any child process alive beyond a single RPC sequence, track it explicitly and close it during Sea-Bridge shutdown before `StateDb.close()`. Do not introduce a long-lived thread-owner process solely for follow-up routing.
+
+- [ ] **Step 3: Run type/lint/build checks available in the repository**
+
+Inspect `package.json` and run all project-defined static checks.
+
+- [ ] **Step 4: Run full tests**
+
+```bash
+bun test
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Target-host acceptance**
+
+With Desktop already running:
+
+1. `/projects`;
+2. `/model`;
+3. `/new 1 测试创建会话`;
+4. confirm first turn executes;
+5. confirm Desktop immediately shows/opens the thread;
+6. send a second Telegram message without reply;
+7. confirm it routes to the newly created thread and starts another turn;
+8. send an explicit reply to an older Sea-Bridge notification and confirm explicit reply still overrides latest-link routing;
+9. restart Sea-Bridge and repeat the interactive `/new` ForceReply flow.
+
+- [ ] **Step 6: Update spec status**
+
+Only after the target-host acceptance passes:
+- change spec status from `Approved / Ready to Implement — target-host protocol PoC passed`
+- to `Approved / Implemented` (or the project's normal completed status);
+- record actual Desktop + bundled Codex versions and final acceptance results.
+
+- [ ] **Step 7: Final commit**
+
+```bash
+git add src tests docs/superpowers/specs/2026-09-25-project-new-thread-design.md docs/superpowers/plans/2026-09-25-project-new-thread.md
+git commit -m "feat: support project-scoped Codex thread creation from Telegram"
+```
+
+---
+
+## Review Notes Preserved for Implementer
+
+1. The existing `DesktopMessageStore.findLatestLink(chatId)` behavior is intentional and must remain: direct Telegram input targets the most recent Sea-Bridge-linked thread in that chat.
+2. The current `TelegramClient.sendMessage` abstraction accepts button arrays, not raw Telegram `reply_markup`; tests and implementation should follow the existing wrapper.
+3. `StateDb` currently has no generic preferences table; migration must be additive and idempotent.
+4. Current `TelegramService.run()` processes fetched updates sequentially, so do not add an in-memory “session mutex” unless a concrete race remains after persistent pending-state/idempotency handling.
+5. Do not couple this feature to `state_5.sqlite.projects` / `project_roots`; app-server `project/list` is the protocol surface for this design.

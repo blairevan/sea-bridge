@@ -1,6 +1,6 @@
 import type { StateDb } from "./db.ts";
 
-export type DesktopMessageEventKind = "started" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "reply_prompt";
+export type DesktopMessageEventKind = "started" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "reply_prompt" | "thread_created";
 export type DeliveryStatus = "received" | "dispatching" | "delivered" | "failed" | "delivery_unknown";
 export type TerminalDeliveryStatus = Exclude<DeliveryStatus, "received" | "dispatching">;
 
@@ -87,6 +87,13 @@ export class DesktopMessageStore {
     const row = this.state.db.query(
       "SELECT 1 AS found FROM desktop_message_links WHERE event_fingerprint=?",
     ).get(eventFingerprint) as { found: number } | null;
+    return row?.found === 1;
+  }
+
+  hasThreadCreatedLink(threadId: string): boolean {
+    const row = this.state.db.query(
+      "SELECT 1 AS found FROM desktop_message_links WHERE thread_id=? AND event_kind='thread_created' LIMIT 1",
+    ).get(threadId) as { found: number } | null;
     return row?.found === 1;
   }
 

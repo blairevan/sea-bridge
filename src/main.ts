@@ -14,6 +14,10 @@ import { CodexThreadStore } from "./desktop/codex-thread-store.ts";
 import { DesktopObserver } from "./desktop/desktop-observer.ts";
 import { ProcessCodexQueueClient } from "./desktop/codex-queue-client.ts";
 import { ThreadHistoryStore } from "./desktop/thread-history-store.ts";
+import { CodexAppServerClient } from "./desktop/codex-app-server-client.ts";
+import { NewThreadManager } from "./desktop/new-thread-manager.ts";
+import { NewThreadStateStore } from "./state/new-thread-state-store.ts";
+import { createAppServerApprovalHandler } from "./desktop/app-server-approval-bridge.ts";
 
 function seedCapabilities(state: StateDb): void {
   const now = Date.now();
@@ -54,6 +58,13 @@ async function main(): Promise<void> {
   const messages = new DesktopMessageStore(state);
   const queueClient = new ProcessCodexQueueClient(config.codexCliPath);
   const threadStore = new CodexThreadStore(config.codexStateDbPath);
+  const appServerClient = new CodexAppServerClient(config.codexCliPath, {
+    inboundRequestHandler: createAppServerApprovalHandler(approvals, logger),
+  });
+  const newThreadManager = new NewThreadManager(
+    appServerClient,
+    new NewThreadStateStore(state),
+  );
   const observer = new DesktopObserver(
     threadStore,
     new ThreadHistoryStore(config.codexThreadHistoryDbPath),
@@ -72,7 +83,18 @@ async function main(): Promise<void> {
     { activeSessionTtlMs: config.activeSessionTtlMs },
   );
   const hookServer = new HookServer(config.hookSocketPath, hookProvider, logger);
-  const telegram = new TelegramService(config, state, telegramClient, desktop, approvals, messages, queueClient, logger, threadStore);
+  const telegram = new TelegramService(
+    config,
+    state,
+    telegramClient,
+    desktop,
+    approvals,
+    messages,
+    queueClient,
+    logger,
+    threadStore,
+    newThreadManager,
+  );
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -82,6 +104,7 @@ async function main(): Promise<void> {
     telegram.stop();
     await observer.stop();
     await hookServer.stop().catch((error) => logger.warn("hook_server_stop_failed", { error: String(error) }));
+    await appServerClient.close().catch((error) => logger.warn("app_server_stop_failed", { error: String(error) }));
     state.close();
     logger.info("shutdown_complete");
   };

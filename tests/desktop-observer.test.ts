@@ -51,4 +51,47 @@ describe("DesktopObserver", () => {
     expect(messages.findLink("42", 1)).toMatchObject({ threadId: "thread-a", eventKind: "completed", turnId: "turn-a" });
     state.close();
   });
+
+  test("observes the first completed turn for a Sea-Bridge-created thread instead of baselining it away", async () => {
+    const thread: CodexThread = { id: "thread-new", rolloutPath: "history://thread-new", title: "New thread", updatedAtMs: 1 };
+    const history: ThreadHistoryReader = {
+      latestOrdinal: () => 20,
+      latestOrdinals: () => new Map(),
+      listTurnsAfter: (_threadId, ordinal) => ordinal < 20
+        ? [{ threadId: "thread-new", turnId: "turn-first", ordinal: 20, status: "completed", completedAtMs: 1, finalText: "first result" }]
+        : [],
+    };
+    const state = new StateDb(":memory:");
+    const messages = new DesktopMessageStore(state);
+    messages.link({
+      chatId: "42",
+      messageId: 90,
+      threadId: "thread-new",
+      turnId: "turn-first",
+      eventKind: "thread_created",
+      eventFingerprint: "created-thread-new",
+    });
+    const sent: string[] = [];
+    const observer = new DesktopObserver(
+      { listActive: () => [thread] },
+      history,
+      messages,
+      {
+        sendMessage: async (_chatId, text) => ({
+          message_id: 100 + sent.push(text),
+          chat: { id: 42, type: "private" },
+        }),
+      },
+      "42",
+      logger,
+      5_000,
+      3_000,
+    );
+
+    await observer.pollOnce();
+
+    expect(sent).toEqual(["Codex: New thread\n状态: 执行完成\nfirst result"]);
+    expect(messages.getCursor("thread-new")?.byteOffset).toBe(20);
+    state.close();
+  });
 });

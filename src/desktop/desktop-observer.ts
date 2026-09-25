@@ -48,6 +48,7 @@ function notificationText(thread: CodexThread, event: DesktopTurnEvent, maxChars
     failed: "执行失败",
     interrupted: "已中断",
     reply_prompt: "等待回复",
+    thread_created: "已创建",
   };
   return [`Codex: ${thread.title}`, `状态: ${labels[event.kind]}`, summary(event.finalText, maxChars)]
     .filter((line): line is string => Boolean(line))
@@ -112,10 +113,12 @@ export class DesktopObserver {
   }
 
   private async observeThread(thread: CodexThread): Promise<void> {
-    const cursor = this.messages.getCursor(thread.id);
+    let cursor = this.messages.getCursor(thread.id);
     if (!cursor) {
-      this.baselineThread(thread, this.history.latestOrdinal(thread.id));
-      return;
+      const isSeaBridgeCreated = this.messages.hasThreadCreatedLink(thread.id);
+      this.baselineThread(thread, isSeaBridgeCreated ? 0 : this.history.latestOrdinal(thread.id));
+      cursor = this.messages.getCursor(thread.id);
+      if (!cursor || !isSeaBridgeCreated) return;
     }
 
     const turns = this.history.listTurnsAfter(thread.id, cursor.byteOffset);
