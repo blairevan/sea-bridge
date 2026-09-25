@@ -6,6 +6,7 @@ import type { DesktopMessageStore } from "../state/desktop-message-store.ts";
 import type { DesktopSameSessionAdapter } from "../desktop/same-session-adapter.ts";
 import type { ApprovalCoordinator, ApprovalDecision } from "../desktop/approval-coordinator.ts";
 import type { ProcessCodexQueueClient } from "../desktop/codex-queue-client.ts";
+import type { CodexThreadReader } from "../desktop/codex-thread-store.ts";
 import { isAuthorized } from "../security/auth.ts";
 import { TelegramClient, type TelegramUpdate } from "./client.ts";
 import { routeThreadReply } from "./thread-reply-router.ts";
@@ -27,6 +28,7 @@ export class TelegramService {
     private readonly messages: DesktopMessageStore,
     private readonly queueClient: ProcessCodexQueueClient,
     private readonly logger: Logger,
+    private readonly threadStore?: CodexThreadReader,
   ) {}
 
   async run(): Promise<void> {
@@ -173,8 +175,9 @@ export class TelegramService {
     }
     if (result.status === "duplicate") return;
     if (result.status === "delivered") {
-      await this.client.sendMessage(message.chat.id, "已投递到对应的 Codex Desktop 会话。");
-      this.logger.info("telegram_thread_reply_delivered", { threadId: result.threadId, updateId: update.update_id });
+      const threadTitle = this.threadStore?.getThread?.(result.threadId)?.title || result.threadId;
+      await this.client.sendMessage(message.chat.id, `已投递到对应的 Codex Desktop 会话：${threadTitle}`);
+      this.logger.info("telegram_thread_reply_delivered", { threadId: result.threadId, updateId: update.update_id, threadTitle });
       return;
     }
     if (result.status === "delivery_unknown") {

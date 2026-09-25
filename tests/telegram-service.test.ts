@@ -107,4 +107,72 @@ describe("TelegramService - reply callback", () => {
 
     state.close();
   });
+
+  test("delivers message with thread title included in success response", async () => {
+    const state = new StateDb(":memory:");
+    const messages = new DesktopMessageStore(state);
+    const client = new MockTelegramClient();
+    const config: AppConfig = {
+      telegramBotToken: "token",
+      allowedUserId: "123",
+      allowedChatId: "456",
+      dbPath: ":memory:",
+      hookSocketPath: "/tmp/test.sock",
+      codexStateDbPath: ":memory:",
+      codexThreadHistoryDbPath: ":memory:",
+      codexCliPath: "/bin/true",
+      approvalTimeoutMs: 5000,
+      activeSessionTtlMs: 5000,
+      desktopPollIntervalMs: 5000,
+      telegramSummaryMaxChars: 1000,
+      logLevel: "error",
+    };
+
+    messages.link({
+      chatId: "456",
+      messageId: 50,
+      threadId: "thread-xyz",
+      turnId: null,
+      eventKind: "completed",
+      eventFingerprint: "fp-50",
+    });
+
+    const queueClient = {
+      queue: async () => ({ status: "delivered" as const, exitCode: 0, errorCode: null }),
+    };
+
+    const mockThreadStore = {
+      listActive: () => [],
+      getThread: (id: string) => id === "thread-xyz" ? { id: "thread-xyz", rolloutPath: "", title: "我的会话标题", updatedAtMs: 0 } : null,
+    };
+
+    const service = new TelegramService(
+      config,
+      state,
+      client as any,
+      {} as any,
+      {} as any,
+      messages,
+      queueClient as any,
+      logger,
+      mockThreadStore,
+    );
+
+    const update: TelegramUpdate = {
+      update_id: 2,
+      message: {
+        message_id: 60,
+        from: { id: 123 },
+        chat: { id: 456, type: "private" },
+        text: "hello world",
+      },
+    };
+
+    await (service as any).processUpdate(update);
+
+    expect(client.sentMessages.length).toBe(1);
+    expect(client.sentMessages[0]?.text).toBe("已投递到对应的 Codex Desktop 会话：我的会话标题");
+
+    state.close();
+  });
 });
