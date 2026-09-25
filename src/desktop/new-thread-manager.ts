@@ -15,16 +15,28 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
+export interface NewThreadManagerOptions {
+  pathExists?: (path: string) => boolean;
+  now?: () => number;
+  onThreadStarted?: (threadId: string) => void;
+}
+
 export class NewThreadManager {
   private projectsCache: CacheEntry<ProjectItem[]> | null = null;
   private modelsCache: CacheEntry<ModelOption[]> | null = null;
+  private readonly pathExists: (path: string) => boolean;
+  private readonly now: () => number;
+  private readonly onThreadStarted: (threadId: string) => void;
 
   constructor(
     private readonly appServer: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">,
     private readonly state: NewThreadStateStore,
-    private readonly pathExists: (path: string) => boolean = existsSync,
-    private readonly now: () => number = Date.now,
-  ) {}
+    options: NewThreadManagerOptions = {},
+  ) {
+    this.pathExists = options.pathExists ?? existsSync;
+    this.now = options.now ?? Date.now;
+    this.onThreadStarted = options.onThreadStarted ?? (() => undefined);
+  }
 
   async listProjects(forceRefresh = false): Promise<ProjectItem[]> {
     const now = this.now();
@@ -91,6 +103,10 @@ export class NewThreadManager {
     return this.state.getPendingPrompt(chatId, promptMessageId);
   }
 
+  getPromptStatus(chatId: string, promptMessageId: number): "pending" | "consumed" | "expired" | null {
+    return this.state.getPromptStatus(chatId, promptMessageId);
+  }
+
   consumePendingPrompt(chatId: string, promptMessageId: number): PendingNewThreadPrompt | null {
     return this.state.consumePendingPrompt(chatId, promptMessageId, this.now());
   }
@@ -104,22 +120,30 @@ export class NewThreadManager {
     project: Pick<ProjectItem, "id" | "primaryRoot">,
     prompt: string,
   ): Promise<StartedThread> {
+    if (!this.pathExists(project.primaryRoot)) {
+      throw new Error("project_path_missing");
+    }
     const model = this.getDefaultModel(chatId);
     return this.appServer.startThreadAndTurn({
       projectId: project.id,
       cwd: project.primaryRoot,
       ...(model ? { model } : {}),
       prompt,
+      onThreadStarted: this.onThreadStarted,
     });
   }
 
   async startPendingThread(chatId: string, pending: PendingNewThreadPrompt, prompt: string): Promise<StartedThread> {
+    if (!this.pathExists(pending.cwd)) {
+      throw new Error("project_path_missing");
+    }
     const model = this.getDefaultModel(chatId);
     return this.appServer.startThreadAndTurn({
       projectId: pending.projectId,
       cwd: pending.cwd,
       ...(model ? { model } : {}),
       prompt,
+      onThreadStarted: this.onThreadStarted,
     });
   }
 }

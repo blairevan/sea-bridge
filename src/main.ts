@@ -64,6 +64,11 @@ async function main(): Promise<void> {
   const newThreadManager = new NewThreadManager(
     appServerClient,
     new NewThreadStateStore(state),
+    {
+      onThreadStarted: (threadId) => {
+        messages.registerCreatedThread(threadId);
+      },
+    },
   );
   const observer = new DesktopObserver(
     threadStore,

@@ -40,6 +40,7 @@ describe("NewThreadStateStore", () => {
       expiresAt: 2_000,
     });
     expect(store.consumePendingPrompt("42", 100, 1_000)).toBeNull();
+    expect(store.getPromptStatus("42", 100)).toBe("consumed");
 
     store.createPendingPrompt({
       chatId: "42",
@@ -50,6 +51,7 @@ describe("NewThreadStateStore", () => {
       expiresAt: 2_000,
     });
     expect(store.consumePendingPrompt("42", 101, 2_001)).toBeNull();
+    expect(store.getPromptStatus("42", 101)).toBe("expired");
     expect(store.cleanupExpired(2_001)).toBeGreaterThanOrEqual(0);
 
     state.close();

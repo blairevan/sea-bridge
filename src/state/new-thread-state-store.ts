@@ -98,6 +98,13 @@ export class NewThreadStateStore {
     return row ? mapPending(row) : null;
   }
 
+  getPromptStatus(chatId: string, promptMessageId: number): "pending" | "consumed" | "expired" | null {
+    const row = this.state.db.query(
+      "SELECT status FROM pending_new_thread_prompts WHERE telegram_chat_id=? AND prompt_message_id=?",
+    ).get(chatId, promptMessageId) as { status: "pending" | "consumed" | "expired" } | null;
+    return row?.status ?? null;
+  }
+
   consumePendingPrompt(chatId: string, promptMessageId: number, now = Date.now()): PendingNewThreadPrompt | null {
     const consume = this.state.db.transaction(() => {
       const row = this.state.db.query(

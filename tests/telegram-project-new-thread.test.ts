@@ -79,9 +79,12 @@ function setup() {
       { id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
     ],
     startThreadAndTurn: async (params: any) => {
-      starts.push(params);
+      const threadId = "thread-" + (starts.length + 1);
+      const { onThreadStarted, ...recorded } = params;
+      starts.push(recorded);
+      onThreadStarted?.(threadId);
       return {
-        threadId: "thread-" + starts.length,
+        threadId,
         turnId: "turn-" + starts.length,
         projectId: params.projectId,
         cwd: params.cwd,
@@ -89,7 +92,11 @@ function setup() {
       };
     },
   };
-  const manager = new NewThreadManager(appServer as any, newState, () => true, () => 1_000);
+  const manager = new NewThreadManager(appServer as any, newState, {
+    pathExists: () => true,
+    now: () => 1_000,
+    onThreadStarted: (threadId) => messages.registerCreatedThread(threadId),
+  });
   const client = new MockTelegramClient();
   const service = new TelegramService(
     config,
@@ -144,6 +151,7 @@ describe("Telegram project new-thread flow", () => {
       cwd: "/repo",
       prompt: "review this",
     }]);
+    expect(messages.getCursor("thread-1")?.byteOffset).toBe(0);
     expect(messages.findLatestLink("456")?.threadId).toBe("thread-1");
     expect(messages.findLatestLink("456")?.eventKind).toBe("thread_created");
 
@@ -173,6 +181,10 @@ describe("Telegram project new-thread flow", () => {
     expect(starts[0].projectId).toBe("p1");
     expect(starts[0].prompt).toBe("build it");
 
+    await (service as any).processUpdate(messageUpdate(11, "build it again", promptMessageId));
+    expect(starts).toHaveLength(1);
+    expect(client.sent.at(-1)?.text).toContain("已经使用过");
+
     state.close();
   });
 
@@ -192,6 +204,44 @@ describe("Telegram project new-thread flow", () => {
 
     await (service as any).processUpdate(messageUpdate(8, "/new 1 test model"));
     expect(starts[0].model).toBe("gpt-5.3-codex");
+
+    state.close();
+  });
+
+  test("marks direct /new as processed when project discovery is temporarily unavailable", async () => {
+    const { state, manager, client, service } = setup();
+    (manager as any).appServer.listProjects = async () => {
+      throw new Error("app-server unavailable");
+    };
+
+    await (service as any).processUpdate(messageUpdate(9, "/new 1 should not block"));
+
+    const row = state.db.query("SELECT status FROM telegram_updates WHERE update_id=9").get() as { status: string };
+    expect(row.status).toBe("processed");
+    expect(client.sent.at(-1)?.text).toContain("项目列表暂不可用");
+
+    state.close();
+  });
+
+  test("marks model callback as processed when live model discovery fails", async () => {
+    const { state, manager, client, service } = setup();
+    (manager as any).appServer.listModels = async () => {
+      throw new Error("app-server unavailable");
+    };
+
+    await (service as any).processUpdate({
+      update_id: 10,
+      callback_query: {
+        id: "cb-model-fail",
+        from: { id: 123 },
+        data: "model:set:gpt-5.3-codex",
+        message: { message_id: 99, chat: { id: 456, type: "private" } },
+      },
+    });
+
+    const row = state.db.query("SELECT status FROM telegram_updates WHERE update_id=10").get() as { status: string };
+    expect(row.status).toBe("processed");
+    expect(client.sent.at(-1)?.text).toContain("模型列表暂不可用");
 
     state.close();
   });

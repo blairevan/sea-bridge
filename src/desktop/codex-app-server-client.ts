@@ -37,7 +37,7 @@ export type AppServerInboundRequestHandler =
 
 export interface CodexAppServerClientOptions {
   requestTimeoutMs?: number;
-  turnLifetimeTimeoutMs?: number;
+  turnLifetimeTimeoutMs?: number | null;
   spawner?: ProcessSpawner;
   inboundRequestHandler?: AppServerInboundRequestHandler;
 }
@@ -86,7 +86,7 @@ interface NotificationWaiter {
   predicate: (message: RpcMessage) => boolean;
   resolve: (message: RpcMessage) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 export class CodexAppServerRpcError extends Error {
@@ -182,7 +182,10 @@ class AppServerSession {
     this.write(message);
   }
 
-  waitForNotification(predicate: (message: RpcMessage) => boolean, timeoutMs: number): Promise<RpcMessage> {
+  waitForNotification(
+    predicate: (message: RpcMessage) => boolean,
+    timeoutMs: number | null = null,
+  ): Promise<RpcMessage> {
     const buffered = this.recentNotifications.find(predicate);
     if (buffered) return Promise.resolve(buffered);
     if (this.closed) return Promise.reject(new Error("app_server_session_closed"));
@@ -191,20 +194,23 @@ class AppServerSession {
       const waiter: NotificationWaiter = {
         predicate,
         resolve: (message) => {
-          clearTimeout(waiter.timer);
+          if (waiter.timer) clearTimeout(waiter.timer);
           this.notificationWaiters.delete(waiter);
           resolve(message);
         },
         reject: (error) => {
-          clearTimeout(waiter.timer);
+          if (waiter.timer) clearTimeout(waiter.timer);
           this.notificationWaiters.delete(waiter);
           reject(error);
         },
-        timer: setTimeout(() => {
+        timer: null,
+      };
+      if (timeoutMs != null && timeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
           this.notificationWaiters.delete(waiter);
           reject(new Error("app_server_notification_timeout"));
-        }, timeoutMs),
-      };
+        }, timeoutMs);
+      }
       this.notificationWaiters.add(waiter);
     });
   }
@@ -313,7 +319,7 @@ class AppServerSession {
           })
         : null;
 
-      if (response) {
+      if (response != null) {
         this.write({ method, id, response });
         return;
       }
@@ -360,7 +366,7 @@ class AppServerSession {
 
 export class CodexAppServerClient {
   private readonly requestTimeoutMs: number;
-  private readonly turnLifetimeTimeoutMs: number;
+  private readonly turnLifetimeTimeoutMs: number | null;
   private readonly spawner: ProcessSpawner;
   private readonly inboundRequestHandler: AppServerInboundRequestHandler | undefined;
   private readonly sessions = new Set<AppServerSession>();
@@ -370,7 +376,7 @@ export class CodexAppServerClient {
     options: CodexAppServerClientOptions = {},
   ) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
-    this.turnLifetimeTimeoutMs = options.turnLifetimeTimeoutMs ?? 30 * 60_000;
+    this.turnLifetimeTimeoutMs = options.turnLifetimeTimeoutMs ?? null;
     this.spawner = options.spawner ?? defaultSpawner;
     this.inboundRequestHandler = options.inboundRequestHandler;
   }
@@ -456,6 +462,7 @@ export class CodexAppServerClient {
     cwd: string;
     model?: string;
     prompt: string;
+    onThreadStarted?: (threadId: string) => void;
   }): Promise<StartedThread> {
     const session = await this.openSession();
     let handedToBackground = false;
@@ -472,6 +479,7 @@ export class CodexAppServerClient {
       }>("thread/start", threadParams);
       const threadId = threadResponse?.thread?.id;
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
+      params.onThreadStarted?.(threadId);
 
       const turnResponse = await session.request<{ turn?: { id?: string } }>("turn/start", {
         threadId,

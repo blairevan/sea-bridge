@@ -90,11 +90,11 @@ export class DesktopMessageStore {
     return row?.found === 1;
   }
 
-  hasThreadCreatedLink(threadId: string): boolean {
-    const row = this.state.db.query(
-      "SELECT 1 AS found FROM desktop_message_links WHERE thread_id=? AND event_kind='thread_created' LIMIT 1",
-    ).get(threadId) as { found: number } | null;
-    return row?.found === 1;
+  registerCreatedThread(threadId: string): boolean {
+    const result = this.state.db.query(
+      "INSERT OR IGNORE INTO desktop_observer_cursors(thread_id,rollout_path,byte_offset,schema_fingerprint,last_event_fingerprint,updated_at) VALUES (?, '', 0, 'sea-bridge-created-pending-v1', NULL, ?)",
+    ).run(threadId, Date.now());
+    return result.changes === 1;
   }
 
   getCursor(threadId: string): DesktopObserverCursor | null {

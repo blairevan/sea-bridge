@@ -113,12 +113,10 @@ export class DesktopObserver {
   }
 
   private async observeThread(thread: CodexThread): Promise<void> {
-    let cursor = this.messages.getCursor(thread.id);
+    const cursor = this.messages.getCursor(thread.id);
     if (!cursor) {
-      const isSeaBridgeCreated = this.messages.hasThreadCreatedLink(thread.id);
-      this.baselineThread(thread, isSeaBridgeCreated ? 0 : this.history.latestOrdinal(thread.id));
-      cursor = this.messages.getCursor(thread.id);
-      if (!cursor || !isSeaBridgeCreated) return;
+      this.baselineThread(thread, this.history.latestOrdinal(thread.id));
+      return;
     }
 
     const turns = this.history.listTurnsAfter(thread.id, cursor.byteOffset);

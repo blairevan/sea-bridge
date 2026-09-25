@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-25-project-new-thread-design.md`
 
-**Implementation Status (2026-09-25):** Code implementation is complete on `feature/project-new-thread`. Automated verification passes: `bun test` 48/48, `bun run typecheck`, `bun run build`, and `git diff --check`. Target-host Telegram/Desktop final acceptance remains pending. The detailed checkboxes below are retained as the implementation recipe and historical checklist.
+**Implementation Status (2026-09-25):** Code implementation is complete on `feature/project-new-thread`. After a second full code Review, automated verification passes: `bun test` 52/52, `bun run typecheck`, `bun run build`, and `git diff --check`. The second Review fixed the new-thread Observer baseline race, removed the fixed 30-minute active-turn kill, made app-server discovery failures non-blocking for Telegram updates/callbacks, revalidated pending project paths before creation, and preserved correct expired/consumed ForceReply semantics. Target-host Telegram/Desktop final acceptance remains pending. The detailed checkboxes below are retained as the implementation recipe and historical checklist.
 
 ## Global Constraints
 

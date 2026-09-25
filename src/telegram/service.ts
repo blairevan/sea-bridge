@@ -188,21 +188,33 @@ export class TelegramService {
 
       const pageMatch = /^new:page:(\d+)$/.exec(data);
       if (pageMatch && callback.message) {
-        const projects = await this.newThreads.listProjects();
-        const menu = renderProjectPage(projects, Number.parseInt(pageMatch[1]!, 10));
-        await this.client.answerCallbackQuery(callback.id);
-        await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons);
+        await this.client.answerCallbackQuery(callback.id).catch(() => undefined);
+        try {
+          const projects = await this.newThreads.listProjects();
+          const menu = renderProjectPage(projects, Number.parseInt(pageMatch[1]!, 10));
+          await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons);
+        } catch (error) {
+          this.logger.warn("project_page_callback_failed", { error: String(error) });
+          await this.client.sendMessage(chatId, "项目列表暂不可用，请稍后重新发送 /new。").catch(() => undefined);
+        }
         return;
       }
 
       const projectMatch = /^new:proj:(.+)$/.exec(data);
       if (projectMatch) {
-        const project = await this.newThreads.getProjectById(projectMatch[1]!, true);
-        if (!project) {
-          await this.client.answerCallbackQuery(callback.id, "项目已变化，请重新发送 /new");
+        await this.client.answerCallbackQuery(callback.id).catch(() => undefined);
+        let project: ProjectItem | null;
+        try {
+          project = await this.newThreads.getProjectById(projectMatch[1]!, true);
+        } catch (error) {
+          this.logger.warn("project_select_callback_failed", { error: String(error) });
+          await this.client.sendMessage(chatId, "项目列表暂不可用，请稍后重新发送 /new。").catch(() => undefined);
           return;
         }
-        await this.client.answerCallbackQuery(callback.id);
+        if (!project) {
+          await this.client.sendMessage(chatId, "项目已变化，请重新发送 /new。").catch(() => undefined);
+          return;
+        }
         const promptMessage = await this.client.sendForceReply(
           chatId,
           `💬 已选择项目 [${project.name}]，请回复此消息输入第一轮需求。`,
@@ -228,28 +240,41 @@ export class TelegramService {
 
       if (data === "model:default") {
         this.newThreads.clearDefaultModel(String(chatId));
-        const models = await this.newThreads.listModels();
-        const menu = renderModelMenu(models, null);
-        await this.client.answerCallbackQuery(callback.id, "已切换为 Codex 默认模型");
+        await this.client.answerCallbackQuery(callback.id, "已切换为 Codex 默认模型").catch(() => undefined);
         if (callback.message) {
-          await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons);
+          try {
+            const models = await this.newThreads.listModels();
+            const menu = renderModelMenu(models, null);
+            await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons);
+          } catch (error) {
+            this.logger.warn("model_default_menu_refresh_failed", { error: String(error) });
+          }
         }
         return;
       }
 
       const modelMatch = /^model:set:(.+)$/.exec(data);
       if (modelMatch) {
-        const models = await this.newThreads.listModels(true);
+        await this.client.answerCallbackQuery(callback.id).catch(() => undefined);
+        let models;
+        try {
+          models = await this.newThreads.listModels(true);
+        } catch (error) {
+          this.logger.warn("model_select_callback_failed", { error: String(error) });
+          await this.client.sendMessage(chatId, "模型列表暂不可用，请稍后重新执行 /model。").catch(() => undefined);
+          return;
+        }
         const model = models.find((item) => item.id === modelMatch[1]);
         if (!model) {
-          await this.client.answerCallbackQuery(callback.id, "模型列表已变化，请重新打开 /model");
+          await this.client.sendMessage(chatId, "模型列表已变化，请重新执行 /model。").catch(() => undefined);
           return;
         }
         this.newThreads.setDefaultModel(String(chatId), model.id);
         const menu = renderModelMenu(models, model.id);
-        await this.client.answerCallbackQuery(callback.id, `已选择 ${model.displayName}`);
         if (callback.message) {
-          await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons);
+          await this.client.editMessageText(chatId, callback.message.message_id, menu.text, menu.buttons).catch((error) => {
+            this.logger.warn("model_menu_refresh_failed", { error: String(error) });
+          });
         }
         return;
       }
@@ -296,7 +321,14 @@ export class TelegramService {
         return;
       }
 
-      const project = await this.newThreads.findProject(projectQuery, true);
+      let project: ProjectItem | null;
+      try {
+        project = await this.newThreads.findProject(projectQuery, true);
+      } catch (error) {
+        this.logger.warn("new_thread_project_lookup_failed", { error: String(error) });
+        await this.client.sendMessage(message.chat.id, "项目列表暂不可用，请稍后重试。");
+        return;
+      }
       if (!project) {
         await this.client.sendMessage(
           message.chat.id,
@@ -341,6 +373,16 @@ export class TelegramService {
           consumed.projectName,
           () => this.newThreads!.startPendingThread(chatId, consumed, text),
         );
+        return;
+      }
+
+      const promptStatus = this.newThreads.getPromptStatus(chatId, promptMessageId);
+      if (promptStatus === "expired") {
+        await this.client.sendMessage(message.chat.id, "这个新建会话请求已过期，请重新发送 /new。");
+        return;
+      }
+      if (promptStatus === "consumed") {
+        await this.client.sendMessage(message.chat.id, "这个新建会话请求已经使用过，请重新发送 /new 创建新的会话。");
         return;
       }
     }

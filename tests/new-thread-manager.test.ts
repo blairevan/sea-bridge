@@ -15,11 +15,37 @@ describe("NewThreadManager", () => {
       ],
       listModels: async () => [],
       startThreadAndTurn: async () => { throw new Error("not used"); },
-    } as any, store, (path) => path !== "/missing");
+    } as any, store, { pathExists: (path) => path !== "/missing" });
 
     const projects = await manager.listProjects();
     expect(projects.map((project) => [project.index, project.id])).toEqual([[1, "p2"], [2, "p3"]]);
     expect((await manager.findProject("1"))?.id).toBe("p2");
+
+    state.close();
+  });
+
+  test("rejects a pending project whose path disappeared before the user replied", async () => {
+    const state = new StateDb(":memory:");
+    const store = new NewThreadStateStore(state);
+    let starts = 0;
+    const manager = new NewThreadManager({
+      listProjects: async () => [],
+      listModels: async () => [],
+      startThreadAndTurn: async () => {
+        starts += 1;
+        throw new Error("should not be called");
+      },
+    } as any, store, { pathExists: () => false });
+
+    await expect(manager.startPendingThread("456", {
+      chatId: "456",
+      promptMessageId: 1,
+      projectId: "p1",
+      projectName: "gone",
+      cwd: "/gone",
+      expiresAt: Date.now() + 1000,
+    }, "build it")).rejects.toThrow("project_path_missing");
+    expect(starts).toBe(0);
 
     state.close();
   });

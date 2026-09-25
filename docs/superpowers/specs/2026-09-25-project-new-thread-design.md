@@ -498,4 +498,4 @@ codex queue --thread <threadId> --message <text>
    - 路由到刚创建的 thread；
    - 必须真实开始下一 turn，不能只停留在 queue pending。
 
-第 4、5 项属于目标 Mac 上的最终交付验收；协议级 PoC、代码实现和自动化回归已经完成。当前自动化验证结果：`bun test` 48/48 通过，`bun run typecheck`、`bun run build`、`git diff --check` 均通过。
+第 4、5 项属于目标 Mac 上的最终交付验收；协议级 PoC、代码实现和自动化回归已经完成。第二轮代码 Review 后的自动化验证结果：`bun test` 52/52 通过，`bun run typecheck`、`bun run build`、`git diff --check` 均通过。第二轮 Review 修复了新建 thread 首轮 Observer 基线竞态、活跃 app-server turn 的固定 30 分钟误杀风险、app-server 暂时不可用时 Telegram callback/update 堵塞，以及 pending ForceReply 过期/重复回复提示错误。

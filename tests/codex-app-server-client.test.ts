@@ -119,6 +119,7 @@ describe("CodexAppServerClient", () => {
 
   test("starts thread and first turn on the same process with textElements", async () => {
     let proc!: MockProcess;
+    let registeredThread: string | null = null;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
       if (message.method === "thread/start") {
@@ -130,6 +131,7 @@ describe("CodexAppServerClient", () => {
         return proc.send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-5.3-codex" } });
       }
       if (message.method === "turn/start") {
+        expect(registeredThread).toBe("thread-1");
         expect(message.params).toEqual({
           threadId: "thread-1",
           input: [{ type: "text", text: "[Telegram init]\nreview this", textElements: [] }],
@@ -145,6 +147,9 @@ describe("CodexAppServerClient", () => {
       cwd: "/repo",
       model: "gpt-5.3-codex",
       prompt: "review this",
+      onThreadStarted: (threadId) => {
+        registeredThread = threadId;
+      },
     })).resolves.toEqual({
       threadId: "thread-1",
       turnId: "turn-1",
@@ -304,5 +309,37 @@ describe("CodexAppServerClient", () => {
     });
     await Bun.sleep(5);
     expect(stringIdResponseSeen).toBe(true);
+  });
+
+  test("keeps an active turn session alive without an arbitrary lifetime timeout", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") {
+        return proc.send({ id: message.id, result: { thread: { id: "thread-long" } } });
+      }
+      if (message.method === "turn/start") {
+        return proc.send({ id: message.id, result: { turn: { id: "turn-long" } } });
+      }
+    });
+
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as any,
+      requestTimeoutMs: 500,
+      turnLifetimeTimeoutMs: null,
+    });
+
+    await client.startThreadAndTurn({
+      projectId: "p1",
+      cwd: "/repo",
+      prompt: "long running task",
+    });
+    await Bun.sleep(10);
+
+    expect(proc.stdinEnded).toBe(false);
+    expect(proc.killed).toBe(false);
+
+    await client.close();
+    expect(proc.stdinEnded).toBe(true);
   });
 });

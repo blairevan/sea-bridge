@@ -63,14 +63,7 @@ describe("DesktopObserver", () => {
     };
     const state = new StateDb(":memory:");
     const messages = new DesktopMessageStore(state);
-    messages.link({
-      chatId: "42",
-      messageId: 90,
-      threadId: "thread-new",
-      turnId: "turn-first",
-      eventKind: "thread_created",
-      eventFingerprint: "created-thread-new",
-    });
+    messages.registerCreatedThread("thread-new");
     const sent: string[] = [];
     const observer = new DesktopObserver(
       { listActive: () => [thread] },
