@@ -53,8 +53,9 @@ async function main(): Promise<void> {
   const desktop = new DesktopSameSessionAdapter(state, sessions, queue, config.activeSessionTtlMs);
   const messages = new DesktopMessageStore(state);
   const queueClient = new ProcessCodexQueueClient(config.codexCliPath);
+  const threadStore = new CodexThreadStore(config.codexStateDbPath);
   const observer = new DesktopObserver(
-    new CodexThreadStore(config.codexStateDbPath),
+    threadStore,
     new ThreadHistoryStore(config.codexThreadHistoryDbPath),
     messages,
     telegramClient,
@@ -71,7 +72,7 @@ async function main(): Promise<void> {
     { activeSessionTtlMs: config.activeSessionTtlMs },
   );
   const hookServer = new HookServer(config.hookSocketPath, hookProvider, logger);
-  const telegram = new TelegramService(config, state, telegramClient, desktop, approvals, messages, queueClient, logger);
+  const telegram = new TelegramService(config, state, telegramClient, desktop, approvals, messages, queueClient, logger, threadStore);
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
