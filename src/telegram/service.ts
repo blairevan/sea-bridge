@@ -496,6 +496,8 @@ export class TelegramService {
           `项目: ${projectName}`,
           `会话: ${started.threadId}`,
           `模型: ${started.model ?? "Codex 默认"}`,
+          "",
+          "💡 提示：首轮任务正在后台执行中；执行期间 Desktop 会提示“在另一个应用中打开”，待收到完成通知后在 Desktop 点击「重试」即可正常接管。",
         ].join("\n"),
       );
     } catch (error) {
