@@ -130,6 +130,9 @@ describe("CodexAppServerClient", () => {
           projectId: "p1",
           cwd: "/repo",
           model: "gpt-5.3-codex",
+          sandbox: "danger-full-access",
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
         });
         return proc.send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-5.3-codex" } });
       }
@@ -138,6 +141,9 @@ describe("CodexAppServerClient", () => {
         expect(message.params).toEqual({
           threadId: "thread-1",
           input: [{ type: "text", text: "[Telegram init]\nreview this", textElements: [] }],
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "dangerFullAccess" },
         });
         proc.send({ id: message.id, result: { turn: { id: "turn-1" } } });
         proc.send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
@@ -168,6 +174,80 @@ describe("CodexAppServerClient", () => {
       "turn/start",
       "thread/unsubscribe",
     ]);
+  });
+
+  test("passes dynamic auto (on-request) permissions to thread/start and turn/start", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/unsubscribe") {
+        return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+      }
+      if (message.method === "thread/start") {
+        expect(message.params).toEqual({
+          projectId: "p1",
+          cwd: "/repo",
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+        });
+        return proc.send({ id: message.id, result: { thread: { id: "thread-auto" } } });
+      }
+      if (message.method === "turn/start") {
+        expect(message.params).toEqual({
+          threadId: "thread-auto",
+          input: [{ type: "text", text: "[Telegram init]\ncheck something", textElements: [] }],
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: ["/repo"],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          },
+        });
+        proc.send({ id: message.id, result: { turn: { id: "turn-auto" } } });
+        proc.send({ method: "turn/completed", params: { threadId: "thread-auto", turn: { id: "turn-auto", status: "completed" } } });
+      }
+    });
+
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as any,
+      requestTimeoutMs: 500,
+      permissionsResolver: () => ({
+        mode: "auto",
+        source: "atom_state_selection",
+        threadStart: {
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+        },
+        turnStart: (cwd: string) => ({
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: cwd ? [cwd] : [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          },
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+        }),
+      }),
+    });
+
+    await expect(client.startThreadAndTurn({
+      projectId: "p1",
+      cwd: "/repo",
+      prompt: "check something",
+    })).resolves.toEqual({
+      threadId: "thread-auto",
+      turnId: "turn-auto",
+      projectId: "p1",
+      cwd: "/repo",
+      model: null,
+    });
   });
 
   test("handles app-server approval requests while the first turn is running", async () => {

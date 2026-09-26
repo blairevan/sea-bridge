@@ -1,4 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  resolveDesktopPermissions,
+  type ResolvedDesktopPermissions,
+} from "./desktop-permissions.ts";
 
 export interface ProjectItem {
   index: number;
@@ -40,6 +44,8 @@ export interface CodexAppServerClientOptions {
   turnLifetimeTimeoutMs?: number | null;
   spawner?: ProcessSpawner;
   inboundRequestHandler?: AppServerInboundRequestHandler;
+  codexHome?: string;
+  permissionsResolver?: () => ResolvedDesktopPermissions;
 }
 
 interface RpcErrorShape {
@@ -374,6 +380,7 @@ export class CodexAppServerClient {
   private readonly spawner: ProcessSpawner;
   private readonly inboundRequestHandler: AppServerInboundRequestHandler | undefined;
   private readonly sessions = new Set<AppServerSession>();
+  private readonly permissionsResolver: () => ResolvedDesktopPermissions;
 
   constructor(
     private readonly codexCliPath: string,
@@ -383,6 +390,7 @@ export class CodexAppServerClient {
     this.turnLifetimeTimeoutMs = options.turnLifetimeTimeoutMs ?? null;
     this.spawner = options.spawner ?? defaultSpawner;
     this.inboundRequestHandler = options.inboundRequestHandler;
+    this.permissionsResolver = options.permissionsResolver ?? (() => resolveDesktopPermissions(options.codexHome));
   }
 
   async listProjects(): Promise<ProjectItem[]> {
@@ -466,14 +474,19 @@ export class CodexAppServerClient {
     cwd: string;
     model?: string;
     prompt: string;
+    permissions?: ResolvedDesktopPermissions;
     onThreadStarted?: (threadId: string) => void;
   }): Promise<StartedThread> {
     const session = await this.openSession();
     let handedToBackground = false;
     try {
+      const permissions = params.permissions ?? this.permissionsResolver();
       const threadParams: Record<string, unknown> = {
         projectId: params.projectId,
         cwd: params.cwd,
+        sandbox: permissions.threadStart.sandbox,
+        approvalPolicy: permissions.threadStart.approvalPolicy,
+        approvalsReviewer: permissions.threadStart.approvalsReviewer,
       };
       if (params.model) threadParams.model = params.model;
 
@@ -485,6 +498,7 @@ export class CodexAppServerClient {
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
       params.onThreadStarted?.(threadId);
 
+      const turnPermissions = permissions.turnStart(params.cwd);
       const turnResponse = await session.request<{ turn?: { id?: string } }>("turn/start", {
         threadId,
         input: [{
@@ -492,6 +506,9 @@ export class CodexAppServerClient {
           text: `[Telegram init]\n${params.prompt}`,
           textElements: [],
         }],
+        approvalPolicy: turnPermissions.approvalPolicy,
+        approvalsReviewer: turnPermissions.approvalsReviewer,
+        sandboxPolicy: turnPermissions.sandboxPolicy,
       });
       const turnId = turnResponse?.turn?.id;
       if (!turnId) throw new Error("app_server_turn_start_missing_id");

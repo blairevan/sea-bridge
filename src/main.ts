@@ -60,6 +60,7 @@ async function main(): Promise<void> {
   const threadStore = new CodexThreadStore(config.codexStateDbPath);
   const appServerClient = new CodexAppServerClient(config.codexCliPath, {
     inboundRequestHandler: createAppServerApprovalHandler(approvals, logger),
+    codexHome: config.codexHome,
   });
   const newThreadManager = new NewThreadManager(
     appServerClient,

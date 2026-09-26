@@ -38,6 +38,7 @@ export interface AppConfig {
   desktopPollIntervalMs: number;
   telegramSummaryMaxChars: number;
   logLevel: "debug" | "info" | "warn" | "error";
+  codexHome: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -46,6 +47,7 @@ export function loadConfig(): AppConfig {
   const codexStateDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_STATE_DB_PATH ?? "~/.codex/state_5.sqlite");
   const codexThreadHistoryDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_THREAD_HISTORY_DB_PATH ?? "~/.codex/thread_history_1.sqlite");
   const codexCliPath = expandHome(process.env.SEA_BRIDGE_CODEX_CLI_PATH ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
+  const codexHome = expandHome(process.env.CODEX_HOME ?? dirname(codexStateDbPath));
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   mkdirSync(dirname(hookSocketPath), { recursive: true, mode: 0o700 });
 
@@ -66,5 +68,6 @@ export function loadConfig(): AppConfig {
     desktopPollIntervalMs: positiveInt("SEA_BRIDGE_DESKTOP_POLL_INTERVAL_MS", 2_000),
     telegramSummaryMaxChars: positiveInt("SEA_BRIDGE_TELEGRAM_SUMMARY_MAX_CHARS", 3_000),
     logLevel,
+    codexHome,
   };
 }
