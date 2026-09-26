@@ -27,6 +27,11 @@ interface TelegramResponse<T> {
   parameters?: { retry_after?: number };
 }
 
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
 export interface InlineButton { text: string; callback_data: string; }
 
 export class TelegramClient {
@@ -77,8 +82,38 @@ export class TelegramClient {
     });
   }
 
-  editMessageText(chatId: string | number, messageId: number, text: string): Promise<TelegramMessage> {
-    return this.call("editMessageText", { chat_id: chatId, message_id: messageId, text });
+  sendForceReply(
+    chatId: string | number,
+    text: string,
+    replyToMessageId?: number,
+    placeholder?: string,
+  ): Promise<TelegramMessage> {
+    return this.call("sendMessage", {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      ...(replyToMessageId !== undefined ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        ...(placeholder ? { input_field_placeholder: placeholder.slice(0, 64) } : {}),
+      },
+    });
+  }
+
+  editMessageText(
+    chatId: string | number,
+    messageId: number,
+    text: string,
+    buttons?: InlineButton[][],
+  ): Promise<TelegramMessage> {
+    return this.call("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      disable_web_page_preview: true,
+      ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
+    });
   }
 
   editMessageReplyMarkup(chatId: string | number, messageId: number, buttons: InlineButton[][] = []): Promise<unknown> {
@@ -87,5 +122,9 @@ export class TelegramClient {
 
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<true> {
     return this.call("answerCallbackQuery", { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
+  }
+
+  setMyCommands(commands: BotCommand[], signal?: AbortSignal): Promise<boolean> {
+    return this.call("setMyCommands", { commands }, signal);
   }
 }

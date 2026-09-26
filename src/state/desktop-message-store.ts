@@ -1,6 +1,6 @@
 import type { StateDb } from "./db.ts";
 
-export type DesktopMessageEventKind = "started" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "reply_prompt";
+export type DesktopMessageEventKind = "started" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "reply_prompt" | "thread_created";
 export type DeliveryStatus = "received" | "dispatching" | "delivered" | "failed" | "delivery_unknown";
 export type TerminalDeliveryStatus = Exclude<DeliveryStatus, "received" | "dispatching">;
 
@@ -88,6 +88,13 @@ export class DesktopMessageStore {
       "SELECT 1 AS found FROM desktop_message_links WHERE event_fingerprint=?",
     ).get(eventFingerprint) as { found: number } | null;
     return row?.found === 1;
+  }
+
+  registerCreatedThread(threadId: string): boolean {
+    const result = this.state.db.query(
+      "INSERT OR IGNORE INTO desktop_observer_cursors(thread_id,rollout_path,byte_offset,schema_fingerprint,last_event_fingerprint,updated_at) VALUES (?, '', 0, 'sea-bridge-created-pending-v1', NULL, ?)",
+    ).run(threadId, Date.now());
+    return result.changes === 1;
   }
 
   getCursor(threadId: string): DesktopObserverCursor | null {

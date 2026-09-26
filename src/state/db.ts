@@ -109,6 +109,29 @@ export class StateDb {
         last_event_fingerprint TEXT,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS user_preferences (
+        telegram_chat_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (telegram_chat_id, key)
+      );
+
+      CREATE TABLE IF NOT EXISTS pending_new_thread_prompts (
+        telegram_chat_id TEXT NOT NULL,
+        prompt_message_id INTEGER NOT NULL,
+        project_id TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','consumed','expired')),
+        consumed_at INTEGER,
+        PRIMARY KEY (telegram_chat_id, prompt_message_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pending_new_thread_expiry
+        ON pending_new_thread_prompts(status, expires_at);
     `);
   }
 

@@ -4,7 +4,7 @@ import { DesktopMessageStore } from "../src/state/desktop-message-store.ts";
 import { TelegramService } from "../src/telegram/service.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { Logger } from "../src/logger.ts";
-import type { TelegramUpdate, TelegramMessage, InlineButton } from "../src/telegram/client.ts";
+import type { TelegramUpdate, TelegramMessage, InlineButton, BotCommand } from "../src/telegram/client.ts";
 
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -19,6 +19,7 @@ interface SentMessage {
 class MockTelegramClient {
   answeredCallbacks: Array<{ id: string; text?: string }> = [];
   sentMessages: SentMessage[] = [];
+  registeredCommands: BotCommand[] = [];
   nextMessageId = 100;
 
   async getUpdates(): Promise<TelegramUpdate[]> {
@@ -28,6 +29,10 @@ class MockTelegramClient {
     const entry: { id: string; text?: string } = { id };
     if (text !== undefined) entry.text = text;
     this.answeredCallbacks.push(entry);
+    return true;
+  }
+  async setMyCommands(commands: BotCommand[]): Promise<boolean> {
+    this.registeredCommands = [...commands];
     return true;
   }
   async sendMessage(chatId: string | number, text: string, buttons?: InlineButton[][], forceReply = false, replyToMessageId?: number): Promise<TelegramMessage> {
@@ -172,6 +177,44 @@ describe("TelegramService - reply callback", () => {
 
     expect(client.sentMessages.length).toBe(1);
     expect(client.sentMessages[0]?.text).toBe("已投递到对应的 Codex Desktop 会话：我的会话标题");
+
+    state.close();
+  });
+
+  test("syncs bot commands on startup", async () => {
+    const state = new StateDb(":memory:");
+    const client = new MockTelegramClient();
+    const messages = new DesktopMessageStore(state);
+    const config: AppConfig = {
+      telegramBotToken: "token",
+      allowedUserId: "123",
+      allowedChatId: "456",
+      dbPath: ":memory:",
+      hookSocketPath: "/tmp/test.sock",
+      approvalTimeoutMs: 1000,
+      activeSessionTtlMs: 1000,
+      codexStateDbPath: "/tmp/state.sqlite",
+      codexThreadHistoryDbPath: "/tmp/history.sqlite",
+      codexCliPath: "/tmp/codex",
+      desktopPollIntervalMs: 1000,
+      telegramSummaryMaxChars: 1000,
+      logLevel: "error",
+    };
+    const service = new TelegramService(
+      config,
+      state,
+      client as any,
+      {} as any,
+      {} as any,
+      messages,
+      {} as any,
+      logger,
+    );
+
+    await (service as any).syncBotCommands();
+    expect(client.registeredCommands).toEqual([
+      { command: "status", description: "查看服务能力与会话状态" },
+    ]);
 
     state.close();
   });
