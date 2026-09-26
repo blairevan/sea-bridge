@@ -16,7 +16,7 @@ export class CodexThreadStore implements CodexThreadReader {
   constructor(private readonly path: string) {}
 
   getThread(threadId: string): CodexThread | null {
-    const db = new Database(this.path, { readonly: true, strict: true });
+    const db = new Database(this.path, { strict: true });
     try {
       const row = db.query(
         "SELECT id,rollout_path,COALESCE(NULLIF(name, ''), NULLIF(title, ''), id) AS title,recency_at_ms FROM threads WHERE id=?",
@@ -34,7 +34,7 @@ export class CodexThreadStore implements CodexThreadReader {
   }
 
   listActive(): CodexThread[] {
-    const db = new Database(this.path, { readonly: true, strict: true });
+    const db = new Database(this.path, { strict: true });
     try {
       const rows = db.query(
         "SELECT id,rollout_path,COALESCE(NULLIF(name, ''), title) AS title,recency_at_ms FROM threads WHERE archived=0 ORDER BY recency_at_ms ASC",
