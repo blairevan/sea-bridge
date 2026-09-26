@@ -324,20 +324,20 @@ class AppServerSession {
         : null;
 
       if (response != null) {
-        this.write({ method, id, response });
+        this.write({ id, result: response });
         return;
       }
 
       if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-        this.write({ method, id, response: { decision: "decline" } });
+        this.write({ id, result: { decision: "decline" } });
         return;
       }
       if (method === "item/permissions/requestApproval") {
-        this.write({ method, id, response: { permissions: {}, scope: "turn" } });
+        this.write({ id, result: { permissions: {}, scope: "turn" } });
         return;
       }
       if (method === "mcpServer/elicitation/request") {
-        this.write({ method, id, response: { action: "decline", content: null, meta: null } });
+        this.write({ id, result: { action: "decline", content: null, meta: null } });
         return;
       }
 
