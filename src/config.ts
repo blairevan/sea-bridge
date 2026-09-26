@@ -46,7 +46,12 @@ export function loadConfig(): AppConfig {
   const hookSocketPath = expandHome(process.env.SEA_BRIDGE_HOOK_SOCKET ?? "~/Library/Application Support/SeaBridge/run/codex-hook.sock");
   const codexStateDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_STATE_DB_PATH ?? "~/.codex/state_5.sqlite");
   const codexThreadHistoryDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_THREAD_HISTORY_DB_PATH ?? "~/.codex/thread_history_1.sqlite");
-  const codexCliPath = expandHome(process.env.SEA_BRIDGE_CODEX_CLI_PATH ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
+  const defaultCodexCliPaths = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+  ];
+  const detectedDefaultCliPath = defaultCodexCliPaths.find((p) => existsSync(p)) ?? defaultCodexCliPaths[0];
+  const codexCliPath = expandHome(process.env.SEA_BRIDGE_CODEX_CLI_PATH ?? detectedDefaultCliPath);
   const codexHome = expandHome(process.env.CODEX_HOME ?? dirname(codexStateDbPath));
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   mkdirSync(dirname(hookSocketPath), { recursive: true, mode: 0o700 });
