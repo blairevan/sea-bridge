@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync as fsReadFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 function expandHome(input: string): string {
@@ -54,20 +54,52 @@ export function isExecutableUsable(filePath: string): boolean {
   }
 }
 
+export function discoverCodexInChatGPTApp(appPath = "/Applications/ChatGPT.app"): string[] {
+  const discovered: string[] = [];
+  const resourcesDir = resolve(appPath, "Contents/Resources");
+  if (!existsSync(resourcesDir)) return discovered;
+
+  try {
+    const entries = readdirSync(resourcesDir);
+    for (const entry of entries) {
+      if (!entry.includes("codex")) continue;
+      const subDir = resolve(resourcesDir, entry);
+      const pkgJson = resolve(subDir, "codex-package.json");
+      if (existsSync(pkgJson)) {
+        try {
+          const pkg = JSON.parse(fsReadFileSync(pkgJson, "utf8")) as { entrypoint?: string };
+          if (typeof pkg.entrypoint === "string" && pkg.entrypoint.trim()) {
+            discovered.push(resolve(subDir, pkg.entrypoint.trim()));
+          }
+        } catch {}
+      }
+      discovered.push(resolve(subDir, "bin/codex"));
+      discovered.push(resolve(subDir, "CodexCLI.app/Contents/MacOS/codex"));
+    }
+  } catch {}
+
+  discovered.push(resolve(resourcesDir, "codex"));
+  return discovered;
+}
+
 export function resolveCodexCli(configuredPath?: string): { path: string; usable: boolean; candidates: string[] } {
   const candidates: string[] = [];
   if (configuredPath && configuredPath.trim()) {
     candidates.push(expandHome(configuredPath.trim()));
   }
-  const defaultPaths = [
-    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-    "/Applications/ChatGPT.app/Contents/Resources/codex",
+
+  // 1. Dynamic discovery from ChatGPT app bundle
+  for (const p of discoverCodexInChatGPTApp()) {
+    if (!candidates.includes(p)) candidates.push(p);
+  }
+
+  // 2. Global CLI locations
+  const globalPaths = [
     expandHome("~/.bun/bin/codex"),
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
   ];
-  for (const p of defaultPaths) {
+  for (const p of globalPaths) {
     if (!candidates.includes(p)) candidates.push(p);
   }
 
@@ -78,7 +110,7 @@ export function resolveCodexCli(configuredPath?: string): { path: string; usable
   }
 
   return {
-    path: candidates[0],
+    path: candidates[0] ?? "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
     usable: false,
     candidates,
   };
