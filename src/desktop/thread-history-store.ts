@@ -33,7 +33,7 @@ export class ThreadHistoryStore implements ThreadHistoryReader {
   constructor(private readonly path: string) {}
 
   latestOrdinal(threadId: string): number {
-    const db = new Database(this.path, { readonly: true, strict: true });
+    const db = new Database(this.path, { strict: true });
     try {
       const row = db.query("SELECT COALESCE(MAX(COALESCE(rollout_end_ordinal, rollout_ordinal)), 0) AS ordinal FROM thread_turns WHERE thread_id=?").get(threadId) as { ordinal: number };
       return Number(row.ordinal);
@@ -44,7 +44,7 @@ export class ThreadHistoryStore implements ThreadHistoryReader {
 
   latestOrdinals(threadIds: string[]): Map<string, number> {
     if (threadIds.length === 0) return new Map();
-    const db = new Database(this.path, { readonly: true, strict: true });
+    const db = new Database(this.path, { strict: true });
     try {
       const placeholders = threadIds.map(() => "?").join(",");
       const rows = db.query(`SELECT thread_id,COALESCE(MAX(COALESCE(rollout_end_ordinal, rollout_ordinal)), 0) AS ordinal FROM thread_turns WHERE thread_id IN (${placeholders}) GROUP BY thread_id`).all(...threadIds) as Array<{ thread_id: string; ordinal: number }>;
@@ -55,7 +55,7 @@ export class ThreadHistoryStore implements ThreadHistoryReader {
   }
 
   listTurnsAfter(threadId: string, ordinal: number): DesktopThreadTurn[] {
-    const db = new Database(this.path, { readonly: true, strict: true });
+    const db = new Database(this.path, { strict: true });
     try {
       const rows = db.query(`
         SELECT turns.thread_id,turns.turn_id,COALESCE(turns.rollout_end_ordinal, turns.rollout_ordinal) AS observation_ordinal,turns.status,turns.completed_at,items.item_json
