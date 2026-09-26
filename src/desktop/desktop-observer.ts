@@ -48,6 +48,7 @@ function notificationText(thread: CodexThread, event: DesktopTurnEvent, maxChars
     failed: "执行失败",
     interrupted: "已中断",
     reply_prompt: "等待回复",
+    thread_created: "已创建",
   };
   return [`Codex: ${thread.title}`, `状态: ${labels[event.kind]}`, summary(event.finalText, maxChars)]
     .filter((line): line is string => Boolean(line))
