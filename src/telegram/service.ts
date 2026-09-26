@@ -10,7 +10,7 @@ import type { CodexThreadReader } from "../desktop/codex-thread-store.ts";
 import type { NewThreadManager } from "../desktop/new-thread-manager.ts";
 import type { ProjectItem, StartedThread } from "../desktop/codex-app-server-client.ts";
 import { isAuthorized } from "../security/auth.ts";
-import { TelegramClient, type TelegramUpdate } from "./client.ts";
+import { TelegramClient, type TelegramUpdate, type BotCommand } from "./client.ts";
 import { renderModelMenu, renderProjectPage } from "./new-thread-ui.ts";
 import { routeThreadReply } from "./thread-reply-router.ts";
 
@@ -64,6 +64,8 @@ export class TelegramService {
       }, 60_000);
     }
 
+    await this.syncBotCommands();
+
     let offset = this.nextOffset();
     let backoffMs = 1000;
 
@@ -91,6 +93,24 @@ export class TelegramService {
     this.abortController?.abort();
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.cleanupTimer = null;
+  }
+
+  private async syncBotCommands(): Promise<void> {
+    const commands: BotCommand[] = this.newThreads
+      ? [
+          { command: "new", description: "在项目下新建 Codex 会话" },
+          { command: "projects", description: "查看可用项目列表" },
+          { command: "model", description: "切换新建会话的默认模型" },
+          { command: "status", description: "查看服务能力与会话状态" },
+        ]
+      : [{ command: "status", description: "查看服务能力与会话状态" }];
+
+    try {
+      await this.client.setMyCommands?.(commands);
+      this.logger.info("telegram_commands_synced", { commandCount: commands.length });
+    } catch (error) {
+      this.logger.warn("telegram_set_my_commands_failed", { error: String(error) });
+    }
   }
 
   private nextOffset(): number {

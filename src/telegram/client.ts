@@ -27,6 +27,11 @@ interface TelegramResponse<T> {
   parameters?: { retry_after?: number };
 }
 
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
 export interface InlineButton { text: string; callback_data: string; }
 
 export class TelegramClient {
@@ -117,5 +122,9 @@ export class TelegramClient {
 
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<true> {
     return this.call("answerCallbackQuery", { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
+  }
+
+  setMyCommands(commands: BotCommand[], signal?: AbortSignal): Promise<boolean> {
+    return this.call("setMyCommands", { commands }, signal);
   }
 }
