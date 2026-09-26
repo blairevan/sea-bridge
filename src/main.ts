@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.ts";
+import { loadConfig, isExecutableUsable } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { StateDb } from "./state/db.ts";
 import { ContinuationQueue } from "./state/continuation-queue.ts";
@@ -71,6 +71,20 @@ async function main(): Promise<void> {
       },
     },
   );
+  if (!isExecutableUsable(config.codexCliPath)) {
+    const errorMsg = [
+      "⚠️ [Sea-Bridge 警告] 未找到可用的 Codex CLI 可执行文件！",
+      `尝试路径: ${config.codexCliPath}`,
+      "请检查 ChatGPT.app 是否安装或路径权限。回复会话与 App Server 功能将受限。",
+    ].join("\n");
+    logger.error("codex_cli_unusable", { path: config.codexCliPath });
+    try {
+      await telegramClient.sendMessage(config.allowedChatId, errorMsg);
+    } catch (e) {
+      logger.warn("telegram_cli_warning_failed", { error: String(e) });
+    }
+  }
+
   const observer = new DesktopObserver(
     threadStore,
     new ThreadHistoryStore(config.codexThreadHistoryDbPath),
