@@ -196,12 +196,11 @@ describe("CodexAppServerClient", () => {
         });
         return;
       }
-      if (message.id === 77 && message.response) {
+      if (message.id === 77 && message.result) {
         approvalResponseSeen = true;
         expect(message).toEqual({
-          method: "item/commandExecution/requestApproval",
           id: 77,
-          response: { decision: "accept" },
+          result: { decision: "accept" },
         });
         proc.send({
           method: "turn/completed",
@@ -253,7 +252,7 @@ describe("CodexAppServerClient", () => {
         }));
         return;
       }
-      if (message.method === "item/commandExecution/requestApproval" && message.response) {
+      if (message.result && typeof message.result === "object" && "decision" in message.result) {
         approvalResponded = true;
         return;
       }
@@ -305,7 +304,7 @@ describe("CodexAppServerClient", () => {
         });
         return;
       }
-      if (message.id === "approval-1" && message.response) {
+      if (message.id === "approval-1" && message.result) {
         stringIdResponseSeen = true;
         proc.send({
           method: "turn/completed",
