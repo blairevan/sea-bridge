@@ -110,6 +110,24 @@ export class StateDb {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS desktop_notification_outbox (
+        event_fingerprint TEXT PRIMARY KEY,
+        telegram_chat_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        event_kind TEXT NOT NULL,
+        message_text TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','sent')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        telegram_message_id INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_desktop_notification_due
+        ON desktop_notification_outbox(status, next_attempt_at, created_at);
+
       CREATE TABLE IF NOT EXISTS user_preferences (
         telegram_chat_id TEXT NOT NULL,
         key TEXT NOT NULL,

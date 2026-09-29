@@ -38,6 +38,9 @@ export class TelegramService {
   private stopped = false;
   private abortController: AbortController | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPollSuccessAt: number | null = null;
+  private lastPollHealthLogAt = 0;
+  private pollFailed = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -64,26 +67,67 @@ export class TelegramService {
       }, 60_000);
     }
 
+    this.logger.info("telegram_polling_started");
     await this.syncBotCommands();
 
     let offset = this.nextOffset();
     let backoffMs = 1000;
+    let processingBackoffMs = 1000;
 
     while (!this.stopped) {
       this.abortController = new AbortController();
+      let updates: TelegramUpdate[];
       try {
-        const updates = await this.client.getUpdates(offset, 25, this.abortController.signal);
-        backoffMs = 1000;
-        for (const update of updates) {
-          await this.processUpdate(update);
-          offset = Math.max(offset, update.update_id + 1);
-        }
-      } catch (error: any) {
-        if (this.stopped || error?.name === "AbortError") break;
-        const retryAfterMs = typeof error?.retryAfter === "number" ? error.retryAfter * 1000 : backoffMs;
+        updates = await this.client.getUpdates(offset, 25, this.abortController.signal);
+      } catch (error) {
+        if (this.stopped || (error as { name?: string })?.name === "AbortError") break;
+        const retryAfterMs = typeof (error as { retryAfter?: number })?.retryAfter === "number"
+          ? (error as { retryAfter: number }).retryAfter * 1000
+          : backoffMs;
         this.logger.warn("telegram_poll_failed", { error: String(error), retryAfterMs });
+        this.pollFailed = true;
         await Bun.sleep(retryAfterMs);
         backoffMs = Math.min(backoffMs * 2, 30_000);
+        continue;
+      }
+
+      const now = Date.now();
+      if (this.pollFailed) {
+        this.logger.info("telegram_polling_recovered", {
+          outageMs: this.lastPollSuccessAt == null ? null : now - this.lastPollSuccessAt,
+        });
+        this.lastPollHealthLogAt = now;
+      } else if (now - this.lastPollHealthLogAt >= 5 * 60_000) {
+        this.logger.info("telegram_polling_healthy", {
+          lastSuccessAt: new Date(now).toISOString(),
+          updatesReceived: updates.length,
+        });
+        this.lastPollHealthLogAt = now;
+      }
+      this.lastPollSuccessAt = now;
+      this.pollFailed = false;
+      backoffMs = 1000;
+      if (updates.length > 0) {
+        this.logger.info("telegram_updates_received", {
+          count: updates.length,
+          firstUpdateId: updates[0]!.update_id,
+          lastUpdateId: updates.at(-1)!.update_id,
+        });
+      }
+      for (const update of updates) {
+        try {
+          await this.processUpdate(update);
+          offset = Math.max(offset, update.update_id + 1);
+          processingBackoffMs = 1000;
+        } catch (error) {
+          this.logger.error("telegram_update_processing_failed", {
+            updateId: update.update_id,
+            error: String(error),
+          });
+          await Bun.sleep(processingBackoffMs);
+          processingBackoffMs = Math.min(processingBackoffMs * 2, 30_000);
+          break;
+        }
       }
     }
   }

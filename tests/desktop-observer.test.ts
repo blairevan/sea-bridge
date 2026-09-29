@@ -9,6 +9,91 @@ import { StateDb } from "../src/state/db.ts";
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 describe("DesktopObserver", () => {
+  test("keeps the entire notification within Telegram's message limit", async () => {
+    const thread: CodexThread = { id: "thread-long", rolloutPath: "history://thread-long", title: "会话标题".repeat(500), updatedAtMs: 1 };
+    const history: ThreadHistoryReader = {
+      latestOrdinal: () => 20,
+      latestOrdinals: () => new Map(),
+      listTurnsAfter: () => [{
+        threadId: "thread-long",
+        turnId: "turn-long",
+        ordinal: 20,
+        status: "completed",
+        completedAtMs: 1,
+        finalText: "回复正文".repeat(1_500),
+      }],
+    };
+    const state = new StateDb(":memory:");
+    const messages = new DesktopMessageStore(state);
+    const sent: string[] = [];
+    const observer = new DesktopObserver(
+      { listActive: () => [thread] },
+      history,
+      messages,
+      { sendMessage: async (_chatId, text) => {
+        sent.push(text);
+        return { message_id: 1, chat: { id: 42, type: "private" } };
+      } },
+      "42",
+      logger,
+      5_000,
+      3_000,
+    );
+
+    await observer.pollOnce();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.length).toBeLessThanOrEqual(4_000);
+    expect(sent[0]).toContain("内容已截断");
+    state.close();
+  });
+
+  test("continues delivering other threads when one Telegram notification fails", async () => {
+    const threads: CodexThread[] = [
+      { id: "thread-fails", rolloutPath: "history://thread-fails", title: "失败会话", updatedAtMs: 1 },
+      { id: "thread-succeeds", rolloutPath: "history://thread-succeeds", title: "正常会话", updatedAtMs: 1 },
+    ];
+    const history: ThreadHistoryReader = {
+      latestOrdinal: () => 20,
+      latestOrdinals: () => new Map(),
+      listTurnsAfter: (threadId) => [{
+        threadId,
+        turnId: `turn-${threadId}`,
+        ordinal: 20,
+        status: "completed",
+        completedAtMs: 1,
+        finalText: "result",
+      }],
+    };
+    const state = new StateDb(":memory:");
+    const messages = new DesktopMessageStore(state);
+    const attempted: string[] = [];
+    const observer = new DesktopObserver(
+      { listActive: () => threads },
+      history,
+      messages,
+      { sendMessage: async (_chatId, text) => {
+        attempted.push(text);
+        if (text.includes("失败会话")) throw new Error("temporary Telegram failure");
+        return { message_id: 2, chat: { id: 42, type: "private" } };
+      } },
+      "42",
+      logger,
+      5_000,
+      3_000,
+    );
+
+    await observer.pollOnce();
+
+    expect(new Set(attempted)).toEqual(new Set([
+      "Codex: 失败会话\n状态: 执行完成\nresult",
+      "Codex: 正常会话\n状态: 执行完成\nresult",
+    ]));
+    expect(messages.findLink("42", 2)?.threadId).toBe("thread-succeeds");
+    expect(messages.listPendingNotifications(Date.now() + 6_000)).toHaveLength(1);
+    state.close();
+  });
+
   test("baselines paginated history then maps a new final reply to the Desktop thread", async () => {
     const thread: CodexThread = { id: "thread-a", rolloutPath: "history://thread-a", title: "Test thread", updatedAtMs: 1 };
     let includeNewTurn = false;

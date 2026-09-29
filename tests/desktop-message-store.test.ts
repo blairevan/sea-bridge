@@ -62,4 +62,47 @@ describe("DesktopMessageStore", () => {
 
     state.close();
   });
+
+  test("retains a failed notification for a scheduled retry", () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
+    const now = Date.now();
+    store.enqueueNotification({
+      eventFingerprint: "notify-fp",
+      chatId: "42",
+      threadId: "thread-a",
+      turnId: "turn-a",
+      eventKind: "completed",
+      text: "notification text",
+    }, now);
+
+    expect(store.listPendingNotifications(now)).toHaveLength(1);
+    expect(store.markNotificationFailed("notify-fp", "temporary_error", now + 5_000, now)).toBe(1);
+    expect(store.listPendingNotifications(now + 4_999)).toHaveLength(0);
+    expect(store.listPendingNotifications(now + 5_000)).toMatchObject([{ attemptCount: 1, text: "notification text" }]);
+    state.close();
+  });
+
+  test("atomically records a sent notification and its reply link", () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
+    store.enqueueNotification({
+      eventFingerprint: "sent-fp",
+      chatId: "42",
+      threadId: "thread-a",
+      turnId: "turn-a",
+      eventKind: "completed",
+      text: "notification text",
+    });
+
+    expect(store.completeNotification("sent-fp", 501)).toBe(true);
+    expect(store.listPendingNotifications()).toHaveLength(0);
+    expect(store.findLink("42", 501)).toMatchObject({
+      threadId: "thread-a",
+      turnId: "turn-a",
+      eventKind: "completed",
+      eventFingerprint: "sent-fp",
+    });
+    state.close();
+  });
 });

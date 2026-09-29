@@ -29,8 +29,112 @@ export interface DesktopObserverCursor {
   lastEventFingerprint: string | null;
 }
 
+export interface PendingDesktopNotification {
+  eventFingerprint: string;
+  chatId: string;
+  threadId: string;
+  turnId: string;
+  eventKind: DesktopMessageEventKind;
+  text: string;
+  attemptCount: number;
+  nextAttemptAt: number;
+}
+
+type DesktopNotificationInput = Omit<PendingDesktopNotification, "attemptCount" | "nextAttemptAt">;
+
 export class DesktopMessageStore {
   constructor(private readonly state: StateDb) {}
+
+  /** Adds a redacted Telegram notification to the durable delivery queue once. */
+  enqueueNotification(notification: DesktopNotificationInput, now = Date.now()): boolean {
+    const result = this.state.db.query(
+      `INSERT OR IGNORE INTO desktop_notification_outbox(
+        event_fingerprint,telegram_chat_id,thread_id,turn_id,event_kind,message_text,status,
+        attempt_count,next_attempt_at,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,'pending',0,?,?,?)`,
+    ).run(
+      notification.eventFingerprint,
+      notification.chatId,
+      notification.threadId,
+      notification.turnId,
+      notification.eventKind,
+      notification.text,
+      now,
+      now,
+      now,
+    );
+    return result.changes === 1;
+  }
+
+  /** Returns due, unsent notifications in creation order. */
+  listPendingNotifications(now = Date.now(), limit = 50): PendingDesktopNotification[] {
+    const rows = this.state.db.query(
+      `SELECT event_fingerprint,telegram_chat_id,thread_id,turn_id,event_kind,message_text,attempt_count,next_attempt_at
+       FROM desktop_notification_outbox
+       WHERE status='pending' AND next_attempt_at<=?
+       ORDER BY created_at,event_fingerprint LIMIT ?`,
+    ).all(now, limit) as Array<{
+      event_fingerprint: string;
+      telegram_chat_id: string;
+      thread_id: string;
+      turn_id: string;
+      event_kind: DesktopMessageEventKind;
+      message_text: string;
+      attempt_count: number;
+      next_attempt_at: number;
+    }>;
+    return rows.map((row) => ({
+      eventFingerprint: row.event_fingerprint,
+      chatId: row.telegram_chat_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      eventKind: row.event_kind,
+      text: row.message_text,
+      attemptCount: Number(row.attempt_count),
+      nextAttemptAt: Number(row.next_attempt_at),
+    }));
+  }
+
+  /** Records a delivery failure and schedules its next retry. */
+  markNotificationFailed(eventFingerprint: string, error: string, retryAt: number, now = Date.now()): number {
+    this.state.db.query(
+      `UPDATE desktop_notification_outbox
+       SET attempt_count=attempt_count+1,next_attempt_at=?,last_error=?,updated_at=?
+       WHERE event_fingerprint=? AND status='pending'`,
+    ).run(retryAt, error.slice(0, 500), now, eventFingerprint);
+    const row = this.state.db.query(
+      "SELECT attempt_count FROM desktop_notification_outbox WHERE event_fingerprint=?",
+    ).get(eventFingerprint) as { attempt_count: number } | null;
+    return Number(row?.attempt_count ?? 0);
+  }
+
+  /** Atomically stores the reply link and marks its notification as sent. */
+  completeNotification(eventFingerprint: string, messageId: number, now = Date.now()): boolean {
+    const complete = this.state.db.transaction(() => {
+      const row = this.state.db.query(
+        `SELECT telegram_chat_id,thread_id,turn_id,event_kind
+         FROM desktop_notification_outbox WHERE event_fingerprint=? AND status='pending'`,
+      ).get(eventFingerprint) as {
+        telegram_chat_id: string;
+        thread_id: string;
+        turn_id: string;
+        event_kind: DesktopMessageEventKind;
+      } | null;
+      if (!row) return false;
+      this.state.db.query(
+        `INSERT OR IGNORE INTO desktop_message_links(
+          telegram_chat_id,telegram_message_id,thread_id,turn_id,event_kind,event_fingerprint,sent_at
+        ) VALUES (?,?,?,?,?,?,?)`,
+      ).run(row.telegram_chat_id, messageId, row.thread_id, row.turn_id, row.event_kind, eventFingerprint, now);
+      const result = this.state.db.query(
+        `UPDATE desktop_notification_outbox
+         SET status='sent',message_text='',telegram_message_id=?,last_error=NULL,updated_at=?
+         WHERE event_fingerprint=? AND status='pending'`,
+      ).run(messageId, now, eventFingerprint);
+      return result.changes === 1;
+    });
+    return complete();
+  }
 
   link(link: DesktopMessageLink): boolean {
     const result = this.state.db.query(
