@@ -19,6 +19,7 @@ const config: AppConfig = {
   codexStateDbPath: ":memory:",
   codexThreadHistoryDbPath: ":memory:",
   codexCliPath: "/codex",
+  codexHome: "/tmp/codex-home",
   approvalTimeoutMs: 5000,
   activeSessionTtlMs: 5000,
   desktopPollIntervalMs: 5000,

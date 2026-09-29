@@ -4,7 +4,7 @@ import { DesktopMessageStore } from "../src/state/desktop-message-store.ts";
 import { TelegramService } from "../src/telegram/service.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { Logger } from "../src/logger.ts";
-import type { TelegramUpdate, TelegramMessage, InlineButton, BotCommand } from "../src/telegram/client.ts";
+import type { TelegramClient, TelegramUpdate, TelegramMessage, InlineButton, BotCommand } from "../src/telegram/client.ts";
 
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -49,6 +49,110 @@ class MockTelegramClient {
 }
 
 describe("TelegramService - reply callback", () => {
+  test("logs a healthy receive poll even when Telegram returns no updates", async () => {
+    const state = new StateDb(":memory:");
+    const events: string[] = [];
+    const serviceLogger: Logger = {
+      debug() {},
+      info: (event) => events.push(event),
+      warn: (event) => events.push(event),
+      error: (event) => events.push(event),
+    };
+    const client = new MockTelegramClient();
+    let service!: TelegramService;
+    client.getUpdates = async () => {
+      service.stop();
+      return [];
+    };
+    service = new TelegramService(
+      {
+        telegramBotToken: "token",
+        allowedUserId: "123",
+        allowedChatId: "456",
+        dbPath: ":memory:",
+        hookSocketPath: "/tmp/test.sock",
+        codexStateDbPath: ":memory:",
+        codexThreadHistoryDbPath: ":memory:",
+        codexCliPath: "/bin/true",
+        codexHome: "/tmp/codex-home",
+        approvalTimeoutMs: 5000,
+        activeSessionTtlMs: 5000,
+        desktopPollIntervalMs: 5000,
+        telegramSummaryMaxChars: 1000,
+        logLevel: "error",
+      },
+      state,
+      client as unknown as TelegramClient,
+      {} as never,
+      {} as never,
+      new DesktopMessageStore(state),
+      {} as never,
+      serviceLogger,
+    );
+
+    await service.run();
+
+    expect(events).toContain("telegram_polling_healthy");
+    state.close();
+  });
+
+  test("distinguishes update-handler failures from receive-poll failures", async () => {
+    const state = new StateDb(":memory:");
+    const events: string[] = [];
+    const serviceLogger: Logger = {
+      debug() {},
+      info: (event) => events.push(event),
+      warn: (event) => events.push(event),
+      error: (event) => events.push(event),
+    };
+    const client = new MockTelegramClient();
+    let service!: TelegramService;
+    client.getUpdates = async () => {
+      service.stop();
+      return [{
+        update_id: 7,
+        message: {
+          message_id: 8,
+          from: { id: 123 },
+          chat: { id: 456, type: "private" },
+          text: "/status",
+        },
+      }];
+    };
+    service = new TelegramService(
+      {
+        telegramBotToken: "token",
+        allowedUserId: "123",
+        allowedChatId: "456",
+        dbPath: ":memory:",
+        hookSocketPath: "/tmp/test.sock",
+        codexStateDbPath: ":memory:",
+        codexThreadHistoryDbPath: ":memory:",
+        codexCliPath: "/bin/true",
+        codexHome: "/tmp/codex-home",
+        approvalTimeoutMs: 5000,
+        activeSessionTtlMs: 5000,
+        desktopPollIntervalMs: 5000,
+        telegramSummaryMaxChars: 1000,
+        logLevel: "error",
+      },
+      state,
+      client as unknown as TelegramClient,
+      {} as never,
+      {} as never,
+      new DesktopMessageStore(state),
+      {} as never,
+      serviceLogger,
+    );
+
+    await service.run();
+
+    expect(events).toContain("telegram_updates_received");
+    expect(events).toContain("telegram_update_processing_failed");
+    expect(events).not.toContain("telegram_poll_failed");
+    state.close();
+  });
+
   test("handles reply callback by answering callback and sending prompt with forceReply", async () => {
     const state = new StateDb(":memory:");
     const messages = new DesktopMessageStore(state);
@@ -62,6 +166,7 @@ describe("TelegramService - reply callback", () => {
       codexStateDbPath: ":memory:",
       codexThreadHistoryDbPath: ":memory:",
       codexCliPath: "/bin/true",
+      codexHome: "/tmp/codex-home",
       approvalTimeoutMs: 5000,
       activeSessionTtlMs: 5000,
       desktopPollIntervalMs: 5000,
@@ -126,6 +231,7 @@ describe("TelegramService - reply callback", () => {
       codexStateDbPath: ":memory:",
       codexThreadHistoryDbPath: ":memory:",
       codexCliPath: "/bin/true",
+      codexHome: "/tmp/codex-home",
       approvalTimeoutMs: 5000,
       activeSessionTtlMs: 5000,
       desktopPollIntervalMs: 5000,
@@ -196,6 +302,7 @@ describe("TelegramService - reply callback", () => {
       codexStateDbPath: "/tmp/state.sqlite",
       codexThreadHistoryDbPath: "/tmp/history.sqlite",
       codexCliPath: "/tmp/codex",
+      codexHome: "/tmp/codex-home",
       desktopPollIntervalMs: 1000,
       telegramSummaryMaxChars: 1000,
       logLevel: "error",

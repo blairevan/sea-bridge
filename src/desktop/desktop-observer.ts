@@ -7,6 +7,8 @@ import type { CodexThread, CodexThreadReader } from "./codex-thread-store.ts";
 import type { DesktopThreadTurn, ThreadHistoryReader } from "./thread-history-store.ts";
 
 const SCHEMA_FINGERPRINT = "codex-thread-history-0.154.0-alpha.6.2-v1";
+const TELEGRAM_SAFE_MESSAGE_LENGTH = 4_000;
+const TITLE_SAFE_LENGTH = 900;
 
 interface DesktopTurnEvent {
   turnId: string;
@@ -40,6 +42,7 @@ function summary(value: string | null, maxChars: number): string | null {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n内容已截断`;
 }
 
+/** Builds a Telegram-safe notification while preserving its identifying header. */
 function notificationText(thread: CodexThread, event: DesktopTurnEvent, maxChars: number): string {
   const labels: Record<DesktopMessageEventKind, string> = {
     started: "开始执行",
@@ -50,9 +53,19 @@ function notificationText(thread: CodexThread, event: DesktopTurnEvent, maxChars
     reply_prompt: "等待回复",
     thread_created: "已创建",
   };
-  return [`Codex: ${thread.title}`, `状态: ${labels[event.kind]}`, summary(event.finalText, maxChars)]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
+  const title = thread.title.length <= TITLE_SAFE_LENGTH
+    ? thread.title
+    : `${thread.title.slice(0, TITLE_SAFE_LENGTH - 8)}…[标题已截断]`;
+  const header = `Codex: ${title}\n状态: ${labels[event.kind]}`;
+  const body = summary(event.finalText, maxChars);
+  if (!body) return header;
+
+  const bodyBudget = TELEGRAM_SAFE_MESSAGE_LENGTH - header.length - 1;
+  if (body.length <= bodyBudget) return `${header}\n${body}`;
+
+  const suffix = "\n[内容已截断]";
+  const truncatedBody = body.slice(0, Math.max(0, bodyBudget - suffix.length));
+  return `${header}\n${truncatedBody}${suffix}`;
 }
 
 export class DesktopObserver {
@@ -97,6 +110,7 @@ export class DesktopObserver {
       });
     }
     for (const thread of threads) await this.observeThread(thread);
+    await this.deliverPendingNotifications();
     this.initialized = true;
   }
 
@@ -126,17 +140,14 @@ export class DesktopObserver {
       if (!event) continue;
       lastEventFingerprint = event.fingerprint;
       if (this.messages.hasEventFingerprint(event.fingerprint)) continue;
-      const buttons: InlineButton[][] = [[{ text: "💬 回复", callback_data: "reply:" + thread.id }]];
-      const message = await this.telegram.sendMessage(this.chatId, notificationText(thread, event, this.summaryMaxChars), buttons, false);
-      this.messages.link({
+      this.messages.enqueueNotification({
         chatId: this.chatId,
-        messageId: message.message_id,
         threadId: thread.id,
         turnId: event.turnId,
         eventKind: event.kind,
         eventFingerprint: event.fingerprint,
+        text: notificationText(thread, event, this.summaryMaxChars),
       });
-      this.logger.info("desktop_message_notified", { threadId: thread.id, turnId: event.turnId, kind: event.kind });
     }
     this.messages.saveCursor({
       threadId: thread.id,
@@ -145,6 +156,39 @@ export class DesktopObserver {
       schemaFingerprint: SCHEMA_FINGERPRINT,
       lastEventFingerprint,
     });
+  }
+
+  /** Sends due outbox entries independently so one failure cannot block other threads. */
+  private async deliverPendingNotifications(): Promise<void> {
+    for (const notification of this.messages.listPendingNotifications()) {
+      const buttons: InlineButton[][] = [[{ text: "💬 回复", callback_data: "reply:" + notification.threadId }]];
+      try {
+        const message = await this.telegram.sendMessage(notification.chatId, notification.text, buttons, false);
+        this.messages.completeNotification(notification.eventFingerprint, message.message_id);
+        this.logger.info("desktop_message_notified", {
+          threadId: notification.threadId,
+          turnId: notification.turnId,
+          kind: notification.eventKind,
+          textLength: notification.text.length,
+        });
+      } catch (error) {
+        const retryDelayMs = Math.min(5_000 * 2 ** Math.min(notification.attemptCount, 6), 5 * 60_000);
+        const attemptCount = this.messages.markNotificationFailed(
+          notification.eventFingerprint,
+          String(error),
+          Date.now() + retryDelayMs,
+        );
+        this.logger.warn("desktop_notification_delivery_failed", {
+          threadId: notification.threadId,
+          turnId: notification.turnId,
+          kind: notification.eventKind,
+          attemptCount,
+          retryDelayMs,
+          textLength: notification.text.length,
+          error: String(error),
+        });
+      }
+    }
   }
 
   private baselineThread(thread: CodexThread, ordinal: number): void {
