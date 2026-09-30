@@ -1,0 +1,345 @@
+import { createConnection } from "node:net";
+import { lstat, readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type {
+  DshEventMetadata,
+  DshFollowSnapshot,
+  DshHistoryPage,
+  DshHostHealth,
+  DshModelCatalog,
+  DshModelGroup,
+  DshProject,
+  DshSessionSummary,
+} from "./types.ts";
+import { DshHostClientError } from "./types.ts";
+
+const DEFAULT_TIMEOUT_MS = 3_500;
+const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,160}$/;
+
+export interface DshWebHostClientOptions {
+  socketPath: string;
+  tokenPath: string;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+}
+
+interface ConnectorRequest {
+  op: string;
+  sessionId?: string;
+  throughSeq?: number;
+  beforeSeq?: number;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function record(value: unknown): JsonRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new DshHostClientError("invalid_response", "dsh connector returned an invalid object");
+  }
+  return value as JsonRecord;
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new DshHostClientError("invalid_response", `dsh connector returned invalid ${field}`);
+  }
+  return value;
+}
+
+function finiteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new DshHostClientError("invalid_response", `dsh connector returned invalid ${field}`);
+  }
+  return value;
+}
+
+function safeInteger(value: unknown, field: string, minimum = 0): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    throw new DshHostClientError("invalid_response", `dsh connector returned invalid ${field}`);
+  }
+  return value as number;
+}
+
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new DshHostClientError("invalid_response", `dsh connector returned invalid ${field}`);
+  }
+  return value;
+}
+
+function array(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new DshHostClientError("invalid_response", `dsh connector returned invalid ${field}`);
+  }
+  return value;
+}
+
+function assertSessionId(sessionId: string): void {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new DshHostClientError("invalid_request", "invalid dsh session id");
+  }
+}
+
+function eventMetadata(value: unknown): DshEventMetadata {
+  const row = record(value);
+  return {
+    type: requiredString(row.type, "event.type"),
+    seq: safeInteger(row.seq, "event.seq"),
+    time: finiteNumber(row.time, "event.time"),
+  };
+}
+
+function parseProjects(payload: unknown): DshProject[] {
+  const body = record(payload);
+  const items = array(body.items, "projects.items");
+  safeInteger(body.totalCount, "projects.totalCount");
+  return items.map((value) => {
+    const item = record(value);
+    return {
+      id: requiredString(item.id, "project.id"),
+      title: requiredString(item.title, "project.title"),
+      sessionCount: safeInteger(item.sessionCount, "project.sessionCount"),
+    };
+  });
+}
+
+function parseSessions(payload: unknown): DshSessionSummary[] {
+  const body = record(payload);
+  const items = array(body.items, "sessions.items");
+  safeInteger(body.totalCount, "sessions.totalCount");
+  return items.map((value) => {
+    const item = record(value);
+    return {
+      sessionId: requiredString(item.sessionId, "session.sessionId"),
+      updatedAt: finiteNumber(item.updatedAt, "session.updatedAt"),
+      running: requiredBoolean(item.running, "session.running"),
+      blank: requiredBoolean(item.blank, "session.blank"),
+    };
+  });
+}
+
+function parseEvents(payload: JsonRecord): DshEventMetadata[] {
+  return array(payload.events, "history.events").map(eventMetadata);
+}
+
+function parseFollow(payload: unknown): DshFollowSnapshot {
+  const body = record(payload);
+  return {
+    cursor: safeInteger(body.cursor, "follow.cursor"),
+    hasMore: requiredBoolean(body.hasMore, "follow.hasMore"),
+    truncated: requiredBoolean(body.truncated, "follow.truncated"),
+    events: parseEvents(body),
+  };
+}
+
+function parsePage(payload: unknown): DshHistoryPage {
+  const body = record(payload);
+  return {
+    hasMore: requiredBoolean(body.hasMore, "page.hasMore"),
+    truncated: requiredBoolean(body.truncated, "page.truncated"),
+    events: parseEvents(body),
+  };
+}
+
+function parseModels(payload: unknown): DshModelCatalog {
+  const body = record(payload);
+  const selected = record(body.default);
+  const groups: DshModelGroup[] = array(body.groups, "models.groups").map((value) => {
+    const group = record(value);
+    return {
+      id: requiredString(group.id, "modelGroup.id"),
+      name: requiredString(group.name, "modelGroup.name"),
+      models: array(group.models, "modelGroup.models").map((modelValue) => {
+        const model = record(modelValue);
+        return {
+          id: requiredString(model.id, "model.id"),
+          name: requiredString(model.name, "model.name"),
+        };
+      }),
+    };
+  });
+  const selection = {
+    provider: requiredString(selected.provider, "models.default.provider"),
+    model: requiredString(selected.model, "models.default.model"),
+  } as DshModelCatalog["default"];
+  if (typeof selected.reasoningEffort === "string") {
+    selection.reasoningEffort = selected.reasoningEffort;
+  }
+  return {
+    default: selection,
+    groups,
+    failureCount: safeInteger(body.failureCount, "models.failureCount"),
+  };
+}
+
+function mapConnectorError(error: string): DshHostClientError {
+  if (error === "unauthorized") {
+    return new DshHostClientError("unauthorized", "dsh connector authentication failed");
+  }
+  if (error === "invalid_request") {
+    return new DshHostClientError("invalid_request", "dsh connector rejected the request");
+  }
+  if (error === "unsupported") {
+    return new DshHostClientError("contract_unsupported", "dsh connector operation is unavailable");
+  }
+  if (error === "read_unavailable") {
+    return new DshHostClientError("provider_error", "dsh Host read operation is unavailable");
+  }
+  return new DshHostClientError("provider_error", "dsh connector returned an unknown error");
+}
+
+async function assertPrivateRuntimePath(path: string, expected: "socket" | "file"): Promise<void> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new DshHostClientError("host_unavailable", "dsh connector runtime is unavailable");
+    }
+    throw error;
+  }
+
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid !== null && info.uid !== uid) {
+    throw new DshHostClientError("unsafe_runtime_path", "dsh connector runtime owner mismatch");
+  }
+  if ((info.mode & 0o077) !== 0) {
+    throw new DshHostClientError("unsafe_runtime_path", "dsh connector runtime permissions are too broad");
+  }
+  if (expected === "socket" ? !info.isSocket() : !info.isFile()) {
+    throw new DshHostClientError("unsafe_runtime_path", "dsh connector runtime path has the wrong type");
+  }
+
+  const parent = await lstat(dirname(path));
+  if (!parent.isDirectory() || (parent.mode & 0o077) !== 0 || (uid !== null && parent.uid !== uid)) {
+    throw new DshHostClientError("unsafe_runtime_path", "dsh connector runtime directory is not private");
+  }
+}
+
+export class DshWebHostClient {
+  readonly socketPath: string;
+  readonly tokenPath: string;
+  private readonly timeoutMs: number;
+  private readonly maxResponseBytes: number;
+
+  constructor(options: DshWebHostClientOptions) {
+    this.socketPath = options.socketPath;
+    this.tokenPath = options.tokenPath;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs <= 0) {
+      throw new DshHostClientError("invalid_request", "invalid dsh connector timeout");
+    }
+    if (!Number.isSafeInteger(this.maxResponseBytes) || this.maxResponseBytes <= 0) {
+      throw new DshHostClientError("invalid_request", "invalid dsh connector response limit");
+    }
+  }
+
+  async health(): Promise<DshHostHealth> {
+    const response = record(await this.request({ op: "health" }));
+    const status = requiredString(response.status, "health.status");
+    const protocol = safeInteger(response.protocol, "health.protocol", 1);
+    if (status !== "mounted" || protocol !== 1) {
+      throw new DshHostClientError("contract_unsupported", "unsupported dsh connector protocol");
+    }
+    return { status: "mounted", protocol };
+  }
+
+  async listProjects(): Promise<DshProject[]> {
+    return parseProjects(await this.request({ op: "projects.list" }));
+  }
+
+  async listSessions(): Promise<DshSessionSummary[]> {
+    return parseSessions(await this.request({ op: "sessions.list" }));
+  }
+
+  async followSnapshot(sessionId: string): Promise<DshFollowSnapshot> {
+    assertSessionId(sessionId);
+    return parseFollow(await this.request({ op: "history.follow", sessionId }));
+  }
+
+  async pageHistory(sessionId: string, throughSeq: number, beforeSeq?: number): Promise<DshHistoryPage> {
+    assertSessionId(sessionId);
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < -1) {
+      throw new DshHostClientError("invalid_request", "invalid dsh history throughSeq");
+    }
+    if (beforeSeq !== undefined && (!Number.isSafeInteger(beforeSeq) || beforeSeq < 0)) {
+      throw new DshHostClientError("invalid_request", "invalid dsh history beforeSeq");
+    }
+    const request: ConnectorRequest = { op: "history.page", sessionId, throughSeq };
+    if (beforeSeq !== undefined) request.beforeSeq = beforeSeq;
+    return parsePage(await this.request(request));
+  }
+
+  async listModels(): Promise<DshModelCatalog> {
+    return parseModels(await this.request({ op: "models.catalog" }));
+  }
+
+  private async request(request: ConnectorRequest): Promise<unknown> {
+    await assertPrivateRuntimePath(this.socketPath, "socket");
+    await assertPrivateRuntimePath(this.tokenPath, "file");
+    const token = await readFile(this.tokenPath, "utf8");
+    if (token.length < 32 || token.length > 512 || /[\r\n]/.test(token)) {
+      throw new DshHostClientError("unsafe_runtime_path", "dsh connector token file is invalid");
+    }
+
+    const payload = JSON.stringify({ ...request, token }) + "\n";
+    return await new Promise<unknown>((resolve, reject) => {
+      const socket = createConnection(this.socketPath);
+      let settled = false;
+      let response = "";
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.removeAllListeners();
+        socket.destroy();
+        callback();
+      };
+      const timer = setTimeout(() => {
+        finish(() => reject(new DshHostClientError("timeout", "dsh connector request timed out")));
+      }, this.timeoutMs);
+
+      socket.setEncoding("utf8");
+      socket.on("connect", () => socket.write(payload));
+      socket.on("data", (chunk) => {
+        response += chunk;
+        if (Buffer.byteLength(response) > this.maxResponseBytes) {
+          finish(() => reject(new DshHostClientError("invalid_response", "dsh connector response exceeded the limit")));
+          return;
+        }
+        const newline = response.indexOf("\n");
+        if (newline < 0) return;
+        const line = response.slice(0, newline);
+        finish(() => {
+          try {
+            const decoded = record(JSON.parse(line));
+            if (decoded.ok !== true) {
+              reject(mapConnectorError(typeof decoded.error === "string" ? decoded.error : "unknown"));
+              return;
+            }
+            resolve(decoded);
+          } catch (error) {
+            reject(error instanceof DshHostClientError
+              ? error
+              : new DshHostClientError("invalid_response", "dsh connector returned invalid JSON"));
+          }
+        });
+      });
+      socket.on("error", (error: NodeJS.ErrnoException) => {
+        finish(() => reject(new DshHostClientError(
+          error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "ECONNRESET"
+            ? "host_unavailable"
+            : "provider_error",
+          "dsh connector transport failed",
+        )));
+      });
+      socket.on("end", () => {
+        if (!settled) {
+          finish(() => reject(new DshHostClientError("invalid_response", "dsh connector closed without a response")));
+        }
+      });
+    });
+  }
+}
