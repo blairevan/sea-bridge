@@ -6,16 +6,20 @@ original_plist="$HOME/Library/LaunchAgents/com.deepseek.dsh.plist"
 trial_dir=${2:?pass the validated private trial directory}
 trial_plist="$trial_dir/dry-run.plist"
 original_copy="$trial_dir/original.plist"
-socket_path="$HOME/.dsh/run/sea-bridge-poc.sock"
-token_path="$HOME/.dsh/run/sea-bridge-poc.token"
+socket_path="$HOME/.dsh/run/sea-bridge.sock"
+token_path="$HOME/.dsh/run/sea-bridge.token"
 job="gui/$(id -u)/com.deepseek.dsh"
 domain="gui/$(id -u)"
 expected_args="$HOME/.nvm/versions/node/v22.19.0/bin/node $HOME/.nvm/versions/node/v22.19.0/bin/dsh web --no-open --port 3080 --host 127.0.0.1"
 probe=probe-health.mjs
 if [[ "${1:-health}" == reads ]]; then
   probe=probe-reads.mjs
+elif [[ "${1:-health}" == live ]]; then
+  probe=probe-live.mjs
+elif [[ "${1:-health}" == terminal ]]; then
+  probe=probe-terminal.mjs
 elif [[ "${1:-health}" != health ]]; then
-  printf 'Expected health or reads probe\n' >&2
+  printf 'Expected health, reads, live, or terminal probe\n' >&2
   exit 2
 fi
 switched=0

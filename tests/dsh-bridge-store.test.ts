@@ -61,7 +61,9 @@ describe("DshBridgeStore", () => {
     state = new StateDb(dbPath);
 
     for (const table of codexTables) {
-      expect(tableRows(state.db, table)).toEqual(before[table]);
+      const previousRows = before[table];
+      if (!previousRows) throw new Error(`missing pre-migration snapshot for ${table}`);
+      expect(tableRows(state.db, table)).toEqual(previousRows);
     }
     for (const table of [
       "dsh_message_links",

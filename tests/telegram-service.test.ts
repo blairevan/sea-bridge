@@ -80,6 +80,11 @@ describe("TelegramService - reply callback", () => {
         desktopPollIntervalMs: 5000,
         telegramSummaryMaxChars: 1000,
         logLevel: "error",
+      dshReadOnlyEnabled: false,
+      dshNotificationsEnabled: false,
+      dshSocketPath: "/tmp/dsh.sock",
+      dshTokenPath: "/tmp/dsh.token",
+      dshPollIntervalMs: 10_000,
       },
       state,
       client as unknown as TelegramClient,
@@ -135,6 +140,11 @@ describe("TelegramService - reply callback", () => {
         desktopPollIntervalMs: 5000,
         telegramSummaryMaxChars: 1000,
         logLevel: "error",
+      dshReadOnlyEnabled: false,
+      dshNotificationsEnabled: false,
+      dshSocketPath: "/tmp/dsh.sock",
+      dshTokenPath: "/tmp/dsh.token",
+      dshPollIntervalMs: 10_000,
       },
       state,
       client as unknown as TelegramClient,
@@ -172,6 +182,11 @@ describe("TelegramService - reply callback", () => {
       desktopPollIntervalMs: 5000,
       telegramSummaryMaxChars: 1000,
       logLevel: "error",
+      dshReadOnlyEnabled: false,
+      dshNotificationsEnabled: false,
+      dshSocketPath: "/tmp/dsh.sock",
+      dshTokenPath: "/tmp/dsh.token",
+      dshPollIntervalMs: 10_000,
     };
 
     const service = new TelegramService(
@@ -237,6 +252,11 @@ describe("TelegramService - reply callback", () => {
       desktopPollIntervalMs: 5000,
       telegramSummaryMaxChars: 1000,
       logLevel: "error",
+      dshReadOnlyEnabled: false,
+      dshNotificationsEnabled: false,
+      dshSocketPath: "/tmp/dsh.sock",
+      dshTokenPath: "/tmp/dsh.token",
+      dshPollIntervalMs: 10_000,
     };
 
     messages.link({
@@ -306,6 +326,11 @@ describe("TelegramService - reply callback", () => {
       desktopPollIntervalMs: 1000,
       telegramSummaryMaxChars: 1000,
       logLevel: "error",
+      dshReadOnlyEnabled: false,
+      dshNotificationsEnabled: false,
+      dshSocketPath: "/tmp/dsh.sock",
+      dshTokenPath: "/tmp/dsh.token",
+      dshPollIntervalMs: 10_000,
     };
     const service = new TelegramService(
       config,

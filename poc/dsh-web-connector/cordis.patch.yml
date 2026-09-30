@@ -1,3 +1,3 @@
 - insert:
-    - id: sea-bridge-dsh-web-connector-poc
+    - id: sea-bridge-dsh-web-connector
       name: ./index.mjs

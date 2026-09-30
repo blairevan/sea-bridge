@@ -6,12 +6,13 @@ import type {
   DshFollowSnapshot,
   DshHistoryPage,
   DshHostHealth,
+  DshLiveWindow,
   DshModelCatalog,
   DshModelGroup,
   DshProject,
   DshSessionSummary,
 } from "./types.ts";
-import { DshHostClientError } from "./types.ts";
+import { DSH_CONNECTOR_VERSION, DshHostClientError } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 3_500;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
@@ -83,17 +84,30 @@ function assertSessionId(sessionId: string): void {
 
 function eventMetadata(value: unknown): DshEventMetadata {
   const row = record(value);
-  return {
+  const event: DshEventMetadata = {
     type: requiredString(row.type, "event.type"),
     seq: safeInteger(row.seq, "event.seq"),
     time: finiteNumber(row.time, "event.time"),
   };
+  if (event.type === "turn/end") {
+    const reason = row.reasonKind;
+    if (reason !== undefined && reason !== "completed" && reason !== "error" &&
+      reason !== "aborted" && reason !== "max-tokens" && reason !== "stop" &&
+      reason !== "tool-calls" && reason !== "unknown") {
+      throw new DshHostClientError("invalid_response", "dsh connector returned invalid turn reason");
+    }
+    if (reason !== undefined) event.reasonKind = reason;
+  }
+  return event;
 }
 
 function parseProjects(payload: unknown): DshProject[] {
   const body = record(payload);
   const items = array(body.items, "projects.items");
-  safeInteger(body.totalCount, "projects.totalCount");
+  const totalCount = safeInteger(body.totalCount, "projects.totalCount");
+  if (totalCount !== items.length) {
+    throw new DshHostClientError("contract_unsupported", "dsh connector project listing is incomplete");
+  }
   return items.map((value) => {
     const item = record(value);
     return {
@@ -107,7 +121,10 @@ function parseProjects(payload: unknown): DshProject[] {
 function parseSessions(payload: unknown): DshSessionSummary[] {
   const body = record(payload);
   const items = array(body.items, "sessions.items");
-  safeInteger(body.totalCount, "sessions.totalCount");
+  const totalCount = safeInteger(body.totalCount, "sessions.totalCount");
+  if (totalCount !== items.length) {
+    throw new DshHostClientError("contract_unsupported", "dsh connector session listing is incomplete");
+  }
   return items.map((value) => {
     const item = record(value);
     return {
@@ -145,12 +162,22 @@ function parsePage(payload: unknown): DshHistoryPage {
 function parseModels(payload: unknown): DshModelCatalog {
   const body = record(payload);
   const selected = record(body.default);
-  const groups: DshModelGroup[] = array(body.groups, "models.groups").map((value) => {
+  const rawGroups = array(body.groups, "models.groups");
+  const groupCount = safeInteger(body.groupCount, "models.groupCount");
+  if (groupCount !== rawGroups.length) {
+    throw new DshHostClientError("contract_unsupported", "dsh connector model-group listing is incomplete");
+  }
+  const groups: DshModelGroup[] = rawGroups.map((value) => {
     const group = record(value);
+    const rawModels = array(group.models, "modelGroup.models");
+    const modelCount = safeInteger(group.modelCount, "modelGroup.modelCount");
+    if (modelCount !== rawModels.length) {
+      throw new DshHostClientError("contract_unsupported", "dsh connector model listing is incomplete");
+    }
     return {
       id: requiredString(group.id, "modelGroup.id"),
       name: requiredString(group.name, "modelGroup.name"),
-      models: array(group.models, "modelGroup.models").map((modelValue) => {
+      models: rawModels.map((modelValue) => {
         const model = record(modelValue);
         return {
           id: requiredString(model.id, "model.id"),
@@ -236,30 +263,52 @@ export class DshWebHostClient {
     }
   }
 
-  async health(): Promise<DshHostHealth> {
-    const response = record(await this.request({ op: "health" }));
+  async health(signal?: AbortSignal): Promise<DshHostHealth> {
+    const response = record(await this.request({ op: "health" }, this.timeoutMs, signal));
     const status = requiredString(response.status, "health.status");
     const protocol = safeInteger(response.protocol, "health.protocol", 1);
-    if (status !== "mounted" || protocol !== 1) {
-      throw new DshHostClientError("contract_unsupported", "unsupported dsh connector protocol");
+    const connectorVersion = requiredString(response.connectorVersion, "health.connectorVersion");
+    if (status !== "mounted" || protocol !== 1 || connectorVersion !== DSH_CONNECTOR_VERSION) {
+      throw new DshHostClientError("contract_unsupported", "unsupported dsh connector version or protocol");
     }
-    return { status: "mounted", protocol };
+    return { status: "mounted", protocol, connectorVersion };
   }
 
-  async listProjects(): Promise<DshProject[]> {
-    return parseProjects(await this.request({ op: "projects.list" }));
+  async listProjects(signal?: AbortSignal): Promise<DshProject[]> {
+    return parseProjects(await this.request({ op: "projects.list" }, this.timeoutMs, signal));
   }
 
-  async listSessions(): Promise<DshSessionSummary[]> {
-    return parseSessions(await this.request({ op: "sessions.list" }));
+  async listSessions(signal?: AbortSignal): Promise<DshSessionSummary[]> {
+    return parseSessions(await this.request({ op: "sessions.list" }, this.timeoutMs, signal));
   }
 
-  async followSnapshot(sessionId: string): Promise<DshFollowSnapshot> {
+  async followSnapshot(sessionId: string, signal?: AbortSignal): Promise<DshFollowSnapshot> {
     assertSessionId(sessionId);
-    return parseFollow(await this.request({ op: "history.follow", sessionId }));
+    return parseFollow(await this.request({ op: "history.follow", sessionId }, this.timeoutMs, signal));
   }
 
-  async pageHistory(sessionId: string, throughSeq: number, beforeSeq?: number): Promise<DshHistoryPage> {
+  /** Wait at most one bounded Host follow window for the next contiguous durable event. */
+  async followWindow(sessionId: string, signal?: AbortSignal): Promise<DshLiveWindow> {
+    assertSessionId(sessionId);
+    const body = record(await this.request({ op: "history.followWindow", sessionId }, 16_000, signal));
+    const cursor = safeInteger(body.cursor, "followWindow.cursor", -1);
+    if (body.observed === false && body.event === undefined) return { observed: false, cursor };
+    if (body.observed !== true) {
+      throw new DshHostClientError("invalid_response", "dsh connector returned invalid live observation");
+    }
+    const event = eventMetadata(body.event);
+    if (event.seq !== cursor + 1) {
+      throw new DshHostClientError("invalid_response", "dsh connector live event is not contiguous");
+    }
+    return { observed: true, cursor, event };
+  }
+
+  async pageHistory(
+    sessionId: string,
+    throughSeq: number,
+    beforeSeq?: number,
+    signal?: AbortSignal,
+  ): Promise<DshHistoryPage> {
     assertSessionId(sessionId);
     if (!Number.isSafeInteger(throughSeq) || throughSeq < -1) {
       throw new DshHostClientError("invalid_request", "invalid dsh history throughSeq");
@@ -269,14 +318,18 @@ export class DshWebHostClient {
     }
     const request: ConnectorRequest = { op: "history.page", sessionId, throughSeq };
     if (beforeSeq !== undefined) request.beforeSeq = beforeSeq;
-    return parsePage(await this.request(request));
+    return parsePage(await this.request(request, this.timeoutMs, signal));
   }
 
-  async listModels(): Promise<DshModelCatalog> {
-    return parseModels(await this.request({ op: "models.catalog" }));
+  async listModels(signal?: AbortSignal): Promise<DshModelCatalog> {
+    return parseModels(await this.request({ op: "models.catalog" }, this.timeoutMs, signal));
   }
 
-  private async request(request: ConnectorRequest): Promise<unknown> {
+  private async request(
+    request: ConnectorRequest,
+    timeoutMs = this.timeoutMs,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     await assertPrivateRuntimePath(this.socketPath, "socket");
     await assertPrivateRuntimePath(this.tokenPath, "file");
     const token = await readFile(this.tokenPath, "utf8");
@@ -284,22 +337,36 @@ export class DshWebHostClient {
       throw new DshHostClientError("unsafe_runtime_path", "dsh connector token file is invalid");
     }
 
+    if (signal?.aborted) {
+      throw new DshHostClientError("cancelled", "dsh connector request was cancelled");
+    }
+
     const payload = JSON.stringify({ ...request, token }) + "\n";
     return await new Promise<unknown>((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       let settled = false;
       let response = "";
+      const onAbort = () => {
+        finish(() => reject(new DshHostClientError("cancelled", "dsh connector request was cancelled")));
+      };
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         socket.removeAllListeners();
         socket.destroy();
         callback();
       };
       const timer = setTimeout(() => {
         finish(() => reject(new DshHostClientError("timeout", "dsh connector request timed out")));
-      }, this.timeoutMs);
+      }, timeoutMs);
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
 
       socket.setEncoding("utf8");
       socket.on("connect", () => socket.write(payload));

@@ -25,6 +25,11 @@ const config: AppConfig = {
   desktopPollIntervalMs: 5000,
   telegramSummaryMaxChars: 1000,
   logLevel: "error",
+  dshReadOnlyEnabled: false,
+  dshNotificationsEnabled: false,
+  dshSocketPath: "/tmp/dsh.sock",
+  dshTokenPath: "/tmp/dsh.token",
+  dshPollIntervalMs: 10_000,
 };
 
 class MockTelegramClient {

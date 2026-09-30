@@ -6,8 +6,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const runDir = join(homedir(), '.dsh', 'run')
-const socketPath = join(runDir, 'sea-bridge-poc.sock')
-const tokenPath = join(runDir, 'sea-bridge-poc.token')
+const socketPath = join(runDir, 'sea-bridge.sock')
+const tokenPath = join(runDir, 'sea-bridge.token')
 
 /** Require private ownership and permissions before reading the connector token. */
 async function assertPrivate(path) {
@@ -74,4 +74,8 @@ if (sessions.items.length > 0) {
 
 const catalog = await requireRead(token, 'models.catalog')
 assert.ok(Array.isArray(catalog.groups))
+assert.equal(catalog.groupCount, catalog.groups.length)
+for (const group of catalog.groups) {
+  assert.equal(group.modelCount, group.models.length)
+}
 process.stdout.write(`models: passed (${catalog.groups.length} provider groups; ${catalog.failureCount} isolated failures)\n`)

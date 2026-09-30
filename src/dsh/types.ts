@@ -14,9 +14,12 @@ export interface DshCapabilityState {
   reason: string | null;
 }
 
+export const DSH_CONNECTOR_VERSION = "0.2.0";
+
 export interface DshHostHealth {
   status: "mounted";
   protocol: number;
+  connectorVersion: string;
 }
 
 export interface DshProject {
@@ -36,6 +39,7 @@ export interface DshEventMetadata {
   type: string;
   seq: number;
   time: number;
+  reasonKind?: "completed" | "error" | "aborted" | "max-tokens" | "stop" | "tool-calls" | "unknown";
 }
 
 export interface DshFollowSnapshot {
@@ -50,6 +54,10 @@ export interface DshHistoryPage {
   truncated: boolean;
   events: DshEventMetadata[];
 }
+
+export type DshLiveWindow =
+  | { observed: false; cursor: number }
+  | { observed: true; cursor: number; event: DshEventMetadata };
 
 export interface DshModelSelection {
   provider: string;
@@ -78,6 +86,7 @@ export type DshHostClientErrorCode =
   | "host_unavailable"
   | "unauthorized"
   | "timeout"
+  | "cancelled"
   | "invalid_request"
   | "invalid_response"
   | "contract_unsupported"

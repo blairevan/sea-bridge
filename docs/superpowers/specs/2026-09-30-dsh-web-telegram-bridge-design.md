@@ -289,6 +289,19 @@ Rules:
 
 A reachable Host alone never implies that every capability is available.
 
+### 6.9 Read-only runtime enablement phase
+
+Before write PoC authorization, Sea-Bridge may enable only the verified read surface:
+
+- `SEA_BRIDGE_DSH_READ_ONLY_ENABLED` is independently configurable and defaults off;
+- real dsh Telegram notifications use a separate `SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED` gate that also defaults off and requires read-only mode;
+- `/dsh_status`, `/dsh_projects`, and `/dsh_model` are read-only; `/dsh_model` shows the current/catalog state and exposes no selection callback while writes are unavailable;
+- read-only completion notifications have no reply button and create no callback token;
+- if a user manually replies to an exact dsh-mapped Telegram notification while `reply=unavailable`, Sea-Bridge explicitly reports that nothing was sent to dsh and does not fall through to Codex;
+- if the same Telegram message is mapped to both providers, treat it as an invariant violation and dispatch to neither provider;
+- plain text without a Telegram reply target continues to use the existing latest-Codex behavior and never selects dsh;
+- connector health includes a non-secret connector runtime version in addition to protocol version; an incompatible or stale runtime fingerprint fails closed before notifications start.
+
 ## 7. Host Connector Safety and Lifecycle
 
 - Accept only the verified local transport. For TCP/HTTP-style endpoints, enforce loopback targets (`127.0.0.1` / `::1`) unless the verified Host contract uses a Unix socket. Do not accept arbitrary LAN/public endpoint configuration for this integration.
@@ -298,7 +311,10 @@ A reachable Host alone never implies that every capability is available.
 - Apply bounded timeouts and cancellation to health, discovery, read, and write calls. Write timeout handling must preserve the ambiguous-delivery rules above.
 - Reconnect read-only observation with bounded exponential backoff and jitter. Do not replay side-effecting writes as part of reconnect.
 - Redact secrets and session bodies from logs. Log stable hashes/IDs only when needed for correlation.
-- Connector/observer shutdown must be bounded and independent from Codex shutdown; dsh shutdown failure must not prevent the existing Sea-Bridge cleanup path from running.
+- Connector/observer shutdown must be bounded and independent from Codex shutdown; active Host reads are cancellable and observer stop waits for the current poll to unwind before shared SQLite state is closed.
+- The tracked connector source is the canonical install source. Installation/update copies only the fixed read-only file set into a private snapshot, verifies hashes and permissions, and never restarts the Host implicitly.
+- After an unclean Host exit, the connector may remove only stale runtime socket/token paths that are owner-private and of the expected type. It must never replace a live socket or an unsafe/wrong-owner path.
+- A disk snapshot hash match does not prove the running Host loaded it; target-Mac restart validation must also verify the runtime `connectorVersion` returned by health.
 
 ## 8. Delivery and Failure Semantics
 

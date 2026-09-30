@@ -4,10 +4,11 @@ import { readFile, stat } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { CONNECTOR_VERSION } from './read-operations.mjs'
 
 const runDir = join(homedir(), '.dsh', 'run')
-const socketPath = join(runDir, 'sea-bridge-poc.sock')
-const tokenPath = join(runDir, 'sea-bridge-poc.token')
+const socketPath = join(runDir, 'sea-bridge.sock')
+const tokenPath = join(runDir, 'sea-bridge.token')
 
 /** Refuse to use an insecure connector runtime path. */
 async function assertPrivate(path) {
@@ -36,5 +37,7 @@ await assertPrivate(runDir)
 await assertPrivate(socketPath)
 await assertPrivate(tokenPath)
 const token = await readFile(tokenPath, 'utf8')
-assert.deepEqual(await requestHealth(token), { ok: true, status: 'mounted', protocol: 1 })
+assert.deepEqual(await requestHealth(token), {
+  ok: true, status: 'mounted', protocol: 1, connectorVersion: CONNECTOR_VERSION,
+})
 process.stdout.write('connector health mounted; socket and token permissions private\n')

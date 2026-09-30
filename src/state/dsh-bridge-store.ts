@@ -404,6 +404,16 @@ export class DshBridgeStore {
     return Number(row?.attempt_count ?? 0);
   }
 
+  /** Retain ambiguous post-send intent for reconciliation without an automatic duplicate send. */
+  quarantineNotification(eventFingerprint: string, errorCode: string, messageId?: number): void {
+    this.state.db.query(
+      `UPDATE dsh_notification_outbox
+       SET attempt_count=attempt_count+1,next_attempt_at=?,last_error=?,
+           telegram_message_id=COALESCE(?,telegram_message_id),updated_at=?
+       WHERE event_fingerprint=? AND status='pending'`,
+    ).run(Number.MAX_SAFE_INTEGER, errorCode, messageId ?? null, Date.now(), eventFingerprint);
+  }
+
   completeNotification(eventFingerprint: string, messageId: number, now = Date.now()): boolean {
     const complete = this.state.db.transaction(() => {
       const row = this.state.db.query(
@@ -514,6 +524,29 @@ export class DshBridgeStore {
       contractFingerprint: row.contract_fingerprint,
       lastEventFingerprint: row.last_event_fingerprint,
     };
+  }
+
+  /** Atomically enqueue observed outcomes and advance one session cursor after continuity checks. */
+  commitObservation(
+    expectedCursor: number | null,
+    state: DshObserverState,
+    notifications: DshNotificationInput[],
+    consumeCreatedBaseline: boolean,
+  ): boolean {
+    const commit = this.state.db.transaction(() => {
+      const current = this.getObserverState(state.sessionId);
+      if ((current?.cursor ?? null) !== expectedCursor ||
+        (current && current.contractFingerprint !== state.contractFingerprint) ||
+        (current && state.cursor < current.cursor)) return false;
+      const marker = this.getCreatedSession(state.sessionId);
+      if (expectedCursor === null && !consumeCreatedBaseline && marker?.baselinePending) return false;
+      if (consumeCreatedBaseline && marker?.baselinePending !== true) return false;
+      for (const notification of notifications) this.enqueueNotification(notification);
+      this.saveObserverState(state);
+      if (consumeCreatedBaseline) this.consumeCreatedSessionBaseline(state.sessionId);
+      return true;
+    });
+    return commit();
   }
 
   registerCreatedSession(

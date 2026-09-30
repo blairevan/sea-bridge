@@ -9,6 +9,7 @@ import type { ProcessCodexQueueClient } from "../desktop/codex-queue-client.ts";
 import type { CodexThreadReader } from "../desktop/codex-thread-store.ts";
 import type { NewThreadManager } from "../desktop/new-thread-manager.ts";
 import type { ProjectItem, StartedThread } from "../desktop/codex-app-server-client.ts";
+import type { DshReadOnlyBridge } from "../dsh/read-only-bridge.ts";
 import { isAuthorized } from "../security/auth.ts";
 import { TelegramClient, type TelegramUpdate, type BotCommand } from "./client.ts";
 import { renderModelMenu, renderProjectPage } from "./new-thread-ui.ts";
@@ -53,6 +54,7 @@ export class TelegramService {
     private readonly logger: Logger,
     private readonly threadStore?: CodexThreadReader,
     private readonly newThreads?: NewThreadManager,
+    private readonly dshReadOnly?: DshReadOnlyBridge,
   ) {}
 
   async run(): Promise<void> {
@@ -148,6 +150,13 @@ export class TelegramService {
           { command: "status", description: "查看服务能力与会话状态" },
         ]
       : [{ command: "status", description: "查看服务能力与会话状态" }];
+    if (this.dshReadOnly) {
+      commands.push(
+        { command: "dsh_status", description: "查看 dsh Web 只读连接状态" },
+        { command: "dsh_projects", description: "查看 dsh Web 项目目录" },
+        { command: "dsh_model", description: "查看 dsh Web 模型目录" },
+      );
+    }
 
     try {
       await this.client.setMyCommands?.(commands);
@@ -366,6 +375,21 @@ export class TelegramService {
       return;
     }
 
+    if (/^\/dsh_status(?:@\w+)?$/.test(text) && this.dshReadOnly) {
+      await this.sendDshStatus(message.chat.id);
+      return;
+    }
+
+    if (/^\/dsh_projects(?:@\w+)?$/.test(text) && this.dshReadOnly) {
+      await this.sendDshProjects(message.chat.id);
+      return;
+    }
+
+    if (/^\/dsh_model(?:@\w+)?$/.test(text) && this.dshReadOnly) {
+      await this.sendDshModels(message.chat.id);
+      return;
+    }
+
     if (/^\/projects(?:@\w+)?$/.test(text) && this.newThreads) {
       await this.sendProjects(message.chat.id);
       return;
@@ -415,9 +439,11 @@ export class TelegramService {
     }
 
     if (text.startsWith("/")) {
-      const available = this.newThreads
-        ? "/status, /projects, /model, /new"
-        : "/status";
+      const available = [
+        "/status",
+        ...(this.newThreads ? ["/projects", "/model", "/new"] : []),
+        ...(this.dshReadOnly ? ["/dsh_status", "/dsh_projects", "/dsh_model"] : []),
+      ].join(", ");
       await this.client.sendMessage(message.chat.id, `Unsupported command. Available: ${available}`);
       return;
     }
@@ -451,6 +477,36 @@ export class TelegramService {
       }
     }
 
+    if (message.reply_to_message && this.dshReadOnly) {
+      const chatId = String(message.chat.id);
+      const replyToMessageId = message.reply_to_message.message_id;
+      const dshLink = this.dshReadOnly.findMessageLink(chatId, replyToMessageId);
+      const codexLink = this.messages.findLink(chatId, replyToMessageId);
+      if (dshLink && codexLink) {
+        this.logger.error("telegram_provider_mapping_conflict", {
+          updateId: update.update_id,
+          chatId,
+          replyToMessageId,
+        });
+        await this.client.sendMessage(
+          message.chat.id,
+          "这条通知同时存在 Codex 与 dsh 映射，已阻止投递，请检查 Sea-Bridge 状态。",
+        );
+        return;
+      }
+      if (dshLink) {
+        await this.client.sendMessage(
+          message.chat.id,
+          "这是 dsh Web 只读通知。当前回复功能尚未启用，本条内容没有发送到 dsh。",
+        );
+        this.logger.info("telegram_dsh_read_only_reply_blocked", {
+          updateId: update.update_id,
+          messageId: replyToMessageId,
+        });
+        return;
+      }
+    }
+
     const result = await routeThreadReply(update.update_id, message, this.messages, this.queueClient);
     if (result.status === "missing_reply") {
       await this.client.sendMessage(message.chat.id, "请先通过 /new 创建会话，或回复某条 Sea-Bridge 会话通知。");
@@ -474,6 +530,64 @@ export class TelegramService {
     }
     await this.client.sendMessage(message.chat.id, "投递失败，未发送到 Codex Desktop 会话。请稍后回复原通知重试。");
     this.logger.warn("telegram_thread_reply_failed", { threadId: result.threadId, updateId: update.update_id });
+  }
+
+  private async sendDshStatus(chatId: number): Promise<void> {
+    try {
+      const status = await this.dshReadOnly!.status();
+      const byName = new Map(status.capabilities.map((capability) => [capability.name, capability]));
+      await this.client.sendMessage(chatId, [
+        "dsh Web：已连接（只读）",
+        `Connector protocol: ${status.health.protocol}`,
+        `观察: ${byName.get("observation")?.status ?? "unknown"}`,
+        `项目: ${byName.get("projects")?.status ?? "unknown"}`,
+        `模型: ${byName.get("models")?.status ?? "unknown"}`,
+        "回复: unavailable",
+        "新建会话: unavailable",
+      ].join("\n"));
+    } catch {
+      await this.client.sendMessage(
+        chatId,
+        "dsh Web 只读连接当前不可用；Codex 功能不受影响。",
+      );
+    }
+  }
+
+  private async sendDshProjects(chatId: number): Promise<void> {
+    try {
+      const projects = await this.dshReadOnly!.listProjects();
+      const lines = projects.length === 0
+        ? ["dsh Web 当前没有可见项目。"]
+        : [
+            "📁 dsh Web 项目（只读）：",
+            ...projects.map((project) => `${project.title}（${project.sessionCount} 个会话）`),
+          ];
+      for (const chunk of splitTelegramLines(lines)) {
+        await this.client.sendMessage(chatId, chunk);
+      }
+    } catch {
+      await this.client.sendMessage(chatId, "dsh Web 项目目录当前不可用；未执行任何写入。");
+    }
+  }
+
+  private async sendDshModels(chatId: number): Promise<void> {
+    try {
+      const catalog = await this.dshReadOnly!.listModels();
+      const lines = [
+        "🤖 dsh Web 模型目录（只读，当前不支持切换）：",
+        `当前默认: ${catalog.default.provider} / ${catalog.default.model}`,
+        "",
+        ...catalog.groups.flatMap((group) => [
+          `[${group.name}]`,
+          ...group.models.map((model) => `- ${model.name} (${model.id})`),
+        ]),
+      ];
+      for (const chunk of splitTelegramLines(lines)) {
+        await this.client.sendMessage(chatId, chunk);
+      }
+    } catch {
+      await this.client.sendMessage(chatId, "dsh Web 模型目录当前不可用；现有模型状态未改变。");
+    }
   }
 
   private async sendProjects(chatId: number): Promise<void> {

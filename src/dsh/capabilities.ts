@@ -9,7 +9,7 @@ const BASELINE: Readonly<Record<DshCapabilityName, DshCapabilityState>> = {
   observation: {
     name: "observation",
     status: "partial",
-    reason: "opening_snapshot_and_history_page_verified; live_follow_and_gap_recovery_unverified",
+    reason: "bounded_live_follow_and_recovery_verified; production_end_to_end_unverified",
   },
   projects: {
     name: "projects",

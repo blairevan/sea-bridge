@@ -8,7 +8,9 @@
     "dev": "bun --watch run src/main.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "build": "bun build src/main.ts --target=bun --outdir dist"
+    "build": "bun build src/main.ts --target=bun --outdir dist",
+    "dsh-connector:check": "./scripts/install-dsh-read-connector.sh check",
+    "dsh-connector:install": "./scripts/install-dsh-read-connector.sh install"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

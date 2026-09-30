@@ -1,12 +1,12 @@
-/** Temporary read-only Cordis plugin for the dsh Web connector PoC. */
+/** Read-only Cordis plugin for the active dsh Web Host. */
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { createServer } from 'node:net'
+import { createConnection, createServer } from 'node:net'
 import { chmod, lstat, mkdir, open, stat, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { dispatchRead } from './read-operations.mjs'
 
-export const name = 'sea-bridge-dsh-web-connector-poc'
+export const name = 'sea-bridge-dsh-web-connector'
 export const inject = ['sessionController', 'workspaceRegistry']
 
 const MAX_REQUEST_BYTES = 4096
@@ -26,14 +26,55 @@ async function ensurePrivateDirectory(directory) {
   }
 }
 
-/** Refuse to overwrite a socket or token belonging to another process. */
-async function requireAbsent(path) {
+/** Inspect only connector-owned private runtime paths; wrong types or permissions fail closed. */
+async function privateRuntimePath(path, expected) {
   try {
-    await lstat(path)
-    throw new Error('connector runtime path already exists')
+    const info = await lstat(path)
+    if (info.uid !== process.getuid() || (info.mode & 0o077) !== 0 ||
+      (expected === 'socket' ? !info.isSocket() : !info.isFile())) {
+      throw new Error('connector runtime path is not private or has the wrong type')
+    }
+    return info
   } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
+    if (error?.code === 'ENOENT') return null
+    throw error
   }
+}
+
+/** Determine whether an existing private Unix socket is still serving another connector. */
+async function socketIsLive(path) {
+  return await new Promise((resolve, reject) => {
+    const socket = createConnection(path)
+    let settled = false
+    const finish = (callback) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.removeAllListeners()
+      socket.destroy()
+      callback()
+    }
+    const timer = setTimeout(() => finish(() => reject(new Error('connector runtime socket probe timed out'))), 500)
+    socket.once('connect', () => finish(() => resolve(true)))
+    socket.once('error', error => {
+      if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOENT') {
+        finish(() => resolve(false))
+      } else {
+        finish(() => reject(error))
+      }
+    })
+  })
+}
+
+/** Recover only stale files created by this connector; never replace a live or unsafe path. */
+async function recoverStaleRuntime(socketPath, tokenPath) {
+  const socketInfo = await privateRuntimePath(socketPath, 'socket')
+  const tokenInfo = await privateRuntimePath(tokenPath, 'file')
+  if (socketInfo && await socketIsLive(socketPath)) {
+    throw new Error('connector runtime socket is already active')
+  }
+  if (socketInfo) await unlink(socketPath)
+  if (tokenInfo) await unlink(tokenPath)
 }
 
 /** Send one small JSON response and end the client connection. */
@@ -62,6 +103,7 @@ function handleClient(socket, token, ctx) {
       if (!authenticated) {
         respond(socket, { ok: false, error: 'unauthorized' })
       } else {
+        if (request.op === 'history.followWindow') socket.setTimeout(18000, () => socket.destroy())
         void dispatchRead(request, ctx).then(result => respond(socket, result)).catch(() => {
           respond(socket, { ok: false, error: 'read_unavailable' })
         })
@@ -72,15 +114,14 @@ function handleClient(socket, token, ctx) {
   })
 }
 
-/** Bind a private health-only socket and release only resources created by this mount. */
+/** Bind a private read-only socket and release only resources created by this mount. */
 async function mountHealthSocket(ctx) {
   const directory = runDirectory()
-  const socketPath = join(directory, 'sea-bridge-poc.sock')
-  const tokenPath = join(directory, 'sea-bridge-poc.token')
+  const socketPath = join(directory, 'sea-bridge.sock')
+  const tokenPath = join(directory, 'sea-bridge.token')
   if (Buffer.byteLength(socketPath) > 100) throw new Error('connector Unix socket path is too long')
   await ensurePrivateDirectory(directory)
-  await requireAbsent(socketPath)
-  await requireAbsent(tokenPath)
+  await recoverStaleRuntime(socketPath, tokenPath)
 
   const token = randomBytes(32).toString('hex')
   const tokenFile = await open(tokenPath, 'wx', 0o600)
@@ -120,7 +161,7 @@ async function mountHealthSocket(ctx) {
   }
 }
 
-/** Mount the PoC read endpoint only after Cordis activates this plugin. */
+/** Mount the read endpoint only after Cordis activates this plugin. */
 export function apply(ctx) {
-  ctx.effect(() => mountHealthSocket(ctx), 'sea-bridge-dsh-web-connector-poc: read socket')
+  ctx.effect(() => mountHealthSocket(ctx), 'sea-bridge-dsh-web-connector: read socket')
 }

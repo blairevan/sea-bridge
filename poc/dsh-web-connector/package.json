@@ -1,6 +1,6 @@
 {
-  "name": "sea-bridge-dsh-web-connector-poc",
-  "version": "0.0.0-poc",
+  "name": "sea-bridge-dsh-web-connector",
+  "version": "0.2.0",
   "private": true,
   "type": "module"
 }
