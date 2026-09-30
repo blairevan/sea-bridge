@@ -302,3 +302,110 @@ describe("DshBridgeStore", () => {
     state.close();
   });
 });
+
+
+describe("DshBridgeStore transient cleanup", () => {
+  test("expires and later removes only transient callback/prompt state", () => {
+    const state = new StateDb(":memory:");
+    const store = new DshBridgeStore(state);
+    try {
+      store.putCallback({
+        token: "callback-old",
+        chatId: "chat",
+        action: "reply",
+        payload: { sessionId: "session-a" },
+        expiresAt: 100,
+      }, 10);
+      store.putCallback({
+        token: "callback-live",
+        chatId: "chat",
+        action: "reply",
+        payload: { sessionId: "session-b" },
+        expiresAt: 10_000,
+      }, 10);
+      store.createPendingNewSessionPrompt({
+        chatId: "chat",
+        promptMessageId: 800,
+        projectId: "project-a",
+        expiresAt: 100,
+      }, 10);
+      store.createPendingNewSessionPrompt({
+        chatId: "chat",
+        promptMessageId: 801,
+        projectId: "project-b",
+        expiresAt: 10_000,
+      }, 10);
+
+      expect(store.cleanupTransientState(200, 50)).toEqual({
+        callbacksExpired: 1,
+        callbacksDeleted: 1,
+        promptsExpired: 1,
+        promptsDeleted: 1,
+      });
+      expect(store.getCallbackStatus("callback-old")).toBeNull();
+      expect(store.getCallbackStatus("callback-live")).toBe("pending");
+      expect(store.getPendingNewSessionPromptStatus("chat", 800)).toBeNull();
+      expect(store.getPendingNewSessionPromptStatus("chat", 801)).toBe("pending");
+    } finally {
+      state.close();
+    }
+  });
+});
+
+describe("DshBridgeStore write recovery", () => {
+  test("quarantines dispatching replies and creations after process restart", () => {
+    const state = new StateDb(":memory:");
+    const store = new DshBridgeStore(state);
+    try {
+      store.claimDelivery(901, 50, "session-a", "hash-a", 1);
+      expect(store.markDeliveryDispatching(901)).toBe(true);
+      store.beginCreation(902, "project-a", null, "prompt-hash", 1);
+      expect(store.transitionCreation(902, "received", "dispatching", {}, 2)).toBe(true);
+
+      expect(store.recoverInterruptedWrites(3)).toEqual({ deliveries: 1, creations: 1 });
+      expect(store.getDelivery(901)).toMatchObject({
+        status: "delivery_unknown",
+        errorCode: "process_restart_after_dispatch",
+      });
+      expect(store.getCreation(902)).toMatchObject({
+        status: "delivery_unknown",
+        errorCode: "process_restart_after_dispatch",
+      });
+      expect(store.recoverInterruptedWrites(4)).toEqual({ deliveries: 0, creations: 0 });
+    } finally {
+      state.close();
+    }
+  });
+
+  test("acknowledges creation and message mapping atomically", () => {
+    const state = new StateDb(":memory:");
+    const store = new DshBridgeStore(state);
+    try {
+      store.beginCreation(910, "project-a", null, "prompt-hash", 1);
+      store.transitionCreation(910, "received", "dispatching", {}, 2);
+      store.transitionCreation(910, "dispatching", "accepted", { sessionId: "session-a" }, 3);
+      expect(store.acknowledgeCreation(910, "chat", 700, "session-a", "created-fp", 4)).toBe(true);
+      expect(store.getCreation(910)?.status).toBe("acknowledged");
+      expect(store.findMessageLink("chat", 700)).toMatchObject({
+        sessionId: "session-a",
+        eventFingerprint: "created-fp",
+      });
+
+      store.beginCreation(911, "project-a", null, "prompt-hash-2", 1);
+      store.transitionCreation(911, "received", "dispatching", {}, 2);
+      store.transitionCreation(911, "dispatching", "accepted", { sessionId: "session-b" }, 3);
+      store.linkMessage({
+        chatId: "chat",
+        messageId: 701,
+        sessionId: "other-session",
+        eventKind: "completed",
+        eventFingerprint: "other-fp",
+      }, 4);
+      expect(store.acknowledgeCreation(911, "chat", 701, "session-b", "created-fp-2", 5)).toBe(false);
+      expect(store.getCreation(911)?.status).toBe("accepted");
+      expect(store.findMessageLink("chat", 701)?.sessionId).toBe("other-session");
+    } finally {
+      state.close();
+    }
+  });
+});

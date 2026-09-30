@@ -26,6 +26,7 @@ const config: AppConfig = {
   telegramSummaryMaxChars: 1000,
   logLevel: "error",
   dshReadOnlyEnabled: false,
+  dshWriteEnabled: false,
   dshNotificationsEnabled: false,
   dshSocketPath: "/tmp/dsh.sock",
   dshTokenPath: "/tmp/dsh.token",

@@ -141,6 +141,20 @@ export class DshBridgeStore {
     return result.changes === 1;
   }
 
+  recoverInterruptedWrites(now = Date.now()): { deliveries: number; creations: number } {
+    const deliveries = this.state.db.query(
+      `UPDATE dsh_deliveries
+       SET status='delivery_unknown',error_code='process_restart_after_dispatch',completed_at=?
+       WHERE status='dispatching'`,
+    ).run(now).changes;
+    const creations = this.state.db.query(
+      `UPDATE dsh_creation_requests
+       SET status='delivery_unknown',error_code='process_restart_after_dispatch',updated_at=?
+       WHERE status='dispatching'`,
+    ).run(now).changes;
+    return { deliveries: Number(deliveries), creations: Number(creations) };
+  }
+
   getDelivery(updateId: number): DshDelivery | null {
     const row = this.state.db.query(
       `SELECT telegram_update_id,reply_to_message_id,session_id,text_hash,status,error_code
@@ -549,6 +563,44 @@ export class DshBridgeStore {
     return commit();
   }
 
+  acknowledgeCreation(
+    updateId: number,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    eventFingerprint: string,
+    now = Date.now(),
+  ): boolean {
+    const acknowledge = this.state.db.transaction(() => {
+      const creation = this.getCreation(updateId);
+      if (!creation || creation.sessionId !== sessionId) return false;
+      const existingLink = this.findMessageLink(chatId, messageId);
+      if (creation.status === "acknowledged") {
+        return existingLink?.sessionId === sessionId;
+      }
+      if (creation.status !== "accepted") return false;
+      if (existingLink && (existingLink.sessionId !== sessionId ||
+        existingLink.eventFingerprint !== eventFingerprint)) return false;
+      if (!existingLink) {
+        const linked = this.linkMessage({
+          chatId,
+          messageId,
+          sessionId,
+          eventKind: "session_created",
+          eventFingerprint,
+        }, now);
+        if (!linked) return false;
+      }
+      const result = this.state.db.query(
+        `UPDATE dsh_creation_requests
+         SET status='acknowledged',updated_at=?
+         WHERE telegram_update_id=? AND status='accepted' AND session_id=?`,
+      ).run(now, updateId, sessionId);
+      return result.changes === 1;
+    });
+    return acknowledge();
+  }
+
   registerCreatedSession(
     sessionId: string,
     creationUpdateId: number,
@@ -663,5 +715,41 @@ export class DshBridgeStore {
       status: "pending" | "consumed" | "expired";
     } | null;
     return row?.status ?? null;
+  }
+
+  /** Bound transient callback/prompt state growth without deleting delivery/audit history. */
+  cleanupTransientState(now = Date.now(), retentionMs = 24 * 60 * 60_000): {
+    callbacksExpired: number;
+    callbacksDeleted: number;
+    promptsExpired: number;
+    promptsDeleted: number;
+  } {
+    const expireCallbacks = this.state.db.query(
+      `UPDATE dsh_callback_tokens
+       SET status='expired'
+       WHERE status='pending' AND expires_at<=?`,
+    ).run(now);
+    const expirePrompts = this.state.db.query(
+      `UPDATE dsh_pending_new_session_prompts
+       SET status='expired'
+       WHERE status='pending' AND expires_at<=?`,
+    ).run(now);
+    const cutoff = now - retentionMs;
+    const deleteCallbacks = this.state.db.query(
+      `DELETE FROM dsh_callback_tokens
+       WHERE status IN ('consumed','expired')
+         AND COALESCE(consumed_at,expires_at)<=?`,
+    ).run(cutoff);
+    const deletePrompts = this.state.db.query(
+      `DELETE FROM dsh_pending_new_session_prompts
+       WHERE status IN ('consumed','expired')
+         AND COALESCE(consumed_at,expires_at)<=?`,
+    ).run(cutoff);
+    return {
+      callbacksExpired: Number(expireCallbacks.changes),
+      callbacksDeleted: Number(deleteCallbacks.changes),
+      promptsExpired: Number(expirePrompts.changes),
+      promptsDeleted: Number(deletePrompts.changes),
+    };
   }
 }

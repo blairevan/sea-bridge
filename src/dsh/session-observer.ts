@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
 import type { DshBridgeStore } from "../state/dsh-bridge-store.ts";
+import type { InlineButton } from "../telegram/client.ts";
 import type { DshWebHostClient } from "./web-host-client.ts";
+import { createDshCallback } from "./menu-ui.ts";
 import { recoverDshHistory } from "./history-recovery.ts";
-import { formatDshCompletion } from "./notification-formatter.ts";
+import { formatDshTerminal } from "./notification-formatter.ts";
 
 const CONTRACT_FINGERPRINT = "dsh-web-0.1.7-rc.2-metadata-v1";
 const TELEGRAM_SEND_TIMEOUT_MS = 15_000;
+const REPLY_CALLBACK_TTL_MS = 24 * 60 * 60_000;
 
-type ReadHost = Pick<DshWebHostClient, "listSessions" | "followSnapshot" | "pageHistory">;
+type ReadHost =
+  Pick<DshWebHostClient, "listSessions" | "followSnapshot" | "pageHistory"> &
+  Partial<Pick<DshWebHostClient, "health">>;
 interface SendTelegram {
-  sendMessage(chatId: string | number, text: string): Promise<{ message_id: number }>;
+  sendMessage(chatId: string | number, text: string, buttons?: InlineButton[][]): Promise<{ message_id: number }>;
 }
 
 /** Read-only metadata observer with isolated dsh outbox; it never submits Host writes. */
@@ -18,6 +23,8 @@ export class DshSessionObserver {
   private polling = false;
   private activeAbortController: AbortController | null = null;
   private activePoll: Promise<void> | null = null;
+  private lastSuccessfulPollAt: number | null = null;
+  private lastErrorCode: string | null = null;
 
   constructor(
     private readonly host: ReadHost,
@@ -25,6 +32,7 @@ export class DshSessionObserver {
     private readonly telegram: SendTelegram,
     private readonly chatId: string,
     private readonly pollIntervalMs = 10_000,
+    private readonly replyEnabled = false,
   ) {
     if (!chatId) throw new Error("dsh observer requires an authorized Telegram chat");
   }
@@ -48,6 +56,7 @@ export class DshSessionObserver {
   /** Observe each listed session and deliver due dsh notifications independently. */
   async pollOnce(signal?: AbortSignal): Promise<void> {
     this.throwIfCancelled(signal);
+    if (this.host.health) await this.host.health(signal);
     const sessions = await this.host.listSessions(signal);
     let firstError: unknown;
     for (const session of sessions) {
@@ -84,14 +93,22 @@ export class DshSessionObserver {
     const fromSeq = previous?.cursor ?? -1;
     const recovered = await recoverDshHistory(fromSeq, snapshot.cursor,
       (beforeSeq) => this.host.pageHistory(sessionId, snapshot.cursor, beforeSeq, signal));
-    if (recovered.events.some((event) => event.type === "turn/end" &&
-      event.reasonKind !== "completed")) throw new Error("dsh_observer_unverified_terminal_outcome");
-    const notifications = recovered.events.filter((event) => event.type === "turn/end" &&
-      event.reasonKind === "completed").map((event) => {
+    const notifications = recovered.events.filter((event) => event.type === "turn/end").map((event) => {
       const eventFingerprint = createHash("sha256")
-        .update(JSON.stringify({ sessionId, seq: event.seq, type: event.type })).digest("hex");
-      return { eventFingerprint, chatId: this.chatId, sessionId, eventKind: "completed",
-        text: formatDshCompletion() };
+        .update(JSON.stringify({
+          sessionId,
+          seq: event.seq,
+          type: event.type,
+          reasonKind: event.reasonKind ?? "unknown",
+        })).digest("hex");
+      const formatted = formatDshTerminal(event.reasonKind ?? "unknown");
+      return {
+        eventFingerprint,
+        chatId: this.chatId,
+        sessionId,
+        eventKind: formatted.eventKind,
+        text: formatted.text,
+      };
     });
     if (!this.store.commitObservation(previous?.cursor ?? null, {
       sessionId, cursor: snapshot.cursor, contractFingerprint: CONTRACT_FINGERPRINT,
@@ -104,7 +121,18 @@ export class DshSessionObserver {
     for (const notification of this.store.listPendingNotifications()) {
       this.throwIfCancelled(signal);
       try {
-        const message = await this.sendTelegram(notification.chatId, notification.text, signal);
+        const buttons = this.replyEnabled ? [[{
+          text: "💬 回复",
+          callback_data: createDshCallback(
+            this.store,
+            notification.chatId,
+            "reply",
+            { sessionId: notification.sessionId },
+            Date.now(),
+            REPLY_CALLBACK_TTL_MS,
+          ),
+        }]] : undefined;
+        const message = await this.sendTelegram(notification.chatId, notification.text, buttons, signal);
         try {
           if (!this.store.completeNotification(notification.eventFingerprint, message.message_id)) {
             throw new Error("dsh_outbox_completion_conflict");
@@ -125,7 +153,12 @@ export class DshSessionObserver {
   }
 
   /** Bound Telegram admission; timeout/cancellation is ambiguous and must never auto-replay. */
-  private async sendTelegram(chatId: string, text: string, signal?: AbortSignal): Promise<{ message_id: number }> {
+  private async sendTelegram(
+    chatId: string,
+    text: string,
+    buttons?: InlineButton[][],
+    signal?: AbortSignal,
+  ): Promise<{ message_id: number }> {
     return await new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback: () => void) => {
@@ -144,11 +177,19 @@ export class DshSessionObserver {
         onAbort();
         return;
       }
-      void this.telegram.sendMessage(chatId, text).then(
+      void this.telegram.sendMessage(chatId, text, buttons).then(
         (message) => finish(() => resolve(message)),
         (error) => finish(() => reject(error)),
       );
     });
+  }
+
+  getStatus(): { running: boolean; lastSuccessfulPollAt: number | null; lastErrorCode: string | null } {
+    return {
+      running: this.timer !== null,
+      lastSuccessfulPollAt: this.lastSuccessfulPollAt,
+      lastErrorCode: this.lastErrorCode,
+    };
   }
 
   /** Keep dsh errors from escaping an optional observer's scheduling loop. */
@@ -159,8 +200,21 @@ export class DshSessionObserver {
     this.activeAbortController = controller;
     const active = this.pollOnce(controller.signal);
     this.activePoll = active;
-    try { await active; } catch { /* Observation remains partial; retry on the next tick. */ }
-    finally {
+    try {
+      await active;
+      this.lastSuccessfulPollAt = Date.now();
+      this.lastErrorCode = null;
+    } catch (error) {
+      const candidate = error && typeof error === "object" && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+      this.lastErrorCode = typeof candidate === "string"
+        ? candidate
+        : error instanceof Error
+          ? error.name
+          : "unknown_error";
+      /* Observation remains fail-soft; retry on the next tick. */
+    } finally {
       if (this.activePoll === active) this.activePoll = null;
       if (this.activeAbortController === controller) this.activeAbortController = null;
       this.polling = false;

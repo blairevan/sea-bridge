@@ -1,6 +1,6 @@
 import type { DshCapabilityName, DshCapabilityState } from "./types.ts";
 
-const BASELINE: Readonly<Record<DshCapabilityName, DshCapabilityState>> = {
+const READ_BASELINE: Readonly<Record<Exclude<DshCapabilityName, "reply" | "creation">, DshCapabilityState>> = {
   transport: {
     name: "transport",
     status: "available",
@@ -21,22 +21,35 @@ const BASELINE: Readonly<Record<DshCapabilityName, DshCapabilityState>> = {
     status: "available",
     reason: null,
   },
-  reply: {
-    name: "reply",
-    status: "unavailable",
-    reason: "write_poc_not_authorized_or_verified",
-  },
-  creation: {
-    name: "creation",
-    status: "unavailable",
-    reason: "write_poc_not_authorized_or_verified",
-  },
 };
 
+export function dshCapabilityBaseline(writeEnabled = false): DshCapabilityState[] {
+  return [
+    ...Object.values(READ_BASELINE).map((state) => ({ ...state })),
+    {
+      name: "reply",
+      status: writeEnabled ? "available" : "unavailable",
+      reason: writeEnabled ? null : "write_disabled",
+    },
+    {
+      name: "creation",
+      status: writeEnabled ? "available" : "unavailable",
+      reason: writeEnabled ? null : "write_disabled",
+    },
+  ];
+}
+
+export function dshCapability(
+  name: DshCapabilityName,
+  writeEnabled = false,
+): DshCapabilityState {
+  return dshCapabilityBaseline(writeEnabled).find((state) => state.name === name)!;
+}
+
 export function dshReadOnlyCapabilityBaseline(): DshCapabilityState[] {
-  return Object.values(BASELINE).map((state) => ({ ...state }));
+  return dshCapabilityBaseline(false);
 }
 
 export function dshReadOnlyCapability(name: DshCapabilityName): DshCapabilityState {
-  return { ...BASELINE[name] };
+  return dshCapability(name, false);
 }

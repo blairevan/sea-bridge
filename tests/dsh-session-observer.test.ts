@@ -99,20 +99,47 @@ describe("DshSessionObserver", () => {
     } finally { db.close(); }
   });
 
-  test("an unverified terminal category holds the cursor rather than silently dropping it", async () => {
+  test("terminal failure/interruption/unknown outcomes advance the cursor with safe notifications", async () => {
+    for (const reasonKind of ["error", "aborted", "interrupted", "max-tokens", "unknown"] as const) {
+      const { db, store } = state();
+      try {
+        store.saveObserverState({ sessionId: "session-1", cursor: 0,
+          contractFingerprint: "dsh-web-0.1.7-rc.2-metadata-v1", lastEventFingerprint: null });
+        const host = {
+          listSessions: async () => [{ sessionId: "session-1", updatedAt: 1, running: false, blank: false }],
+          followSnapshot: async () => ({ cursor: 1, hasMore: false, truncated: false, events: [] }),
+          pageHistory: async () => page([{ type: "turn/end", seq: 1, time: 1, reasonKind }]),
+        };
+        const sent: string[] = [];
+        const observer = new DshSessionObserver(host, store, { sendMessage: async (_chat, text) => {
+          sent.push(text);
+          return { message_id: 12 };
+        } }, "one-chat");
+        await observer.pollOnce();
+        expect(store.getObserverState("session-1")?.cursor).toBe(1);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).toContain("状态:");
+      } finally { db.close(); }
+    }
+  });
+
+  test("write-enabled notifications use only an opaque dsh reply token", async () => {
     const { db, store } = state();
     try {
-      store.saveObserverState({ sessionId: "session-1", cursor: 0,
-        contractFingerprint: "dsh-web-0.1.7-rc.2-metadata-v1", lastEventFingerprint: null });
-      const host = {
-        listSessions: async () => [{ sessionId: "session-1", updatedAt: 1, running: false, blank: false }],
-        followSnapshot: async () => ({ cursor: 1, hasMore: false, truncated: false, events: [] }),
-        pageHistory: async () => page([{ type: "turn/end", seq: 1, time: 1, reasonKind: "unknown" }]),
-      };
-      const observer = new DshSessionObserver(host, store, { sendMessage: async () => ({ message_id: 12 }) }, "one-chat");
-      await expect(observer.pollOnce()).rejects.toThrow("dsh_observer_unverified_terminal_outcome");
-      expect(store.getObserverState("session-1")?.cursor).toBe(0);
-      expect(store.listPendingNotifications()).toHaveLength(0);
+      store.enqueueNotification({ eventFingerprint: "reply-event", chatId: "one-chat", sessionId: "private-session-id",
+        eventKind: "completed", text: "dsh Web: 会话" });
+      let callbackData = "";
+      const observer = new DshSessionObserver({ listSessions: async () => [],
+        followSnapshot: async () => ({ cursor: -1, hasMore: false, truncated: false, events: [] }),
+        pageHistory: async () => page([]),
+      }, store, { sendMessage: async (_chat, _text, buttons) => {
+        callbackData = buttons?.[0]?.[0]?.callback_data ?? "";
+        return { message_id: 15 };
+      } }, "one-chat", 10_000, true);
+      await observer.pollOnce();
+      expect(callbackData).toMatch(/^dsh:[A-Za-z0-9_-]+$/);
+      expect(callbackData).not.toContain("private-session-id");
+      expect(callbackData.length).toBeLessThanOrEqual(64);
     } finally { db.close(); }
   });
 

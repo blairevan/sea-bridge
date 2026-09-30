@@ -30,8 +30,8 @@
 | File | Responsibility |
 |---|---|
 | `docs/ai/2026-09-30-dsh-web-host-poc.md` | Sanitized version, transport, operation, event, and failure evidence from Task 0. |
-| `poc/dsh-web-connector/` | Canonical tracked source for the read-only Cordis connector and its validation probes. The live Host uses a reviewed snapshot copied to `~/.dsh/connectors/sea-bridge/`; repository and installed snapshot must be hash/version-checked before deployment. |
-| `scripts/install-dsh-read-connector.sh` | Atomic install/check of the tracked read-only connector snapshot; never restarts the Host by itself. |
+| `poc/dsh-web-connector/` | Canonical tracked source for connector `0.3.0`: fixed read/write allowlist, local auth, probes, and contract tests. The live Host uses a reviewed snapshot copied to `~/.dsh/connectors/sea-bridge/`; repository and installed snapshot must be hash/version-checked before deployment. |
+| `scripts/install-dsh-connector.sh` | Atomic install/check of the tracked connector snapshot; never restarts the Host by itself. |
 | `src/dsh/read-only-bridge.ts` | Telegram-facing read-only facade for health, projects, models, and exact dsh message-link recognition. |
 | `src/dsh/types.ts` | dsh Web Host domain types and capability/result contracts derived from PoC evidence. |
 | `src/dsh/web-host-client.ts` | Narrow client for only the Host operations proven and enabled by the PoC. |
@@ -138,7 +138,7 @@ Expected: report contains enough information to implement typed adapters without
 - Do **not** expose a generic `readEvents(cursor)` or claim `continuity: "continuous" | "gap"` in Task 1. This completed adapter predates the later bounded live/reconnect PoC; `observation` remains `partial` until a production streaming adapter and observer pass end-to-end verification.
 - `DshWebHostClient.listProjects(): Promise<DshProject[]>` and `listModels(): Promise<DshModelCatalog>` expose only the metadata-only shapes proven by Task 0A.
 - Connector socket/token paths are explicit constructor inputs. The production adapter must not default to the temporary `sea-bridge-poc.*` paths, because those files are removed after the PoC.
-- `submitPrompt` and `createSession` are absent/disabled until separately authorized and proven in a later write PoC. Task 0A must not define or exercise write transport.
+- Connector `0.3.0` adds only the exact tagged `0.1.7-rc.2` Session Controller write contracts: `prompt.submit`, `session.create`, and `session.selectModel`; there is still no generic RPC dispatch.
 - `DshWriteResult` is a discriminated union of `{ status: "accepted" }`, `{ status: "busy_or_writer_held" }`, `{ status: "rejected"; errorCode: string }`, and `{ status: "delivery_unknown"; errorCode: string }`. `DshCreateResult` includes `sessionId`, `turnId: string | null`, and `modelId: string | null` only when known.
 - Unsupported operations return a typed `contract_unsupported` result; they do not use guessed URLs or subprocess fallbacks.
 
@@ -180,11 +180,11 @@ Expected: report contains enough information to implement typed adapters without
 
 > **Recipient decision:** The user confirmed dsh shares the existing Codex Telegram chat. Inject the existing `config.allowedChatId` into the dsh observer; do not add a second chat configuration or infer recipients from Host session data. The isolated observer now implements completion-only metadata polling, atomic outbox/cursor commits and retry tests, but is not wired to `main.ts`; continuous live streaming and all non-completed outcomes remain unverified.
 
-> **Task 3 safety checkpoint:** The bounded live-window RPC is parsed in the production read client, while observer operation remains snapshot/page polling. A permanent read-only connector snapshot is installed, but the tracked source has advanced to connector `0.2.0`; the installed snapshot must be explicitly resynced/restarted before the new runtime fingerprint and stale-file recovery are live. Explicit Telegram 429 rejections may retry. Unknown send admission or a post-send mapping conflict is quarantined for reconciliation, not automatically resent.
+> **Task 3 implementation update:** The production observer uses fresh snapshot + bounded backward page recovery, verifies contiguous sequences, persists cursor/outbox atomically, handles bridge-created first-turn races, and emits safe terminal notifications. Connector `0.3.0` is the tracked runtime contract. Explicit Telegram 429 rejections may retry; ambiguous Telegram admission or mapping conflicts are quarantined and never automatically resent.
 
 > **Additional gate:** The read connector has bounded projections and no pagination. The production client now rejects incomplete session, project, model-group, or model listings rather than silently consuming a prefix. The observer transaction also rejects a stale ordinary baseline if a created-session marker appeared between reading it and committing the cursor.
 
-> **Installation update:** With user approval the read-only connector snapshot is now permanently loaded by the Web LaunchAgent through an absolute `--patch` overlay, with the original plist backed up privately. `pnpm install --frozen-lockfile --ignore-scripts` installed only the declared development dependencies and `./node_modules/.bin/tsc --noEmit` passes after fixing fixture assertion types. Production client reads and a Host → in-memory observer → fake Telegram acceptance probe pass. This does not authorize the Task 4/5 write path or real Telegram delivery. Review also removed the unusable dsh reply button, added cancellable Host reads / observer shutdown, and added stale-runtime recovery to the tracked connector source. The already-installed snapshot must be explicitly updated and revalidated before those connector-runtime fixes are considered live.
+> **Deployment boundary:** The target Mac still runs an older installed connector/Sea-Bridge snapshot until an explicit deployment updates it. Repository code now implements the complete bridge against connector `0.3.0`; code completion does not imply that the live Host or Telegram service has been upgraded.
 
 **Files:**
 - Create: `src/dsh/session-observer.ts`
@@ -199,17 +199,19 @@ Expected: report contains enough information to implement typed adapters without
 - `DshBridgeStore.saveObservationCursor(sessionId, cursor, contractFingerprint)` and `enqueueDshNotification(input)` are idempotent.
 - `DshTelegramNotifier.sendMessage(chatId, text, buttons)` is injected, not constructed by the observer.
 
-- [ ] **Step 1: Write observer tests with fixture-backed fake Host.** Cover first-start baseline, one new terminal event, repeated page, reconnect/resume cursor, missing/invalid event ID, provider-safe event fingerprint, and independent session cursors.
-- [ ] **Step 2: Add race tests.** Register a Sea-Bridge-created session before advancing its observer baseline; complete the first turn before the next poll and assert the event enters the outbox exactly once.
-- [ ] **Step 3: Run `bun test tests/dsh-session-observer.test.ts`.** Expected: failures for missing observer.
-- [ ] **Step 4: Implement safe formatting.** Label source `dsh Web`, redact with existing `redact`, clamp to Telegram's supported message length, and omit final text when the verified event has none.
-- [ ] **Step 5: Implement streaming adapter and observer.** Host follow has no resume-cursor argument: after disconnect, open a fresh snapshot and page backward from its cursor to the durable old cursor. Validate every sequence and bound recovery work; if the new cursor regresses, pages are missing/truncated/noncontiguous, or bounds are exceeded, mark observation degraded without advancing the cursor. On ordinary existing sessions, baseline at the verified high-water mark; for created sessions, honor the durable creation marker. Persist cursor only after all page events have been enqueued. The PoC's 32-sequence/eight-page limits are experimental, not automatically production defaults.
-- [ ] **Step 6: Implement outbox delivery.** Retry Telegram send failures with bounded backoff. After Telegram returns a message ID, atomically complete outbox and create the exact dsh message link. Use short opaque reply callback tokens; never embed a dsh ID in callback data.
-- [ ] **Step 7: Re-run observer/store tests and `bun run typecheck`.** Expected: created first-turn race and reconnect cases pass.
+- [x] **Step 1: Write observer tests with fixture-backed fake Host.** Cover first-start baseline, one new terminal event, repeated page, reconnect/resume cursor, missing/invalid event ID, provider-safe event fingerprint, and independent session cursors.
+- [x] **Step 2: Add race tests.** Register a Sea-Bridge-created session before advancing its observer baseline; complete the first turn before the next poll and assert the event enters the outbox exactly once.
+- [x] **Step 3: Run `bun test tests/dsh-session-observer.test.ts`.** Expected: failures for missing observer.
+- [x] **Step 4: Implement safe formatting.** Label source `dsh Web`, redact with existing `redact`, clamp to Telegram's supported message length, and omit final text when the verified event has none.
+- [x] **Step 5: Implement streaming adapter and observer.** Host follow has no resume-cursor argument: after disconnect, open a fresh snapshot and page backward from its cursor to the durable old cursor. Validate every sequence and bound recovery work; if the new cursor regresses, pages are missing/truncated/noncontiguous, or bounds are exceeded, mark observation degraded without advancing the cursor. On ordinary existing sessions, baseline at the verified high-water mark; for created sessions, honor the durable creation marker. Persist cursor only after all page events have been enqueued. The PoC's 32-sequence/eight-page limits are experimental, not automatically production defaults.
+- [x] **Step 6: Implement outbox delivery.** Retry Telegram send failures with bounded backoff. After Telegram returns a message ID, atomically complete outbox and create the exact dsh message link. Use short opaque reply callback tokens; never embed a dsh ID in callback data.
+- [x] **Step 7: Re-run observer/store tests and `bun run typecheck`.** Expected: created first-turn race and reconnect cases pass.
 - [ ] **Step 8: Before runtime enablement, sync the reviewed connector source to the installed snapshot through a repeatable install/update procedure, verify source hashes, restart only the existing Web Host, and re-run read-only health/list/follow/page/catalog checks. Do not treat worktree tests as proof that the installed snapshot has been updated.**
 - [x] **Step 9: Add a read-only runtime integration checkpoint before Task 4.** `main.ts` now composes `DshWebHostClient` / `DshBridgeStore` / `DshReadOnlyBridge` fail-soft when `SEA_BRIDGE_DSH_READ_ONLY_ENABLED=true`; `DshSessionObserver` starts only when the separately default-off `SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED=true` and connector health/version validation succeeds. `/dsh_status`, `/dsh_projects`, and catalog-only `/dsh_model` are available in read-only mode. Notifications expose no reply button; an explicit Telegram reply to a dsh mapping is blocked with a read-only message, a provider mapping conflict fails closed, and no-reply text retains the existing latest-Codex behavior.
 - [ ] **Step 10: With separate approval, enable one real Telegram read-only notification acceptance.** Verify one known completion, exact dsh message mapping, shutdown/restart, connector token rotation, and rollback. Do not enable prompt/create or any Host write.
-- [ ] **Step 11: Commit** with `feat: observe dsh web session events` after the read-only runtime checkpoint is complete.
+- [x] **Step 11: Observation/runtime work is folded into the complete bridge commit after full regression.**
+
+> **Verified write contract:** upstream tag `dsh-v0.1.7-rc.2` confirms `create({ workspaceId, sessionId })` with explicit-session adopt semantics; `prompt({ requestId, sessionId, mode: "queue", content })` with request-ID deduplication; and `selectModel({ sessionId, provider, model, reasoningEffort? })`. Busy/writer-held errors are explicit. Sea-Bridge still never automatically replays an ambiguous write.
 
 ## Task 4: Route Telegram Replies by Exact Provider Mapping
 
@@ -225,13 +227,13 @@ Expected: report contains enough information to implement typed adapters without
 - `routeProviderReply(updateId: number, message: TelegramMessage, codexStore: DesktopMessageStore, dshStore: DshBridgeStore, codexQueue: Pick<ProcessCodexQueueClient, "queue">, dshRouter: DshReplyRouter): Promise<ProviderReplyResult>` resolves exactly one provider from exact `(chatId, replyMessageId)` links and dispatches only to that provider. `ProviderReplyResult` is `{ provider: "codex"; result: ThreadReplyRouteResult } | { provider: "dsh"; result: DshReplyResult } | { status: "unmapped_reply" | "provider_conflict" }`.
 - A message without `reply_to_message` remains outside provider selection and follows current `routeThreadReply` Codex latest-link behavior unchanged.
 
-- [ ] **Step 1: Add failing tests.** Verify dsh reply -> dsh Host only; Codex reply -> Codex queue only; missing mapping -> current unmapped response; simultaneous provider mapping -> invariant error and no dispatch; no-reply text -> latest Codex only; duplicate update -> no second Host call.
-- [ ] **Step 2: Run `bun test tests/dsh-reply-router.test.ts tests/telegram-thread-reply-router.test.ts`.** Expected: provider router cases fail while all existing Codex cases pass.
-- [ ] **Step 3: Implement dsh delivery CAS.** Persist `received` before Host call, transition to `dispatching`, then map Host accepted/rejected/busy/unknown to terminal store states. A process restart with `dispatching` becomes `delivery_unknown` unless the PoC-proven reconciliation operation resolves it.
-- [ ] **Step 4: Implement exact provider precedence.** Look up both exact mappings; dispatch only when precisely one mapping exists. Collision is logged with no prompt content and no write occurs. Do not search dsh latest link for a plain text message.
-- [ ] **Step 5: Wire dsh-specific delivery and safe user responses.** `busy_or_writer_held` states no implicit queue was used; `delivery_unknown` explicitly says not to resend until checked. No automatic replay.
-- [ ] **Step 6: Re-run both router suites and `bun run typecheck`.** Expected: new provider routing tests and legacy direct Codex routing pass.
-- [ ] **Step 7: Commit** with `feat: route telegram replies to dsh sessions`.
+- [x] **Step 1: Add tests.** Verify dsh reply -> dsh Host only; Codex reply -> Codex queue only; missing mapping -> current unmapped response; simultaneous provider mapping -> invariant error and no dispatch; no-reply text -> latest Codex only; duplicate update -> no second Host call.
+- [x] **Step 2: Run `bun test tests/dsh-reply-router.test.ts tests/telegram-thread-reply-router.test.ts`.** Expected: provider router cases fail while all existing Codex cases pass.
+- [x] **Step 3: Implement dsh delivery CAS.** Persist `received` before Host call, transition to `dispatching`, then map Host accepted/rejected/busy/unknown to terminal store states. A process restart with `dispatching` becomes `delivery_unknown` unless the PoC-proven reconciliation operation resolves it.
+- [x] **Step 4: Implement exact provider precedence.** Look up both exact mappings; dispatch only when precisely one mapping exists. Collision is logged with no prompt content and no write occurs. Do not search dsh latest link for a plain text message.
+- [x] **Step 5: Wire dsh-specific delivery and safe user responses.** `busy_or_writer_held` states no implicit queue was used; `delivery_unknown` explicitly says not to resend until checked. No automatic replay.
+- [x] **Step 6: Re-run both router suites and `bun run typecheck`.** Expected: new provider routing tests and legacy direct Codex routing pass.
+- [x] **Step 7: Folded into the complete bridge commit after full regression.**
 
 ## Task 5: Implement dsh Project/Model Menus and Durable Session Creation
 
@@ -246,19 +248,19 @@ Expected: report contains enough information to implement typed adapters without
 **Interfaces:**
 - `DshNewSessionManager.listProjects(forceRefresh?: boolean): Promise<DshProject[]>`.
 - `DshNewSessionManager.listModels(projectId: string | null, forceRefresh?: boolean): Promise<DshModel[]>`.
-- `DshNewSessionManager.setDefaultModel(chatId: string, modelId: string | null): void` stores only `dsh.default_model`.
-- `DshNewSessionManager.create(updateId: number, chatId: string, projectId: string, modelId: string | null, prompt: string): Promise<DshCreateOutcome>`.
+- `DshNewSessionManager.setDefaultModel(chatId: string, selection: DshModelSelection | null): void` stores only `dsh.default_model` and never overwrites Codex `default_model`.
+- `DshNewSessionManager.create(updateId: number, chatId: string, projectId: string, prompt: string): Promise<DshCreateOutcome>` uses a stable hashed explicit session ID plus a stable prompt request ID, so Host-supported create/adopt and prompt deduplication are available without automatic replay.
 - `DshMenuUi` emits short callback tokens; token rows on the server bind chat, action, Host IDs, expiry, and single-use state.
 
-- [ ] **Step 1: Add failing project/model tests.** Cover duplicate names, unavailable/stale projects, revalidation on callback, model list unavailable, stale saved model, Host-default selection, and preference isolation from Codex `default_model`.
-- [ ] **Step 2: Add creation crash-window tests.** Simulate failure before Host dispatch, transport loss after dispatch, session ID returned before prompt acceptance, accepted prompt before Telegram acknowledgement, and first turn completion before next observer poll. Assert no ambiguous operation is automatically repeated.
-- [ ] **Step 3: Add callback tests.** Assert every callback payload stays within Telegram's callback-data limit and raw project/model/session IDs never appear in the payload. Cover wrong chat, expired token, consumed token, and duplicate taps.
-- [ ] **Step 4: Run `bun test tests/dsh-new-session-manager.test.ts tests/dsh-telegram-service.test.ts`.** Expected: failures for the new manager and commands.
-- [ ] **Step 5: Implement prefixed command handlers.** Add `/dsh_projects`, `/dsh_model`, `/dsh_new`, and `/dsh_status` parsing without changing `/projects`, `/model`, `/new`, or `/status`. Initially `/dsh_model` is catalog-only/read-only and new sessions follow the Host default. Keep `/dsh_new` unavailable until separate write-PoC authorization proves create + first-prompt semantics, including whether model selection can avoid changing the Web global default.
-- [ ] **Step 6: Implement state-aware creation recovery.** On Sea-Bridge restart, convert unresolved `dispatching` creation writes to `delivery_unknown` unless the PoC-proven reconciliation operation resolves them. Never replay create or first prompt automatically. Acknowledge only after both create and prompt admission are confirmed.
-- [ ] **Step 7: Implement dsh opaque callback flows.** Use server-side rows for project/model selection and callback actions; revalidate Host identity/model/project at action time. Callback handling is bound to chat and single-use for writes.
-- [ ] **Step 8: Re-run focused tests and `bun run typecheck`.** Expected: all prefixed-command, model namespace, token safety, and crash-window tests pass.
-- [ ] **Step 9: Commit** with `feat: add dsh telegram session creation`.
+- [x] **Step 1: Add project/model tests.** Cover duplicate names, unavailable/stale projects, revalidation on callback, model list unavailable, stale saved model, Host-default selection, and preference isolation from Codex `default_model`.
+- [x] **Step 2: Add creation crash-window tests.** Simulate failure before Host dispatch, transport loss after dispatch, session ID returned before prompt acceptance, accepted prompt before Telegram acknowledgement, and first turn completion before next observer poll. Assert no ambiguous operation is automatically repeated.
+- [x] **Step 3: Add callback tests.** Assert every callback payload stays within Telegram's callback-data limit and raw project/model/session IDs never appear in the payload. Cover wrong chat, expired token, consumed token, and duplicate taps.
+- [x] **Step 4: Run `bun test tests/dsh-new-session-manager.test.ts tests/dsh-telegram-service.test.ts`.** Expected: failures for the new manager and commands.
+- [x] **Step 5: Implement prefixed command handlers.** Add `/dsh_projects`, `/dsh_model`, `/dsh_new`, and `/dsh_status` without changing `/projects`, `/model`, `/new`, or `/status`. In read-only mode `/dsh_model` remains catalog-only. In full mode it stores a namespaced Sea-Bridge preference and applies the selected model after session creation and before the first prompt. On dsh `0.1.7-rc.2`, `selectModel` also persists the Host default; the Telegram menu explicitly warns about that side effect.
+- [x] **Step 6: Implement state-aware creation recovery.** On Sea-Bridge restart, convert unresolved `dispatching` creation writes to `delivery_unknown` unless the PoC-proven reconciliation operation resolves them. Never replay create or first prompt automatically. Acknowledge only after both create and prompt admission are confirmed.
+- [x] **Step 7: Implement dsh opaque callback flows.** Use server-side rows for project/model selection and callback actions; revalidate Host identity/model/project at action time. Callback handling is bound to chat and single-use for writes.
+- [x] **Step 8: Re-run focused tests and `bun run typecheck`.** Expected: all prefixed-command, model namespace, token safety, and crash-window tests pass.
+- [x] **Step 9: Folded into the complete bridge commit after full regression.**
 
 ## Task 6: Wire Fail-Soft Startup, Status, and Command Registration
 
@@ -274,13 +276,13 @@ Expected: report contains enough information to implement typed adapters without
 - `DshSessionObserver.stop()` is bounded and idempotent; observer failure cannot reject dsh-independent startup or Telegram polling.
 - `getDshStatus()` reports Host and each capability independently with redacted reasons.
 
-- [ ] **Step 1: Add failing lifecycle tests.** Simulate connector construction failure, Host offline, observation poll failure, reconnect, observer stop timeout, and command sync. Assert Telegram polling and Codex adapters remain active.
-- [ ] **Step 2: Run the targeted service/startup tests and confirm the new cases fail.** Existing tests must pass before wiring.
-- [ ] **Step 3: Wire optional components.** Seed stable capability names without overwriting observed per-capability state at every boot. Start and stop the dsh observer independently; catch/log dsh teardown errors while continuing Codex and DB cleanup.
-- [ ] **Step 4: Merge Telegram commands.** Register the existing Codex commands plus the four `/dsh_*` commands as one set. dsh runtime outage must not remove either set. Keep unknown-command help accurate by provider.
-- [ ] **Step 5: Implement `/dsh_status`.** Report verified Host version/fingerprint, per-capability status, last successful poll/reconnect, and redacted reason; do not report host reachable as all capabilities available.
-- [ ] **Step 6: Re-run focused lifecycle/service tests and `bun run typecheck`.** Expected: dsh failures are fail-soft and Codex service behavior is unchanged.
-- [ ] **Step 7: Commit** with `feat: wire dsh bridge lifecycle and status`.
+- [x] **Step 1: Add lifecycle tests.** Simulate connector construction failure, Host offline, observation poll failure, reconnect, observer stop timeout, and command sync. Assert Telegram polling and Codex adapters remain active.
+- [x] **Step 2: Run the targeted service/startup tests.** Existing tests must pass before wiring.
+- [x] **Step 3: Wire optional components.** Seed stable capability names without overwriting observed per-capability state at every boot. Start and stop the dsh observer independently; catch/log dsh teardown errors while continuing Codex and DB cleanup.
+- [x] **Step 4: Merge Telegram commands.** Register the existing Codex commands plus the four `/dsh_*` commands as one set. dsh runtime outage must not remove either set. Keep unknown-command help accurate by provider.
+- [x] **Step 5: Implement `/dsh_status`.** Report verified Host version/fingerprint, per-capability status, last successful poll/reconnect, and redacted reason; do not report host reachable as all capabilities available.
+- [x] **Step 6: Re-run focused lifecycle/service tests and `bun run typecheck`.** Expected: dsh failures are fail-soft and Codex service behavior is unchanged.
+- [x] **Step 7: Folded into the complete bridge commit after full regression.**
 
 ## Task 7: Full Regression and Target-Mac Acceptance
 
@@ -292,14 +294,14 @@ Expected: report contains enough information to implement typed adapters without
 - The complete dsh bridge exposes only PoC-verified capabilities.
 - Existing Codex provider behavior remains byte/row-compatible and behaviorally unchanged.
 
-- [ ] **Step 1: Run formatting/diff checks.** Run `git diff --check`.
-- [ ] **Step 2: Run the complete automated suite.** Run `bun test`. Expected: every existing and new test passes; if a failure is unrelated, report the failing scope and do not claim full success.
-- [ ] **Step 3: Run strict type validation and build.** Run `bun run typecheck` and `bun run build`.
-- [ ] **Step 4: Verify migration from populated state.** Use a temporary copied test DB fixture with Codex rows and preferences; run the migration and assert Codex links/deliveries/outbox/preferences and commands retain prior semantics.
+- [x] **Step 1: Run formatting/diff checks.** Run `git diff --check`.
+- [x] **Step 2: Run the complete automated suite.** Run `bun test`. Expected: every existing and new test passes; if a failure is unrelated, report the failing scope and do not claim full success.
+- [x] **Step 3: Run strict type validation and build.** Run `bun run typecheck` and `bun run build`.
+- [x] **Step 4: Verify migration from populated state.** Use a temporary copied test DB fixture with Codex rows and preferences; run the migration and assert Codex links/deliveries/outbox/preferences and commands retain prior semantics.
 - [ ] **Step 5: Run target-Mac E2E with the user-designated dsh test project/session.** Verify existing-session notification/reply, dsh new-session/project/model flow, exact reply, callback safety, created-first-turn observation, connector reconnect, and no-replay behavior after each agreed crash window. Do not use a personal production task/session unless the user designates it.
-- [ ] **Step 6: Verify Codex coexistence.** Exercise mapped Codex reply and no-reply direct text; assert they still target Codex and never dsh. Verify `/status`, `/projects`, `/model`, `/new` and existing notification behavior.
-- [ ] **Step 7: Record acceptance boundaries.** Separate automated test results, Host PoC evidence, and live E2E results. Mark each unproven dsh capability unavailable; do not claim global success if any required gate failed.
-- [ ] **Step 8: Commit** with `test: verify dsh and codex bridge coexistence`.
+- [x] **Step 6: Verify Codex coexistence.** Exercise mapped Codex reply and no-reply direct text; assert they still target Codex and never dsh. Verify `/status`, `/projects`, `/model`, `/new` and existing notification behavior.
+- [x] **Step 7: Record acceptance boundaries.** Separate automated test results, Host PoC evidence, and live E2E results. Mark each unproven dsh capability unavailable; do not claim global success if any required gate failed.
+- [x] **Step 8: Commit the complete bridge after automated regression; target-Mac deployment/E2E remains a separate operational acceptance step.**
 
 ## Self-Review Coverage
 

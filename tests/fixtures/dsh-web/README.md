@@ -1,9 +1,17 @@
 # dsh Web Host Fixtures
 
-Verified dsh CLI version during initial read-only PoC: `0.1.7-rc.2`.
+Verified dsh CLI / Web Host version: `0.1.7-rc.2`.
 
-`read-contract.json` contains synthetic example shapes for the PoC-proven Unix-socket operations. The real connector authenticates every request with a generated token stored outside this repository; examples omit the token. Session/workspace/model identifiers and names in the fixture are invented, not copied from the Host. Event data, workspace paths, cwd, browser cookies, launch tokens, and credentials must never enter fixtures.
+`read-contract.json` contains synthetic metadata shapes for the Unix-socket contract. Identifiers and names are invented. Tokens, event/message bodies, workspace paths, cwd, browser cookies, launch tokens, credentials, and private user paths must never enter fixtures.
 
-The observed installed Host was `0.1.7-rc.2`. Opening follow snapshots and one history page passed; live incremental follow and gap recovery are not represented as verified behavior. Prompt/create are not in the connector allowlist.
+The tracked Sea-Bridge connector is now protocol `1`, runtime version `0.3.0`. Read operations are `health`, `projects.list`, `sessions.list`, `history.follow`, `history.followWindow`, `history.page`, and `models.catalog`. The client fails closed on incomplete bounded listings and validates connector version before use.
 
-Task 1 binds Sea-Bridge to connector protocol `1` only. The typed client exposes `health`, `listProjects`, `listSessions`, `followSnapshot`, `pageHistory`, and `listModels`; it deliberately has no `readEvents`, `submitPrompt`, or `createSession` method. Socket and token paths are injected explicitly, so the deleted PoC runtime filenames are not treated as a production default.
+The full bridge additionally implements the exact dsh `0.1.7-rc.2` Session Controller write contracts verified from the tagged upstream source:
+
+- `session.create` calls `sessionController.create({ workspaceId, sessionId })`. Sea-Bridge mints a stable explicit session ID so Host create/adopt semantics are idempotent.
+- `prompt.submit` calls `sessionController.prompt({ requestId, sessionId, mode: "queue", content: [{ type: "text", text }] }, signal)`. The stable `requestId` is the Host-supported prompt idempotency key.
+- `session.selectModel` calls `sessionController.selectModel({ sessionId, provider, model, reasoningEffort? })`.
+
+Write fixture bodies are kept synthetic in unit tests rather than copied from a live user session. Busy/writer-held, proven rejection, and ambiguous delivery are tested as typed outcomes. Unknown or timed-out writes are never automatically replayed.
+
+Important dsh `0.1.7-rc.2` behavior: `selectModel` installs the Session-local next-request model selection and also persists that selection as the Host default asynchronously. The Telegram model UI therefore warns that choosing a model for a Sea-Bridge-created session can affect the default inherited by later Web sessions.

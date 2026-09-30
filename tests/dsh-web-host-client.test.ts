@@ -3,7 +3,12 @@ import { createServer, type Server } from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dshReadOnlyCapability, dshReadOnlyCapabilityBaseline } from "../src/dsh/capabilities.ts";
+import {
+  dshCapability,
+  dshCapabilityBaseline,
+  dshReadOnlyCapability,
+  dshReadOnlyCapabilityBaseline,
+} from "../src/dsh/capabilities.ts";
 import type { DshProject, DshSessionSummary } from "../src/dsh/types.ts";
 import { DshWebHostClient } from "../src/dsh/web-host-client.ts";
 
@@ -145,13 +150,13 @@ describe("DshWebHostClient", () => {
     });
   });
 
-  test("implements only the Task 0A-proven metadata reads", async () => {
+  test("implements the verified metadata contract without generic RPC", async () => {
     const { client } = await startConnector(fixtureResponder);
 
     expect(await client.health()).toEqual({
       status: "mounted",
       protocol: fixture.protocol,
-      connectorVersion: "0.2.0",
+      connectorVersion: "0.3.0",
     });
     expect(await client.listProjects()).toEqual(fixture.examples["projects.list"]!.response.items as DshProject[]);
     expect(await client.listSessions()).toEqual(fixture.examples["sessions.list"]!.response.items as DshSessionSummary[]);
@@ -176,9 +181,91 @@ describe("DshWebHostClient", () => {
       failureCount: 0,
     });
 
-    expect("submitPrompt" in client).toBe(false);
-    expect("createSession" in client).toBe(false);
+    expect("submitPrompt" in client).toBe(true);
+    expect("createSession" in client).toBe(true);
+    expect("selectModel" in client).toBe(true);
     expect("readEvents" in client).toBe(false);
+  });
+
+  test("maps the fixed write operations into typed results", async () => {
+    const { client } = await startConnector((request) => {
+      if (request.op === "health") {
+        return { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.3.0" };
+      }
+      if (request.op === "prompt.submit") {
+        expect(request).toMatchObject({
+          sessionId: "session-example",
+          requestId: "req-1",
+          text: "hello",
+        });
+        return { ok: true, status: "accepted" };
+      }
+      if (request.op === "session.create") {
+        expect(request).toMatchObject({
+          workspaceId: "workspace-example",
+          sessionId: "sea-bridge-1",
+        });
+        return { ok: true, status: "accepted", sessionId: "sea-bridge-1", agentPreset: "default" };
+      }
+      if (request.op === "session.selectModel") {
+        expect(request).toMatchObject({
+          sessionId: "sea-bridge-1",
+          provider: "p",
+          model: "m",
+        });
+        return { ok: true, status: "accepted", selected: { provider: "p", model: "m" } };
+      }
+      return { ok: false, error: "unsupported" };
+    });
+
+    expect(await client.submitPrompt("session-example", "req-1", "hello"))
+      .toEqual({ status: "accepted" });
+    expect(await client.createSession("workspace-example", "sea-bridge-1")).toEqual({
+      status: "accepted",
+      sessionId: "sea-bridge-1",
+      agentPreset: "default",
+    });
+    expect(await client.selectModel("sea-bridge-1", { provider: "p", model: "m" })).toEqual({
+      status: "accepted",
+      selected: { provider: "p", model: "m" },
+    });
+  });
+
+  test("preserves explicit busy/rejected/unknown write outcomes", async () => {
+    const responseAfterHealth = (response: Record<string, unknown>) =>
+      (request: Record<string, unknown>) => request.op === "health"
+        ? { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.3.0" }
+        : response;
+
+    const busy = await startConnector(responseAfterHealth({
+      ok: true,
+      status: "busy_or_writer_held",
+      errorCode: "session/agent-busy",
+    }));
+    expect(await busy.client.submitPrompt("session-example", "req-2", "hello")).toEqual({
+      status: "busy_or_writer_held",
+      errorCode: "session/agent-busy",
+    });
+
+    const rejected = await startConnector(responseAfterHealth({
+      ok: true,
+      status: "rejected",
+      errorCode: "project_missing",
+    }));
+    expect(await rejected.client.createSession("workspace-example", "sea-bridge-2")).toEqual({
+      status: "rejected",
+      errorCode: "project_missing",
+    });
+
+    const unknown = await startConnector(responseAfterHealth({
+      ok: true,
+      status: "delivery_unknown",
+      errorCode: "host_write_unknown",
+    }));
+    expect(await unknown.client.submitPrompt("session-example", "req-3", "hello")).toEqual({
+      status: "delivery_unknown",
+      errorCode: "host_write_unknown",
+    });
   });
 
   test("marks observation partial until production end-to-end verification", () => {
@@ -190,9 +277,22 @@ describe("DshWebHostClient", () => {
     });
     expect(dshReadOnlyCapability("projects").status).toBe("available");
     expect(dshReadOnlyCapability("models").status).toBe("available");
-    expect(dshReadOnlyCapability("reply").status).toBe("unavailable");
-    expect(dshReadOnlyCapability("creation").status).toBe("unavailable");
+    expect(dshReadOnlyCapability("reply")).toMatchObject({
+      status: "unavailable",
+      reason: "write_disabled",
+    });
+    expect(dshReadOnlyCapability("creation")).toMatchObject({
+      status: "unavailable",
+      reason: "write_disabled",
+    });
     expect(dshReadOnlyCapabilityBaseline()).toHaveLength(6);
+    expect(dshCapability("reply", true)).toEqual({
+      name: "reply",
+      status: "available",
+      reason: null,
+    });
+    expect(dshCapability("creation", true).status).toBe("available");
+    expect(dshCapabilityBaseline(true)).toHaveLength(6);
   });
 
   test("reloads the token for each request so connector remounts do not require a client restart", async () => {
@@ -201,7 +301,7 @@ describe("DshWebHostClient", () => {
     expect(await connector.client.health()).toEqual({
       status: "mounted",
       protocol: 1,
-      connectorVersion: "0.2.0",
+      connectorVersion: "0.3.0",
     });
     const nextToken = "b".repeat(64);
     connector.setAcceptedToken(nextToken);
@@ -209,7 +309,7 @@ describe("DshWebHostClient", () => {
     expect(await connector.client.health()).toEqual({
       status: "mounted",
       protocol: 1,
-      connectorVersion: "0.2.0",
+      connectorVersion: "0.3.0",
     });
   });
 
@@ -237,7 +337,7 @@ describe("DshWebHostClient", () => {
       ok: true,
       status: "mounted",
       protocol: 2,
-      connectorVersion: "0.2.0",
+      connectorVersion: "0.3.0",
     }));
     await expect(invalid.client.health()).rejects.toMatchObject({
       code: "contract_unsupported",

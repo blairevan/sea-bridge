@@ -242,6 +242,8 @@ A selected model is a preference, not proof that the model will remain available
 
 If model discovery is unavailable, Sea-Bridge does not invent a model list and does not erase the existing preference.
 
+For dsh `0.1.7-rc.2`, the verified `sessionController.selectModel()` implementation both installs the selected model for the session's next request and asynchronously persists the same selection as the Host default. Full-mode Telegram UI must disclose that side effect. Sea-Bridge does not claim per-session model isolation that the Host does not provide.
+
 ### 6.7 New sessions
 
 `/dsh_new` selects a project, applies the dsh model preference or Host default, and collects a first prompt. Pending state is durable, expires, and is single-use.
@@ -264,14 +266,14 @@ received|dispatching
 Rules:
 
 1. Persist the creation request before the first side-effecting Host call.
-2. If the Host supports an idempotency/client-request key, pass a stable value derived from the Telegram operation ID.
+2. The verified Host contracts support both controls needed here: pass a deterministic explicit `sessionId` to `create()` so create/adopt is stable, and pass a deterministic `requestId` to `prompt()` so the Host can deduplicate the prompt.
 3. A proven Host rejection may be retried by a new explicit user action.
 4. A timeout, connection loss, or process restart after dispatch starts becomes `delivery_unknown` unless the Host provides a reliable reconciliation API.
 5. Never automatically replay `delivery_unknown`.
 6. If a session ID was returned before the ambiguous point, persist it with the creation request and use it only for reconciliation/status; do not resend the first prompt automatically.
 7. Send a “created and started” acknowledgement only after the Host proves both session creation and first-prompt admission.
 8. Map the acknowledgement Telegram message to the new dsh session so replying to that message targets the exact session.
-9. If the session is busy/writer-held and no documented queue operation exists, report that status and do not enqueue implicitly.
+9. The verified `prompt()` contract supports `mode: "queue"`; Sea-Bridge uses that documented mode. Explicit `session/agent-busy` or `session/writer-held` errors are still surfaced and never force-taken-over or automatically replayed.
 
 ### 6.8 Status
 
@@ -302,6 +304,18 @@ Before write PoC authorization, Sea-Bridge may enable only the verified read sur
 - plain text without a Telegram reply target continues to use the existing latest-Codex behavior and never selects dsh;
 - connector health includes a non-secret connector runtime version in addition to protocol version; an incompatible or stale runtime fingerprint fails closed before notifications start.
 
+### 6.10 Full runtime mode
+
+Full mode requires `SEA_BRIDGE_DSH_READ_ONLY_ENABLED=true` and `SEA_BRIDGE_DSH_WRITE_ENABLED=true`; notifications remain independently gated by `SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED`.
+
+- exact Telegram replies resolve both provider mappings and dispatch only when exactly one provider owns the replied-to message;
+- dsh replies use a stable Host `requestId`, durable `received -> dispatching -> delivered/failed/delivery_unknown` state, and no automatic replay after ambiguity;
+- `/dsh_new` persists intent before side effects, uses a deterministic hashed explicit session ID, revalidates project/model before a new dispatch, registers the created-session first-turn marker immediately after create acceptance, and submits the first prompt with a deterministic Host request ID;
+- process restart converts unresolved dispatching writes to `delivery_unknown`; already accepted creation rows can resume Telegram acknowledgement without rediscovering or replaying Host writes;
+- project/model/reply buttons contain only short opaque tokens. Raw Host identifiers live only in the local state database and token rows are chat-bound, expiring, single-use, and periodically cleaned up;
+- notification and creation reply buttons use a longer bounded expiry than transient project/model menus, while a user can still use Telegram's native reply-to mapping when the callback button has expired;
+- Codex direct text without `reply_to_message` remains the latest-Codex behavior and never consults dsh mappings.
+
 ## 7. Host Connector Safety and Lifecycle
 
 - Accept only the verified local transport. For TCP/HTTP-style endpoints, enforce loopback targets (`127.0.0.1` / `::1`) unless the verified Host contract uses a Unix socket. Do not accept arbitrary LAN/public endpoint configuration for this integration.
@@ -312,9 +326,9 @@ Before write PoC authorization, Sea-Bridge may enable only the verified read sur
 - Reconnect read-only observation with bounded exponential backoff and jitter. Do not replay side-effecting writes as part of reconnect.
 - Redact secrets and session bodies from logs. Log stable hashes/IDs only when needed for correlation.
 - Connector/observer shutdown must be bounded and independent from Codex shutdown; active Host reads are cancellable and observer stop waits for the current poll to unwind before shared SQLite state is closed.
-- The tracked connector source is the canonical install source. Installation/update copies only the fixed read-only file set into a private snapshot, verifies hashes and permissions, and never restarts the Host implicitly.
+- The tracked connector source is the canonical install source. Installation/update copies only the fixed connector file set (`index.mjs`, `host-operations.mjs`, `package.json`, `cordis.patch.yml`) into a private snapshot, verifies hashes and permissions, and never restarts the Host implicitly.
 - After an unclean Host exit, the connector may remove only stale runtime socket/token paths that are owner-private and of the expected type. It must never replace a live socket or an unsafe/wrong-owner path.
-- A disk snapshot hash match does not prove the running Host loaded it; target-Mac restart validation must also verify the runtime `connectorVersion` returned by health.
+- A disk snapshot hash match does not prove the running Host loaded it; target-Mac restart validation must also verify connector `0.3.0` via the runtime `connectorVersion` returned by health.
 
 ## 8. Delivery and Failure Semantics
 

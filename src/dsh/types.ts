@@ -14,7 +14,7 @@ export interface DshCapabilityState {
   reason: string | null;
 }
 
-export const DSH_CONNECTOR_VERSION = "0.2.0";
+export const DSH_CONNECTOR_VERSION = "0.3.0";
 
 export interface DshHostHealth {
   status: "mounted";
@@ -39,7 +39,17 @@ export interface DshEventMetadata {
   type: string;
   seq: number;
   time: number;
-  reasonKind?: "completed" | "error" | "aborted" | "max-tokens" | "stop" | "tool-calls" | "unknown";
+  reasonKind?:
+    | "completed"
+    | "error"
+    | "aborted"
+    | "blocked"
+    | "max-tokens"
+    | "interrupted"
+    | "forked"
+    | "stop"
+    | "tool-calls"
+    | "unknown";
 }
 
 export interface DshFollowSnapshot {
@@ -81,6 +91,22 @@ export interface DshModelCatalog {
   groups: DshModelGroup[];
   failureCount: number;
 }
+
+export type DshWriteResult =
+  | { status: "accepted" }
+  | { status: "busy_or_writer_held"; errorCode: string }
+  | { status: "rejected"; errorCode: string }
+  | { status: "delivery_unknown"; errorCode: string };
+
+export type DshCreateSessionResult =
+  | { status: "accepted"; sessionId: string; agentPreset: string | null }
+  | { status: "rejected"; errorCode: string }
+  | { status: "delivery_unknown"; errorCode: string };
+
+export type DshSelectModelResult =
+  | { status: "accepted"; selected: DshModelSelection }
+  | { status: "rejected"; errorCode: string }
+  | { status: "delivery_unknown"; errorCode: string };
 
 export type DshHostClientErrorCode =
   | "host_unavailable"

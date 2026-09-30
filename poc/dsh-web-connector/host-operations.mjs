@@ -1,8 +1,9 @@
 /** Fixed, metadata-only Host read surface for the temporary connector. */
 
-export const CONNECTOR_VERSION = '0.2.0'
+export const CONNECTOR_VERSION = '0.3.0'
 const READ_TIMEOUT_MS = 2500
 const LIVE_WINDOW_MS = 12000
+const WRITE_TIMEOUT_MS = 12000
 
 /** Require one opaque Session id without accepting paths or arbitrary objects. */
 function sessionIdOf(request) {
@@ -53,8 +54,10 @@ function eventMetadata(record) {
   const metadata = { type: event.type, seq: event.seq, time: event.time }
   if (event.type === 'turn/end') {
     const kind = event.data?.reason?.kind
-    metadata.reasonKind = ['stop', 'error', 'aborted', 'max-tokens', 'tool-calls', 'completed'].includes(kind)
-      ? kind : 'unknown'
+    metadata.reasonKind = [
+      'completed', 'error', 'aborted', 'blocked', 'max-tokens', 'interrupted', 'forked',
+      'stop', 'tool-calls',
+    ].includes(kind) ? kind : 'unknown'
   }
   return metadata
 }
@@ -66,7 +69,43 @@ function noArguments(request) {
   }
 }
 
-/** Call one explicitly listed read operation; no dynamic method dispatch is possible. */
+function boundedString(value, name, max = 8192) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new Error('invalid_request')
+  }
+  return value
+}
+
+function remoteCode(error) {
+  if (typeof error?.code === 'string') return error.code
+  if (typeof error?.name === 'string' && error.name.includes('/')) return error.name
+  return undefined
+}
+
+function classifyWriteError(error) {
+  const code = remoteCode(error)
+  if (code === 'session/agent-busy' || code === 'session/writer-held') {
+    return { ok: true, status: 'busy_or_writer_held', errorCode: code }
+  }
+  if (code === 'workspace/not-found') {
+    return { ok: true, status: 'rejected', errorCode: 'project_missing' }
+  }
+  if (code === 'session/model-unavailable' || code === 'session/provider-models-unavailable' ||
+    code === 'session/provider-credentials-unavailable') {
+    return { ok: true, status: 'rejected', errorCode: 'model_unavailable' }
+  }
+  if (code === 'session/conflict' || code === 'agent-preset/conflict' ||
+    code === 'session/invalid-time-zone' || code === 'session/attachment-invalid' ||
+    code === 'gateway/bad-request') {
+    return { ok: true, status: 'rejected', errorCode: code }
+  }
+  if (typeof code === 'string' && (code.endsWith('/not-found') || code.includes('not-found'))) {
+    return { ok: true, status: 'rejected', errorCode: 'session_missing' }
+  }
+  return { ok: true, status: 'delivery_unknown', errorCode: 'host_write_unknown' }
+}
+
+/** Call one explicitly listed Host operation; no dynamic method dispatch is possible. */
 export async function dispatchRead(request, ctx) {
   if (request.op === 'health') {
     noArguments(request)
@@ -161,6 +200,79 @@ export async function dispatchRead(request, ctx) {
     if (!Array.isArray(result?.records)) throw new Error('invalid_host_response')
     return { ok: true, hasMore: result.hasMore === true, truncated: result.records.length > 100,
       events: result.records.slice(0, 100).map(eventMetadata) }
+  }
+  if (request.op === 'prompt.submit') {
+    const allowed = ['token', 'op', 'sessionId', 'requestId', 'text']
+    if (Object.keys(request).some(key => !allowed.includes(key))) throw new Error('invalid_request')
+    const sessionId = sessionIdOf(request)
+    const requestId = boundedString(request.requestId, 'requestId', 160)
+    const text = boundedString(request.text, 'text', 8192)
+    if (text.trim().length === 0) throw new Error('invalid_request')
+    try {
+      const result = await withDeadline(signal => ctx.sessionController.prompt({
+        requestId,
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+      }, signal), WRITE_TIMEOUT_MS)
+      if (result?.accepted !== true) return { ok: true, status: 'delivery_unknown', errorCode: 'invalid_prompt_receipt' }
+      return { ok: true, status: 'accepted' }
+    } catch (error) {
+      return classifyWriteError(error)
+    }
+  }
+  if (request.op === 'session.create') {
+    const allowed = ['token', 'op', 'workspaceId', 'sessionId']
+    if (Object.keys(request).some(key => !allowed.includes(key))) throw new Error('invalid_request')
+    const workspaceId = boundedString(request.workspaceId, 'workspaceId', 200)
+    const sessionId = sessionIdOf(request)
+    const workspaces = ctx.workspaceRegistry.list()
+    if (!Array.isArray(workspaces) || !workspaces.some(workspace => String(workspace.id) === workspaceId)) {
+      return { ok: true, status: 'rejected', errorCode: 'project_missing' }
+    }
+    try {
+      const value = await withDeadline(() => ctx.sessionController.create({ workspaceId, sessionId }), WRITE_TIMEOUT_MS)
+      if (typeof value?.sessionId !== 'string' || value.sessionId !== sessionId) {
+        return { ok: true, status: 'delivery_unknown', errorCode: 'invalid_create_receipt' }
+      }
+      return {
+        ok: true,
+        status: 'accepted',
+        sessionId: value.sessionId,
+        ...(typeof value.agentPreset === 'string' ? { agentPreset: value.agentPreset } : {}),
+      }
+    } catch (error) {
+      return classifyWriteError(error)
+    }
+  }
+  if (request.op === 'session.selectModel') {
+    const allowed = ['token', 'op', 'sessionId', 'provider', 'model', 'reasoningEffort']
+    if (Object.keys(request).some(key => !allowed.includes(key))) throw new Error('invalid_request')
+    const sessionId = sessionIdOf(request)
+    const provider = boundedString(request.provider, 'provider', 200)
+    const model = boundedString(request.model, 'model', 200)
+    const selection = { sessionId, provider, model }
+    if (request.reasoningEffort !== undefined) {
+      selection.reasoningEffort = boundedString(request.reasoningEffort, 'reasoningEffort', 100)
+    }
+    try {
+      const value = await withDeadline(() => ctx.sessionController.selectModel(selection), WRITE_TIMEOUT_MS)
+      const selected = value?.selected
+      if (typeof selected?.provider !== 'string' || typeof selected?.model !== 'string') {
+        return { ok: true, status: 'delivery_unknown', errorCode: 'invalid_model_receipt' }
+      }
+      return {
+        ok: true,
+        status: 'accepted',
+        selected: {
+          provider: selected.provider,
+          model: selected.model,
+          ...(typeof selected.reasoningEffort === 'string' ? { reasoningEffort: selected.reasoningEffort } : {}),
+        },
+      }
+    } catch (error) {
+      return classifyWriteError(error)
+    }
   }
   if (request.op === 'models.catalog') {
     noArguments(request)

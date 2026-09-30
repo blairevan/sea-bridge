@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { apply } from './index.mjs'
-import { CONNECTOR_VERSION, dispatchRead } from './read-operations.mjs'
+import { CONNECTOR_VERSION, dispatchRead } from './host-operations.mjs'
 
 /** Send one bounded request to a temporary PoC socket and parse its reply. */
 function request(socketPath, payload) {
@@ -55,6 +55,60 @@ test('Cordis mount uses private files and rejects unauthorized writes', async ()
     if (previousHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousHome
     await rmdir(testHome)
+  }
+})
+
+test('authenticated socket accepts the fixed write surface and an 8K CJK prompt', async () => {
+  const testHome = await mkdtemp(join(tmpdir(), 'sbp-write-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = testHome
+  const calls = []
+  let dispose
+  try {
+    apply({
+      workspaceRegistry: { list: () => [{ id: 'workspace-1', title: 'Project', sessionIds: [] }] },
+      sessionController: {
+        create: async request => {
+          calls.push(['create', request])
+          return { sessionId: request.sessionId }
+        },
+        selectModel: async request => {
+          calls.push(['model', request])
+          return { selected: { provider: request.provider, model: request.model } }
+        },
+        prompt: async request => {
+          calls.push(['prompt', request])
+          return { accepted: true }
+        },
+      },
+      effect: start => { dispose = start() },
+    })
+    const stop = await dispose
+    const runDir = join(testHome, 'run')
+    const socketPath = join(runDir, 'sea-bridge.sock')
+    const token = await readFile(join(runDir, 'sea-bridge.token'), 'utf8')
+    const longText = '测试'.repeat(4096)
+    assert.ok(Buffer.byteLength(longText, 'utf8') > 16 * 1024)
+
+    assert.deepEqual(await request(socketPath, {
+      op: 'session.create', token, workspaceId: 'workspace-1', sessionId: 'session-sea-bridge-test',
+    }), { ok: true, status: 'accepted', sessionId: 'session-sea-bridge-test' })
+    assert.deepEqual(await request(socketPath, {
+      op: 'session.selectModel', token, sessionId: 'session-sea-bridge-test', provider: 'p', model: 'm',
+    }), { ok: true, status: 'accepted', selected: { provider: 'p', model: 'm' } })
+    assert.deepEqual(await request(socketPath, {
+      op: 'prompt.submit', token, sessionId: 'session-sea-bridge-test', requestId: 'req-long', text: longText,
+    }), { ok: true, status: 'accepted' })
+    assert.equal(calls.length, 3)
+    assert.equal(calls[2][1].content[0].text, longText)
+
+    await stop()
+    dispose = undefined
+  } finally {
+    if (dispose) await (await dispose)().catch(() => {})
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(testHome, { recursive: true, force: true })
   }
 })
 
@@ -199,4 +253,62 @@ test('turn end projects only a fixed reason category without error or message co
     { type: 'turn/end', seq: 4, time: 56, reasonKind: 'unknown' },
   ])
   assert.equal(JSON.stringify(result).includes('private'), false)
+})
+
+test('allowlisted writes use exact Session Controller contracts and classify outcomes', async () => {
+  const calls = []
+  const ctx = {
+    workspaceRegistry: { list: () => [{ id: 'workspace-1', title: 'Project', sessionIds: [] }] },
+    sessionController: {
+      create: async request => {
+        calls.push(['create', request])
+        return { sessionId: request.sessionId, agentPreset: 'default' }
+      },
+      selectModel: async request => {
+        calls.push(['model', request])
+        return { selected: { provider: request.provider, model: request.model } }
+      },
+      prompt: async (request, signal) => {
+        calls.push(['prompt', request, signal instanceof AbortSignal])
+        return { accepted: true }
+      },
+    },
+  }
+  assert.deepEqual(await dispatchRead({
+    op: 'session.create', workspaceId: 'workspace-1', sessionId: 'sea-bridge-1',
+  }, ctx), {
+    ok: true, status: 'accepted', sessionId: 'sea-bridge-1', agentPreset: 'default',
+  })
+  assert.deepEqual(await dispatchRead({
+    op: 'session.selectModel', sessionId: 'sea-bridge-1', provider: 'p', model: 'm',
+  }, ctx), {
+    ok: true, status: 'accepted', selected: { provider: 'p', model: 'm' },
+  })
+  assert.deepEqual(await dispatchRead({
+    op: 'prompt.submit', sessionId: 'sea-bridge-1', requestId: 'req-1', text: 'hello',
+  }, ctx), { ok: true, status: 'accepted' })
+  assert.deepEqual(calls[0], ['create', { workspaceId: 'workspace-1', sessionId: 'sea-bridge-1' }])
+  assert.deepEqual(calls[1], ['model', { sessionId: 'sea-bridge-1', provider: 'p', model: 'm' }])
+  assert.deepEqual(calls[2][1], {
+    requestId: 'req-1', sessionId: 'sea-bridge-1', mode: 'queue',
+    content: [{ type: 'text', text: 'hello' }],
+  })
+  assert.equal(calls[2][2], true)
+
+  const busy = { sessionController: {
+    prompt: async () => { throw Object.assign(new Error('busy'), { code: 'session/agent-busy' }) },
+  } }
+  assert.deepEqual(await dispatchRead({
+    op: 'prompt.submit', sessionId: 'session-1', requestId: 'req-2', text: 'hello',
+  }, busy), { ok: true, status: 'busy_or_writer_held', errorCode: 'session/agent-busy' })
+
+  const unknown = { sessionController: {
+    prompt: async () => { throw new Error('transportish unknown') },
+  } }
+  assert.deepEqual(await dispatchRead({
+    op: 'prompt.submit', sessionId: 'session-1', requestId: 'req-3', text: 'hello',
+  }, unknown), { ok: true, status: 'delivery_unknown', errorCode: 'host_write_unknown' })
+  assert.deepEqual(await dispatchRead({
+    op: 'session.create', workspaceId: 'missing', sessionId: 'sea-bridge-2',
+  }, ctx), { ok: true, status: 'rejected', errorCode: 'project_missing' })
 })

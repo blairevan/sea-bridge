@@ -49,6 +49,7 @@ export interface AppConfig {
   logLevel: "debug" | "info" | "warn" | "error";
   codexHome: string;
   dshReadOnlyEnabled: boolean;
+  dshWriteEnabled: boolean;
   dshNotificationsEnabled: boolean;
   dshSocketPath: string;
   dshTokenPath: string;
@@ -138,7 +139,11 @@ export function loadConfig(): AppConfig {
   const codexCliPath = cliResolution.path;
   const codexHome = expandHome(process.env.CODEX_HOME ?? dirname(codexStateDbPath));
   const dshReadOnlyEnabled = booleanValue("SEA_BRIDGE_DSH_READ_ONLY_ENABLED", false);
+  const dshWriteEnabled = booleanValue("SEA_BRIDGE_DSH_WRITE_ENABLED", false);
   const dshNotificationsEnabled = booleanValue("SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED", false);
+  if (dshWriteEnabled && !dshReadOnlyEnabled) {
+    throw new Error("SEA_BRIDGE_DSH_WRITE_ENABLED requires SEA_BRIDGE_DSH_READ_ONLY_ENABLED");
+  }
   if (dshNotificationsEnabled && !dshReadOnlyEnabled) {
     throw new Error("SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED requires SEA_BRIDGE_DSH_READ_ONLY_ENABLED");
   }
@@ -166,6 +171,7 @@ export function loadConfig(): AppConfig {
     logLevel,
     codexHome,
     dshReadOnlyEnabled,
+    dshWriteEnabled,
     dshNotificationsEnabled,
     dshSocketPath,
     dshTokenPath,

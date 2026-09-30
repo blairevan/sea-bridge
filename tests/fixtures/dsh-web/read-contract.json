@@ -2,7 +2,7 @@
   "version": "0.1.7-rc.2",
   "protocol": 1,
   "examples": {
-    "health": { "request": { "op": "health" }, "response": { "ok": true, "status": "mounted", "protocol": 1, "connectorVersion": "0.2.0" } },
+    "health": { "request": { "op": "health" }, "response": { "ok": true, "status": "mounted", "protocol": 1, "connectorVersion": "0.3.0" } },
     "projects.list": { "request": { "op": "projects.list" }, "response": { "ok": true, "totalCount": 1, "items": [{ "id": "workspace-example", "title": "Example", "sessionCount": 1 }] } },
     "sessions.list": { "request": { "op": "sessions.list" }, "response": { "ok": true, "totalCount": 1, "items": [{ "sessionId": "session-example", "updatedAt": 42, "running": false, "blank": false }] } },
     "history.follow": { "request": { "op": "history.follow", "sessionId": "session-example" }, "response": { "ok": true, "cursor": 2, "hasMore": false, "truncated": false, "events": [{ "type": "assistant/message", "seq": 2, "time": 42 }] } },

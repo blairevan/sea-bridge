@@ -9,12 +9,17 @@ import type {
   DshLiveWindow,
   DshModelCatalog,
   DshModelGroup,
+  DshModelSelection,
   DshProject,
   DshSessionSummary,
+  DshWriteResult,
+  DshCreateSessionResult,
+  DshSelectModelResult,
 } from "./types.ts";
 import { DSH_CONNECTOR_VERSION, DshHostClientError } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 3_500;
+const WRITE_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,160}$/;
 
@@ -30,6 +35,12 @@ interface ConnectorRequest {
   sessionId?: string;
   throughSeq?: number;
   beforeSeq?: number;
+  requestId?: string;
+  text?: string;
+  workspaceId?: string;
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -92,7 +103,8 @@ function eventMetadata(value: unknown): DshEventMetadata {
   if (event.type === "turn/end") {
     const reason = row.reasonKind;
     if (reason !== undefined && reason !== "completed" && reason !== "error" &&
-      reason !== "aborted" && reason !== "max-tokens" && reason !== "stop" &&
+      reason !== "aborted" && reason !== "blocked" && reason !== "max-tokens" &&
+      reason !== "interrupted" && reason !== "forked" && reason !== "stop" &&
       reason !== "tool-calls" && reason !== "unknown") {
       throw new DshHostClientError("invalid_response", "dsh connector returned invalid turn reason");
     }
@@ -200,6 +212,57 @@ function parseModels(payload: unknown): DshModelCatalog {
   };
 }
 
+function parseWriteResult(payload: unknown): DshWriteResult {
+  const body = record(payload);
+  const status = requiredString(body.status, "write.status");
+  if (status === "accepted") return { status: "accepted" };
+  if (status === "busy_or_writer_held") {
+    return { status, errorCode: requiredString(body.errorCode, "write.errorCode") };
+  }
+  if (status === "rejected" || status === "delivery_unknown") {
+    return { status, errorCode: requiredString(body.errorCode, "write.errorCode") };
+  }
+  throw new DshHostClientError("invalid_response", "dsh connector returned invalid write status");
+}
+
+function parseCreateSessionResult(payload: unknown): DshCreateSessionResult {
+  const body = record(payload);
+  const status = requiredString(body.status, "create.status");
+  if (status === "accepted") {
+    const sessionId = requiredString(body.sessionId, "create.sessionId");
+    assertSessionId(sessionId);
+    return {
+      status,
+      sessionId,
+      agentPreset: typeof body.agentPreset === "string" ? body.agentPreset : null,
+    };
+  }
+  if (status === "rejected" || status === "delivery_unknown") {
+    return { status, errorCode: requiredString(body.errorCode, "create.errorCode") };
+  }
+  throw new DshHostClientError("invalid_response", "dsh connector returned invalid create status");
+}
+
+function parseSelectModelResult(payload: unknown): DshSelectModelResult {
+  const body = record(payload);
+  const status = requiredString(body.status, "selectModel.status");
+  if (status === "accepted") {
+    const selected = record(body.selected);
+    const value: DshModelSelection = {
+      provider: requiredString(selected.provider, "selectModel.provider"),
+      model: requiredString(selected.model, "selectModel.model"),
+      ...(typeof selected.reasoningEffort === "string"
+        ? { reasoningEffort: selected.reasoningEffort }
+        : {}),
+    };
+    return { status, selected: value };
+  }
+  if (status === "rejected" || status === "delivery_unknown") {
+    return { status, errorCode: requiredString(body.errorCode, "selectModel.errorCode") };
+  }
+  throw new DshHostClientError("invalid_response", "dsh connector returned invalid model selection status");
+}
+
 function mapConnectorError(error: string): DshHostClientError {
   if (error === "unauthorized") {
     return new DshHostClientError("unauthorized", "dsh connector authentication failed");
@@ -210,8 +273,8 @@ function mapConnectorError(error: string): DshHostClientError {
   if (error === "unsupported") {
     return new DshHostClientError("contract_unsupported", "dsh connector operation is unavailable");
   }
-  if (error === "read_unavailable") {
-    return new DshHostClientError("provider_error", "dsh Host read operation is unavailable");
+  if (error === "operation_unavailable" || error === "read_unavailable") {
+    return new DshHostClientError("provider_error", "dsh Host operation is unavailable");
   }
   return new DshHostClientError("provider_error", "dsh connector returned an unknown error");
 }
@@ -323,6 +386,62 @@ export class DshWebHostClient {
 
   async listModels(signal?: AbortSignal): Promise<DshModelCatalog> {
     return parseModels(await this.request({ op: "models.catalog" }, this.timeoutMs, signal));
+  }
+
+  async submitPrompt(
+    sessionId: string,
+    requestId: string,
+    text: string,
+    signal?: AbortSignal,
+  ): Promise<DshWriteResult> {
+    assertSessionId(sessionId);
+    if (!requestId || requestId.length > 160 || !text.trim() || text.length > 8192) {
+      throw new DshHostClientError("invalid_request", "invalid dsh prompt request");
+    }
+    await this.health(signal);
+    return parseWriteResult(await this.request(
+      { op: "prompt.submit", sessionId, requestId, text },
+      WRITE_TIMEOUT_MS,
+      signal,
+    ));
+  }
+
+  async createSession(
+    workspaceId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<DshCreateSessionResult> {
+    assertSessionId(sessionId);
+    if (!workspaceId || workspaceId.length > 200) {
+      throw new DshHostClientError("invalid_request", "invalid dsh workspace id");
+    }
+    await this.health(signal);
+    return parseCreateSessionResult(await this.request(
+      { op: "session.create", workspaceId, sessionId },
+      WRITE_TIMEOUT_MS,
+      signal,
+    ));
+  }
+
+  async selectModel(
+    sessionId: string,
+    selection: DshModelSelection,
+    signal?: AbortSignal,
+  ): Promise<DshSelectModelResult> {
+    assertSessionId(sessionId);
+    if (!selection.provider || selection.provider.length > 200 ||
+      !selection.model || selection.model.length > 200 ||
+      (selection.reasoningEffort !== undefined && selection.reasoningEffort.length > 100)) {
+      throw new DshHostClientError("invalid_request", "invalid dsh model selection");
+    }
+    await this.health(signal);
+    return parseSelectModelResult(await this.request({
+      op: "session.selectModel",
+      sessionId,
+      provider: selection.provider,
+      model: selection.model,
+      ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+    }, WRITE_TIMEOUT_MS, signal));
   }
 
   private async request(

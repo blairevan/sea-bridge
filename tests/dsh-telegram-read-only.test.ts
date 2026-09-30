@@ -26,6 +26,7 @@ const config: AppConfig = {
   telegramSummaryMaxChars: 1_000,
   logLevel: "error",
   dshReadOnlyEnabled: true,
+  dshWriteEnabled: false,
   dshNotificationsEnabled: false,
   dshSocketPath: "/tmp/dsh.sock",
   dshTokenPath: "/tmp/dsh.token",
@@ -71,7 +72,7 @@ function setup() {
   const desktop = new DesktopMessageStore(state);
   const dshStore = new DshBridgeStore(state);
   const host = {
-    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.2.0" }),
+    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.3.0" }),
     listProjects: async () => [
       { id: "p1", title: "Alpha", sessionCount: 2 },
       { id: "p2", title: "Beta", sessionCount: 1 },
@@ -120,7 +121,7 @@ describe("Telegram dsh read-only integration", () => {
       ]);
 
       await (service as any).processUpdate(update(1, "/dsh_status"));
-      expect(client.sent.at(-1)?.text).toContain("已连接（只读）");
+      expect(client.sent.at(-1)?.text).toContain("已连接（只读模式）");
       expect(client.sent.at(-1)?.text).toContain("回复: unavailable");
 
       await (service as any).processUpdate(update(2, "/dsh_projects"));

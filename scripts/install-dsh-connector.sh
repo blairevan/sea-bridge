@@ -6,7 +6,7 @@ SOURCE_DIR="$PROJECT_ROOT/poc/dsh-web-connector"
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 CONNECTORS_DIR="$DSH_HOME_DIR/connectors"
 DEST_DIR="$CONNECTORS_DIR/sea-bridge"
-FILES=(index.mjs read-operations.mjs package.json cordis.patch.yml)
+FILES=(index.mjs host-operations.mjs package.json cordis.patch.yml)
 MODE="${1:-check}"
 
 usage() {
@@ -123,4 +123,4 @@ if ! check_snapshot; then
 fi
 
 rm -rf "$backup_dir" 2>/dev/null || true
-printf "%s\n" "Installed read-only dsh connector snapshot. Restart/reload the existing dsh Web Host separately after review."
+printf "%s\n" "Installed dsh connector snapshot. Restart/reload the existing dsh Web Host separately after review."

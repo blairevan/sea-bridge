@@ -1,15 +1,15 @@
-/** Read-only Cordis plugin for the active dsh Web Host. */
+/** Narrow Sea-Bridge Cordis plugin for the active dsh Web Host. */
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createConnection, createServer } from 'node:net'
 import { chmod, lstat, mkdir, open, stat, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { dispatchRead } from './read-operations.mjs'
+import { dispatchRead } from './host-operations.mjs'
 
 export const name = 'sea-bridge-dsh-web-connector'
 export const inject = ['sessionController', 'workspaceRegistry']
 
-const MAX_REQUEST_BYTES = 4096
+const MAX_REQUEST_BYTES = 64 * 1024
 const REQUEST_TIMEOUT_MS = 3000
 
 /** Resolve a private runtime directory without touching browser or dsh credentials. */
@@ -104,8 +104,11 @@ function handleClient(socket, token, ctx) {
         respond(socket, { ok: false, error: 'unauthorized' })
       } else {
         if (request.op === 'history.followWindow') socket.setTimeout(18000, () => socket.destroy())
-        void dispatchRead(request, ctx).then(result => respond(socket, result)).catch(() => {
-          respond(socket, { ok: false, error: 'read_unavailable' })
+        void dispatchRead(request, ctx).then(result => respond(socket, result)).catch(error => {
+          respond(socket, {
+            ok: false,
+            error: error?.message === 'invalid_request' ? 'invalid_request' : 'operation_unavailable',
+          })
         })
       }
     } catch {
@@ -114,7 +117,7 @@ function handleClient(socket, token, ctx) {
   })
 }
 
-/** Bind a private read-only socket and release only resources created by this mount. */
+/** Bind a private allowlisted socket and release only resources created by this mount. */
 async function mountHealthSocket(ctx) {
   const directory = runDirectory()
   const socketPath = join(directory, 'sea-bridge.sock')

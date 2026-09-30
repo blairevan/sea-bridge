@@ -22,6 +22,8 @@ import { DshBridgeStore } from "./state/dsh-bridge-store.ts";
 import { DshWebHostClient } from "./dsh/web-host-client.ts";
 import { DshReadOnlyBridge } from "./dsh/read-only-bridge.ts";
 import { DshSessionObserver } from "./dsh/session-observer.ts";
+import { DshReplyRouter } from "./dsh/reply-router.ts";
+import { DshNewSessionManager } from "./dsh/new-session-manager.ts";
 
 function seedCapabilities(state: StateDb): void {
   const now = Date.now();
@@ -77,40 +79,52 @@ async function main(): Promise<void> {
   );
 
   let dshReadOnly: DshReadOnlyBridge | undefined;
+  let dshStore: DshBridgeStore | undefined;
+  let dshReplyRouter: DshReplyRouter | undefined;
+  let dshNewSessions: DshNewSessionManager | undefined;
   let dshObserver: DshSessionObserver | null = null;
   if (config.dshReadOnlyEnabled) {
-    const dshStore = new DshBridgeStore(state);
+    dshStore = new DshBridgeStore(state);
     const dshHost = new DshWebHostClient({
       socketPath: config.dshSocketPath,
       tokenPath: config.dshTokenPath,
     });
     dshReadOnly = new DshReadOnlyBridge(dshHost, dshStore);
-    let dshCompatible = false;
-    try {
-      const health = await dshHost.health();
-      dshCompatible = true;
-      logger.info("dsh_read_only_connected", {
-        protocol: health.protocol,
-        connectorVersion: health.connectorVersion,
-        notificationsEnabled: config.dshNotificationsEnabled,
-      });
-    } catch (error) {
-      logger.warn("dsh_read_only_unavailable", {
-        error: error instanceof Error ? error.name : "unknown_error",
-        notificationsEnabled: config.dshNotificationsEnabled,
-      });
+
+    if (config.dshWriteEnabled) {
+      const recovered = dshStore.recoverInterruptedWrites();
+      if (recovered.deliveries > 0 || recovered.creations > 0) {
+        logger.warn("dsh_interrupted_writes_quarantined", recovered);
+      }
+      dshReplyRouter = new DshReplyRouter(dshHost, dshStore);
+      dshNewSessions = new DshNewSessionManager(dshHost, dshStore);
     }
-    if (config.dshNotificationsEnabled && dshCompatible) {
+
+    if (config.dshNotificationsEnabled) {
       dshObserver = new DshSessionObserver(
         dshHost,
         dshStore,
         telegramClient,
         config.allowedChatId,
         config.dshPollIntervalMs,
+        config.dshWriteEnabled,
       );
-    } else if (config.dshNotificationsEnabled) {
-      logger.warn("dsh_notifications_not_started", {
-        reason: "connector_unavailable_or_incompatible",
+    }
+
+    try {
+      const health = await dshHost.health();
+      logger.info("dsh_connected", {
+        protocol: health.protocol,
+        connectorVersion: health.connectorVersion,
+        notificationsEnabled: config.dshNotificationsEnabled,
+        writeEnabled: config.dshWriteEnabled,
+      });
+    } catch (error) {
+      logger.warn("dsh_unavailable_at_startup", {
+        error: error instanceof Error ? error.name : "unknown_error",
+        notificationsEnabled: config.dshNotificationsEnabled,
+        writeEnabled: config.dshWriteEnabled,
+        retryByObserver: Boolean(dshObserver),
       });
     }
   }
@@ -158,6 +172,10 @@ async function main(): Promise<void> {
     threadStore,
     newThreadManager,
     dshReadOnly,
+    dshStore,
+    dshReplyRouter,
+    dshNewSessions,
+    dshObserver ?? undefined,
   );
 
   let shuttingDown = false;
@@ -186,6 +204,7 @@ async function main(): Promise<void> {
     approvalTimeoutMs: config.approvalTimeoutMs,
     activeSessionTtlMs: config.activeSessionTtlMs,
     dshReadOnlyEnabled: config.dshReadOnlyEnabled,
+    dshWriteEnabled: config.dshWriteEnabled,
     dshNotificationsEnabled: config.dshNotificationsEnabled,
   });
   await telegram.run();

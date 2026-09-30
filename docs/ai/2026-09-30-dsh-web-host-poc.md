@@ -162,3 +162,36 @@ The feature worktree now contains the production-side read-only wiring, while li
 - The installed connector snapshot under `~/.dsh/connectors/sea-bridge/` was **not** modified by this implementation turn, the dsh Web Host was **not** restarted, and no real Telegram message, prompt, or session creation was performed. The currently running installed snapshot must be explicitly updated and restarted/revalidated before connector `0.2.0` behavior is considered live.
 
 Verification after this implementation: full `bun test` passed 122/122 with 403 expectations; `./node_modules/.bin/tsc --noEmit`, `bun run build`, `git diff --check`, JSON parsing, connector Node tests, and temporary installer acceptance all passed.
+
+## Full bridge implementation (connector 0.3.0)
+
+The read-only stage above is retained as historical evidence. The current feature-branch implementation has advanced to the complete Telegram bridge contract, while the target Mac still requires a separate deployment/restart before that code is live.
+
+The exact dsh write API was verified against upstream tag `dsh-v0.1.7-rc.2` before implementation:
+
+- `sessionController.create({ workspaceId, sessionId })` accepts an explicit session ID and adopts an already persisted session when the workspace/cwd matches. Sea-Bridge therefore uses a deterministic hashed `session-sea-bridge-<24 hex>` ID derived from Telegram chat/update identity.
+- `sessionController.prompt({ requestId, sessionId, mode: "queue", content })` deduplicates an already recorded `requestId`. Existing-session replies use `sea-bridge-tg-<updateId>`; first prompts use `sea-bridge-new-<updateId>`.
+- `sessionController.selectModel({ sessionId, provider, model, reasoningEffort? })` returns the effective selection. In dsh `0.1.7-rc.2` it also persists the selection as the Host default asynchronously, so the Telegram model menu warns that later Web sessions may inherit the changed default.
+- Explicit `session/agent-busy` and `session/writer-held` outcomes are surfaced. Unknown transport/Host outcomes become `delivery_unknown`; Sea-Bridge never automatically replays them.
+
+Connector `0.3.0` exposes only a fixed local Unix-socket allowlist: health/project/session/history/model reads plus `prompt.submit`, `session.create`, and `session.selectModel`. There is no generic method dispatch, browser credential reuse, direct session-file mutation, second Host, or force writer takeover. The socket request limit is 64 KiB so the supported 8192-character prompt bound also works for multi-byte CJK text; an authenticated socket test covers an 8K CJK prompt.
+
+The application-side complete mode adds:
+
+- exact provider routing for Telegram replies, with Codex/dsh collision detection and unchanged latest-Codex behavior for text without `reply_to_message`;
+- durable dsh reply intent and duplicate/payload-mismatch protection;
+- `/dsh_new`, project menus, ForceReply first-prompt collection, and direct `/dsh_new <project> <prompt>`;
+- `/dsh_model` opaque model selection and namespaced `dsh.default_model` preference;
+- stable session/request IDs, create/adopt + prompt dedup contracts, and no automatic replay after ambiguous create/model/prompt dispatch;
+- accepted-creation recovery that can finish Telegram acknowledgement without rediscovering projects/models or replaying Host writes;
+- created-session first-turn observer markers and conflict detection;
+- opaque, hashed, chat-bound, expiring, single-use Telegram callback tokens with periodic cleanup;
+- completion/failure/interruption notifications with optional 24-hour reply buttons in write mode;
+- fail-soft `SEA_BRIDGE_DSH_READ_ONLY_ENABLED`, `SEA_BRIDGE_DSH_WRITE_ENABLED`, and `SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED` gates;
+- restart recovery that moves unresolved dispatching reply/creation writes to `delivery_unknown`.
+
+The install/check command is now `scripts/install-dsh-connector.sh` and snapshots `index.mjs`, `host-operations.mjs`, `package.json`, and `cordis.patch.yml`. It verifies file hashes/private modes and does not restart the Host implicitly.
+
+Final automated verification for the complete branch implementation: `bun test` passed **154/154** with **574 expectations**; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. The connector's own Node suite passed, including authenticated write operations and the 8K CJK socket prompt. Populated-state migration, provider isolation, crash-window recovery, lifecycle gating, observer shutdown, and Codex regressions are included in those tests.
+
+**Deployment boundary:** this code-completion pass did not overwrite the currently installed connector snapshot, restart the live dsh Web Host, enable the three dsh environment gates in the production Sea-Bridge service, send a real Telegram message, or create/write a real dsh session. Those are deployment/target-Mac acceptance actions, separate from repository implementation completeness.
