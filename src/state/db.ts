@@ -1,5 +1,101 @@
 import { Database } from "bun:sqlite";
 
+function migrateDshBridgeTables(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dsh_message_links (
+      telegram_chat_id TEXT NOT NULL,
+      telegram_message_id INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      event_kind TEXT NOT NULL,
+      event_fingerprint TEXT NOT NULL UNIQUE,
+      sent_at INTEGER NOT NULL,
+      PRIMARY KEY (telegram_chat_id, telegram_message_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dsh_deliveries (
+      telegram_update_id INTEGER PRIMARY KEY,
+      reply_to_message_id INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('received','dispatching','delivered','failed','delivery_unknown')),
+      error_code TEXT,
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS dsh_observer_state (
+      session_id TEXT PRIMARY KEY,
+      cursor INTEGER NOT NULL,
+      contract_fingerprint TEXT NOT NULL,
+      last_event_fingerprint TEXT,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dsh_notification_outbox (
+      event_fingerprint TEXT PRIMARY KEY,
+      telegram_chat_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      event_kind TEXT NOT NULL,
+      message_text TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','sent')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      last_error TEXT,
+      telegram_message_id INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dsh_notification_due
+      ON dsh_notification_outbox(status, next_attempt_at, created_at);
+
+    CREATE TABLE IF NOT EXISTS dsh_callback_tokens (
+      token_hash TEXT PRIMARY KEY,
+      telegram_chat_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','consumed','expired')),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      consumed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_dsh_callback_expiry
+      ON dsh_callback_tokens(status, expires_at);
+
+    CREATE TABLE IF NOT EXISTS dsh_creation_requests (
+      telegram_update_id INTEGER PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      model_id TEXT,
+      prompt_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('received','dispatching','accepted','acknowledged','failed','delivery_unknown')),
+      session_id TEXT,
+      turn_id TEXT,
+      error_code TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dsh_created_sessions (
+      session_id TEXT PRIMARY KEY,
+      creation_update_id INTEGER NOT NULL UNIQUE,
+      baseline_pending INTEGER NOT NULL DEFAULT 1 CHECK(baseline_pending IN (0,1)),
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dsh_pending_new_session_prompts (
+      telegram_chat_id TEXT NOT NULL,
+      prompt_message_id INTEGER NOT NULL,
+      project_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','consumed','expired')),
+      consumed_at INTEGER,
+      PRIMARY KEY (telegram_chat_id, prompt_message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dsh_pending_prompt_expiry
+      ON dsh_pending_new_session_prompts(status, expires_at);
+  `);
+}
+
 export class StateDb {
   readonly db: Database;
 
@@ -151,6 +247,8 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_pending_new_thread_expiry
         ON pending_new_thread_prompts(status, expires_at);
     `);
+
+    migrateDshBridgeTables(this.db);
   }
 
   close(): void {

@@ -162,13 +162,13 @@ Expected: report contains enough information to implement typed adapters without
 - `consumeCallback(token, chatId, now)` returns the stored action exactly once only for matching chat and unexpired state.
 - `completeNotification(eventId, telegramMessageId)` transactionally stores the dsh mapping and marks the dsh outbox row sent.
 
-- [ ] **Step 1: Write migration and store tests.** Start with an in-memory DB seeded with Codex links, deliveries, cursors, outbox, pending prompts, and `user_preferences.default_model`. Assert all remain byte/row-equivalent after `StateDb` migration and the dsh tables are empty.
-- [ ] **Step 2: Add state-transition tests.** Cover dsh delivery uniqueness; creation `received -> dispatching -> accepted -> acknowledged`; `dispatching -> delivery_unknown`; illegal transitions; dsh model preference `dsh.default_model`; callback expiry/chat binding/single-use; outbox mapping atomicity; and created-session marker persistence.
-- [ ] **Step 3: Run `bun test tests/dsh-bridge-store.test.ts`.** Expected: failures for missing dsh schema/store.
-- [ ] **Step 4: Add dsh-only additive tables.** Implement `dsh_message_links`, `dsh_deliveries`, `dsh_observer_state`, `dsh_notification_outbox`, `dsh_callback_tokens`, `dsh_creation_requests`, `dsh_created_sessions`, and `dsh_pending_new_session_prompts`, with primary/unique keys, status checks, expiry indexes, and timestamps. Do not add provider columns to Codex tables.
-- [ ] **Step 5: Implement typed store methods.** Ensure every write intent is durable before external side effects; use SQLite transactions for state transitions, callback consumption, and outbox-to-link completion. Never persist raw prompts in diagnostic fields; only store the required operation payload in the dedicated protected state if recovery requires it, and store hashes in logs.
-- [ ] **Step 6: Re-run migration/store tests and `bun run typecheck`.** Expected: existing Codex rows/preferences survive and all dsh state tests pass.
-- [ ] **Step 7: Commit** with `feat: add isolated dsh bridge state`.
+- [x] **Step 1: Write migration and store tests.** The migration test now exercises a real on-disk upgrade path: seed current Codex rows, drop only the dsh tables to simulate the previous version, close the DB, reopen through `StateDb`, and prove all existing Codex rows/preferences remain identical while the new dsh tables start empty.
+- [x] **Step 2: Add state-transition tests.** Coverage includes dsh delivery uniqueness; creation `received -> dispatching -> accepted -> acknowledged`; `dispatching -> delivery_unknown`; illegal transitions; namespaced `dsh.default_model`; callback chat binding/expiry/single-use; token-hash storage; atomic outbox-to-link completion including conflict rollback; created-session baseline marker; observer state; and pending-new-session prompt single consumption.
+- [x] **Step 3: Run `bun test tests/dsh-bridge-store.test.ts`.** Result: 8/8 passed after the implementation.
+- [x] **Step 4: Add dsh-only additive tables.** Added `dsh_message_links`, `dsh_deliveries`, `dsh_observer_state`, `dsh_notification_outbox`, `dsh_callback_tokens`, `dsh_creation_requests`, `dsh_created_sessions`, and `dsh_pending_new_session_prompts`; existing Codex tables are unchanged.
+- [x] **Step 5: Implement typed store methods.** Callback secrets are stored only as SHA-256 hashes; creation transitions and callback consumption use transactions/CAS; notification completion uses a strict transaction so a message-link conflict rolls the outbox state back instead of silently losing the reply mapping. Raw prompts are not stored by Task 2.
+- [x] **Step 6: Re-run migration/store and full regression tests.** Focused store tests passed 8/8 and full `bun test` passed 93/93. The new state modules pass a Bun build check and `git diff --check`. `bunx --no-install tsc --noEmit` still reports no existing `tsc` binary, so no typecheck success is claimed and no dependency was installed.
+- [x] **Step 7: Commit** with `feat: add isolated dsh bridge state`.
 
 ## Task 3: Implement Incremental dsh Observation and Notification Outbox
 

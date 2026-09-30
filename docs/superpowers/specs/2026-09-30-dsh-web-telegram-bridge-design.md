@@ -158,7 +158,7 @@ Exact columns follow the verified Host contract, but the following identities ar
 - outbound deduplication: stable `(session_id, event_id/turn_id, event_kind)` identity, hashed if needed
 - reply delivery: Telegram `update_id` as the inbound idempotency key
 - creation request: Telegram `update_id` or another unique Telegram-origin operation ID as the durable idempotency key
-- callback token: short random/opaque token -> provider action + Host identity + expiry
+- callback token: short random/opaque token -> provider action + Host identity + expiry; persist only a one-way hash of the opaque token, not the raw callback secret
 
 The transport-level `telegram_updates` table remains shared because Telegram update IDs are globally unique for the bot and its purpose is whole-update processing idempotency, not provider routing.
 
@@ -206,7 +206,7 @@ Unknown, expired, wrong-chat, or already-consumed tokens produce a safe message 
 - On the first enablement of ordinary pre-existing sessions, establish a baseline instead of replaying old history.
 - Notify only for verified terminal outcomes. Typical expected states are completed, failed, and interrupted, but the adapter must not invent a state the Host contract does not expose.
 - Include a dsh source label and session title, plus a redacted/truncated final-text summary when available.
-- Telegram-send failures stay in the durable dsh outbox and retry with bounded backoff. A notification is marked sent only after the Telegram message ID and dsh reply mapping are persisted atomically.
+- Telegram-send failures stay in the durable dsh outbox and retry with bounded backoff. A notification is marked sent only after the Telegram message ID and dsh reply mapping are persisted atomically. A mapping-key conflict is an invariant failure and rolls back the outbox completion rather than silently marking the notification sent.
 - Replies to a mapped dsh notification always target that exact session.
 
 ### 6.4 Bridge-created session observation

@@ -78,3 +78,19 @@ Task 1 now implements the Sea-Bridge side of the PoC-proven read transport in `s
 - The fixture records the verified dsh Host version `0.1.7-rc.2`, while connector protocol `1` is the runtime contract checked by the client. The current connector has no separate safe Host-version RPC, so the adapter does not invent a runtime version value.
 
 Verification after implementation: focused `bun test tests/dsh-web-host-client.test.ts` passed 6/6 and full `bun test` passed 85/85. A Bun build check of the new dsh modules succeeded, the existing PoC Node tests still pass 2/2, and `git diff --check` passes. `bunx --no-install tsc --noEmit` confirmed that no local/cached `tsc` binary is present; it did not install anything, so TypeScript typecheck success is not claimed.
+
+
+## Task 2 isolated dsh state implementation
+
+Task 2 adds only provider-specific dsh persistence and does not wire any new Host write path or production observer.
+
+- `StateDb` creates eight additive dsh tables for exact Telegram links, reply deliveries, observer high-water state, notification outbox, callback-token state, creation requests, created-session baseline markers, and pending new-session prompts. No provider column or semantic change was added to existing Codex tables.
+- Upgrade verification uses an on-disk database populated with representative existing Codex links, deliveries, observer cursor, notification outbox, `default_model`, and pending-new-thread prompt. After removing only the dsh tables to simulate the pre-feature database and reopening through `StateDb`, every existing Codex row remains unchanged and the dsh tables are recreated empty.
+- Telegram update IDs are the dsh delivery/creation idempotency keys. Creation transitions are compare-and-set and permit the designed `received -> dispatching -> accepted -> acknowledged` path plus explicit `delivery_unknown`; illegal or stale transitions do not advance state.
+- dsh model preference uses only the shared `user_preferences` key `dsh.default_model`, leaving Codex `default_model` untouched.
+- Opaque callback tokens are never stored raw. The local state keeps a SHA-256 token hash, chat binding, action/payload, expiry, and single-use status. Wrong-chat and already-consumed tokens do not change state; expired tokens become expired without producing an action.
+- Notification completion creates the exact dsh Telegram-message mapping and marks the outbox row sent in one SQLite transaction. Mapping conflicts throw and roll the transaction back, preserving the pending outbox row for diagnosis/retry rather than silently losing reply routing.
+- Created-session markers retain a one-time `baseline_pending` bit for the future first-turn race handling. Observer state storage exists, but Task 3 remains gated because live follow delivery and reconnect gap recovery are still unverified.
+- No raw dsh prompt is persisted by Task 2; current creation state stores the prompt hash only.
+
+Verification: `bun test tests/dsh-bridge-store.test.ts` passed 8/8, full `bun test` passed 93/93, the new state modules passed a Bun build check, and `git diff --check` passed. `bunx --no-install tsc --noEmit` still finds no existing `tsc` binary, so typecheck success is not claimed and no dependency was installed.
