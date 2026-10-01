@@ -1,9 +1,9 @@
 # Design Spec: dsh Web ↔ Telegram Bridge
 
 - **Date**: 2026-09-30
-- **Branch**: `feature/dsh-web-bridge-design`
+- **Integration**: PR #4 squash-merged into `main` at `caf52c2` (source branch subsequently deleted)
 - **Project**: sea-bridge
-- **Status**: Implemented on `feature/dsh-web-bridge-design`; connector 0.4.0 target-Mac deployment/E2E acceptance remains pending
+- **Status**: Connector 0.4.0 deployed on the target Mac; short/multipart terminal notifications and native Reply to a nonfinal chunk passed live Telegram acceptance. Crash-window, rollback, and remaining full-matrix E2E gates are not claimed complete; see the implementation plan and PoC record.
 - **Last Review**: 2026-10-01
 
 ## 0. Review Findings and Design Decisions
