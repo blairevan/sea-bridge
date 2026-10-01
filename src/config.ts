@@ -175,6 +175,6 @@ export function loadConfig(): AppConfig {
     dshNotificationsEnabled,
     dshSocketPath,
     dshTokenPath,
-    dshPollIntervalMs: positiveInt("SEA_BRIDGE_DSH_POLL_INTERVAL_MS", 2_000),
+    dshPollIntervalMs: positiveInt("SEA_BRIDGE_DSH_POLL_INTERVAL_MS", 30_000),
   };
 }
