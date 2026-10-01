@@ -31,6 +31,8 @@ interface DshObserverStatusSource {
     lastErrorCode: string | null;
     consecutiveFailures: number;
     nextPollAt: number | null;
+    liveSubscriptions?: number;
+    liveReconnecting?: number;
   };
 }
 
@@ -944,6 +946,7 @@ export class TelegramService {
         `观察: ${byName.get("observation")?.status ?? "unknown"}`,
         ...(observer ? [
           `观察运行: ${observer.running ? "yes" : "no"}`,
+          `实时监听: ${observer.liveSubscriptions ?? 0} 会话，重连中 ${observer.liveReconnecting ?? 0}`,
           `最近观察成功: ${observer.lastSuccessfulPollAt === null
             ? "-"
             : new Date(observer.lastSuccessfulPollAt).toISOString()}`,

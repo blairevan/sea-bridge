@@ -5,6 +5,7 @@ import type { DshWebHostClient } from "./web-host-client.ts";
 import { createDshCallback } from "./menu-ui.ts";
 import { recoverDshHistory } from "./history-recovery.ts";
 import { formatDshTerminal } from "./notification-formatter.ts";
+import { DshLiveSubscriptions } from "./live-subscriptions.ts";
 
 const CONTRACT_FINGERPRINT = "dsh-web-0.1.7-rc.2-terminal-text-v2";
 const LEGACY_CONTRACT_FINGERPRINT = "dsh-web-0.1.7-rc.2-metadata-v1";
@@ -14,7 +15,7 @@ const MAX_POLL_BACKOFF_MS = 5 * 60_000;
 
 type ReadHost =
   Pick<DshWebHostClient, "listSessions" | "followSnapshot" | "pageHistory"> &
-  Partial<Pick<DshWebHostClient, "health" | "getTurnSummary">>;
+  Partial<Pick<DshWebHostClient, "health" | "getTurnSummary" | "followWindow">>;
 interface SendTelegram {
   sendMessage(chatId: string | number, text: string, buttons?: InlineButton[][]): Promise<{ message_id: number }>;
 }
@@ -30,6 +31,8 @@ export class DshSessionObserver {
   private lastErrorCode: string | null = null;
   private consecutiveFailures = 0;
   private nextPollAt: number | null = null;
+  private readonly live: DshLiveSubscriptions | null;
+  private liveWakePending = false;
 
   constructor(
     private readonly host: ReadHost,
@@ -44,6 +47,12 @@ export class DshSessionObserver {
     if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs <= 0) {
       throw new Error("dsh observer requires a positive poll interval");
     }
+    this.live = host.followWindow ? new DshLiveSubscriptions(
+      (sessionId, signal) => host.followWindow!(sessionId, signal),
+      (sessionId, cursor) => {
+        if (cursor > (this.store.getObserverState(sessionId)?.cursor ?? -1)) this.wake();
+      },
+    ) : null;
   }
 
   /** Start fail-soft polling with bounded exponential retry after Host failures. */
@@ -53,15 +62,18 @@ export class DshSessionObserver {
     void this.runScheduledPoll();
   }
 
-  /** Stop scheduling, cancel the active Host request, and wait for the current poll to unwind. */
+  /** Stop scheduling and drain both follow windows and the active reconciliation. */
   async stop(): Promise<void> {
     this.started = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.nextPollAt = null;
     this.activeAbortController?.abort();
+    const stoppedLive = this.live?.stop();
     const active = this.activePoll;
     if (active) await active.catch(() => undefined);
+    await stoppedLive;
+    this.liveWakePending = false;
   }
 
   /** Observe each listed session and deliver due dsh notifications independently. */
@@ -79,6 +91,7 @@ export class DshSessionObserver {
       }
     }
     this.throwIfCancelled(signal);
+    if (this.started) this.live?.sync(sessions.map((session) => session.sessionId));
     await this.deliverPending(signal);
     if (firstError) throw firstError;
   }
@@ -228,6 +241,8 @@ export class DshSessionObserver {
     lastErrorCode: string | null;
     consecutiveFailures: number;
     nextPollAt: number | null;
+    liveSubscriptions: number;
+    liveReconnecting: number;
   } {
     return {
       running: this.started,
@@ -235,6 +250,8 @@ export class DshSessionObserver {
       lastErrorCode: this.lastErrorCode,
       consecutiveFailures: this.consecutiveFailures,
       nextPollAt: this.nextPollAt,
+      liveSubscriptions: this.live?.getStatus().active ?? 0,
+      liveReconnecting: this.live?.getStatus().reconnecting ?? 0,
     };
   }
 
@@ -255,6 +272,13 @@ export class DshSessionObserver {
       this.nextPollAt = null;
       void this.runScheduledPoll();
     }, delayMs);
+  }
+
+  /** Coalesce live wakeups; an event arriving during reconciliation gets another immediate pass. */
+  private wake(): void {
+    if (!this.started) return;
+    if (this.polling) this.liveWakePending = true;
+    else this.scheduleNextPoll(0);
   }
 
   /** Keep dsh errors from escaping an optional observer's scheduling loop. */
@@ -286,7 +310,9 @@ export class DshSessionObserver {
       if (this.activeAbortController === controller) this.activeAbortController = null;
       this.polling = false;
       if (this.started) {
-        this.scheduleNextPoll(this.consecutiveFailures > 0
+        const immediate = this.liveWakePending;
+        this.liveWakePending = false;
+        this.scheduleNextPoll(immediate ? 0 : this.consecutiveFailures > 0
           ? this.retryDelayMs()
           : this.pollIntervalMs);
       }
