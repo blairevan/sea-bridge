@@ -52,12 +52,12 @@ function baseEnv(root: string): void {
 }
 
 describe("dsh lifecycle configuration", () => {
-  test("defaults to thirty-second fallback scanning without an override", () => {
+  test("defaults to ten-second fallback scanning without an override", () => {
     const root = mkdtempSync(join(tmpdir(), "sea-bridge-dsh-config-"));
     try {
       baseEnv(root);
       delete process.env.SEA_BRIDGE_DSH_POLL_INTERVAL_MS;
-      expect(loadConfig().dshPollIntervalMs).toBe(30_000);
+      expect(loadConfig().dshPollIntervalMs).toBe(10_000);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
