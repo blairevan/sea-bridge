@@ -18,6 +18,12 @@ import { CodexAppServerClient } from "./desktop/codex-app-server-client.ts";
 import { NewThreadManager } from "./desktop/new-thread-manager.ts";
 import { NewThreadStateStore } from "./state/new-thread-state-store.ts";
 import { createAppServerApprovalHandler } from "./desktop/app-server-approval-bridge.ts";
+import { DshBridgeStore } from "./state/dsh-bridge-store.ts";
+import { DshWebHostClient } from "./dsh/web-host-client.ts";
+import { DshReadOnlyBridge } from "./dsh/read-only-bridge.ts";
+import { DshSessionObserver } from "./dsh/session-observer.ts";
+import { DshReplyRouter } from "./dsh/reply-router.ts";
+import { DshNewSessionManager } from "./dsh/new-session-manager.ts";
 
 function seedCapabilities(state: StateDb): void {
   const now = Date.now();
@@ -71,6 +77,57 @@ async function main(): Promise<void> {
       },
     },
   );
+
+  let dshReadOnly: DshReadOnlyBridge | undefined;
+  let dshStore: DshBridgeStore | undefined;
+  let dshReplyRouter: DshReplyRouter | undefined;
+  let dshNewSessions: DshNewSessionManager | undefined;
+  let dshObserver: DshSessionObserver | null = null;
+  if (config.dshReadOnlyEnabled) {
+    dshStore = new DshBridgeStore(state);
+    const dshHost = new DshWebHostClient({
+      socketPath: config.dshSocketPath,
+      tokenPath: config.dshTokenPath,
+    });
+    dshReadOnly = new DshReadOnlyBridge(dshHost, dshStore);
+
+    if (config.dshWriteEnabled) {
+      const recovered = dshStore.recoverInterruptedWrites();
+      if (recovered.deliveries > 0 || recovered.creations > 0) {
+        logger.warn("dsh_interrupted_writes_quarantined", recovered);
+      }
+      dshReplyRouter = new DshReplyRouter(dshHost, dshStore);
+      dshNewSessions = new DshNewSessionManager(dshHost, dshStore);
+    }
+
+    if (config.dshNotificationsEnabled) {
+      dshObserver = new DshSessionObserver(
+        dshHost,
+        dshStore,
+        telegramClient,
+        config.allowedChatId,
+        config.dshPollIntervalMs,
+        config.dshWriteEnabled,
+      );
+    }
+
+    try {
+      const health = await dshHost.health();
+      logger.info("dsh_connected", {
+        protocol: health.protocol,
+        connectorVersion: health.connectorVersion,
+        notificationsEnabled: config.dshNotificationsEnabled,
+        writeEnabled: config.dshWriteEnabled,
+      });
+    } catch (error) {
+      logger.warn("dsh_unavailable_at_startup", {
+        error: error instanceof Error ? error.name : "unknown_error",
+        notificationsEnabled: config.dshNotificationsEnabled,
+        writeEnabled: config.dshWriteEnabled,
+        retryByObserver: Boolean(dshObserver),
+      });
+    }
+  }
   if (!isExecutableUsable(config.codexCliPath)) {
     const errorMsg = [
       "⚠️ [Sea-Bridge 警告] 未找到可用的 Codex CLI 可执行文件！",
@@ -114,6 +171,11 @@ async function main(): Promise<void> {
     logger,
     threadStore,
     newThreadManager,
+    dshReadOnly,
+    dshStore,
+    dshReplyRouter,
+    dshNewSessions,
+    dshObserver ?? undefined,
   );
 
   let shuttingDown = false;
@@ -122,6 +184,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
     telegram.stop();
+    await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
     await observer.stop();
     await hookServer.stop().catch((error) => logger.warn("hook_server_stop_failed", { error: String(error) }));
     await appServerClient.close().catch((error) => logger.warn("app_server_stop_failed", { error: String(error) }));
@@ -134,11 +197,15 @@ async function main(): Promise<void> {
 
   await hookServer.start();
   observer.start();
+  dshObserver?.start();
   logger.info("sea_bridge_started", {
     dbPath: config.dbPath,
     hookSocketPath: config.hookSocketPath,
     approvalTimeoutMs: config.approvalTimeoutMs,
     activeSessionTtlMs: config.activeSessionTtlMs,
+    dshReadOnlyEnabled: config.dshReadOnlyEnabled,
+    dshWriteEnabled: config.dshWriteEnabled,
+    dshNotificationsEnabled: config.dshNotificationsEnabled,
   });
   await telegram.run();
   await shutdown("telegram_loop_exit");
