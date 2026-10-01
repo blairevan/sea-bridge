@@ -25,6 +25,14 @@ function positiveInt(name: string, fallback: number): number {
   return value;
 }
 
+function booleanValue(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  throw new Error(`${name} must be a boolean (true/false)`);
+}
+
 export interface AppConfig {
   telegramBotToken: string;
   allowedUserId: string;
@@ -40,6 +48,12 @@ export interface AppConfig {
   telegramSummaryMaxChars: number;
   logLevel: "debug" | "info" | "warn" | "error";
   codexHome: string;
+  dshReadOnlyEnabled: boolean;
+  dshWriteEnabled: boolean;
+  dshNotificationsEnabled: boolean;
+  dshSocketPath: string;
+  dshTokenPath: string;
+  dshPollIntervalMs: number;
 }
 
 
@@ -124,6 +138,17 @@ export function loadConfig(): AppConfig {
   const cliResolution = resolveCodexCli(process.env.SEA_BRIDGE_CODEX_CLI_PATH);
   const codexCliPath = cliResolution.path;
   const codexHome = expandHome(process.env.CODEX_HOME ?? dirname(codexStateDbPath));
+  const dshReadOnlyEnabled = booleanValue("SEA_BRIDGE_DSH_READ_ONLY_ENABLED", false);
+  const dshWriteEnabled = booleanValue("SEA_BRIDGE_DSH_WRITE_ENABLED", false);
+  const dshNotificationsEnabled = booleanValue("SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED", false);
+  if (dshWriteEnabled && !dshReadOnlyEnabled) {
+    throw new Error("SEA_BRIDGE_DSH_WRITE_ENABLED requires SEA_BRIDGE_DSH_READ_ONLY_ENABLED");
+  }
+  if (dshNotificationsEnabled && !dshReadOnlyEnabled) {
+    throw new Error("SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED requires SEA_BRIDGE_DSH_READ_ONLY_ENABLED");
+  }
+  const dshSocketPath = expandHome(process.env.SEA_BRIDGE_DSH_SOCKET_PATH ?? "~/.dsh/run/sea-bridge.sock");
+  const dshTokenPath = expandHome(process.env.SEA_BRIDGE_DSH_TOKEN_PATH ?? "~/.dsh/run/sea-bridge.token");
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   mkdirSync(dirname(hookSocketPath), { recursive: true, mode: 0o700 });
 
@@ -145,5 +170,11 @@ export function loadConfig(): AppConfig {
     telegramSummaryMaxChars: positiveInt("SEA_BRIDGE_TELEGRAM_SUMMARY_MAX_CHARS", 3_000),
     logLevel,
     codexHome,
+    dshReadOnlyEnabled,
+    dshWriteEnabled,
+    dshNotificationsEnabled,
+    dshSocketPath,
+    dshTokenPath,
+    dshPollIntervalMs: positiveInt("SEA_BRIDGE_DSH_POLL_INTERVAL_MS", 10_000),
   };
 }
