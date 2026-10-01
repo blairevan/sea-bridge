@@ -39,7 +39,7 @@ export class DshSessionObserver {
     private readonly store: DshBridgeStore,
     private readonly telegram: SendTelegram,
     private readonly chatId: string,
-    private readonly pollIntervalMs = 2_000,
+    private readonly pollIntervalMs = 30_000,
     private readonly replyEnabled = false,
     private readonly jitterSource: () => number = Math.random,
   ) {
