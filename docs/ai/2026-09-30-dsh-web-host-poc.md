@@ -143,14 +143,14 @@ A follow-up review found three issues that matter only after promoting the conne
 2. `DshSessionObserver.stop()` previously cleared its interval but did not wait for an active poll. The tracked Host client now accepts an external `AbortSignal`; observer shutdown aborts the current Host request and waits for the poll to unwind. Telegram admission is also bounded/cancellable, and an interrupted or timed-out send is quarantined as delivery-unknown rather than replayed.
 3. The permanent connector retained the PoC-era "runtime path must be absent" rule. A crash or unclean shutdown could leave a private socket/token behind and prevent future mounts. The tracked connector now validates owner/type/mode, refuses to replace a live connector socket, and removes only owner-private stale connector runtime files. Unit tests cover stale-token recovery and active-socket protection.
 
-These changes are currently in the feature worktree. They do **not** automatically modify the already-installed snapshot under `~/.dsh/connectors/sea-bridge/`. Updating that live snapshot still requires an explicit install/update step and the existing controlled Web Host restart/rollback procedure.
+At this earlier read-only review checkpoint, these changes existed only in the feature worktree. They did **not** automatically modify the then-installed snapshot under `~/.dsh/connectors/sea-bridge/`; an explicit install and controlled Web Host restart were still required. The later 0.4.0 deployment is recorded below.
 
 Verification after this review: `node --test poc/dsh-web-connector/index.test.mjs` passed 6/6; focused dsh observer/client tests passed; full `bun test` passed 116/116; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. No real Telegram message, prompt, session creation, connector reinstall, or Host restart was performed during this review.
 
 
 ## Read-only runtime wiring and connector update path
 
-The feature worktree now contains the production-side read-only wiring, while live dsh writes remain disabled.
+At this earlier checkpoint, the feature worktree contained the production-side read-only wiring, while live dsh writes remained disabled. The later full-mode deployment is recorded below.
 
 - The tracked connector is versioned as `0.2.0`. Its health response includes `connectorVersion` in addition to protocol `1`; `DshWebHostClient` rejects a stale/incompatible runtime fingerprint. Project, session, model-group, and model projections also fail closed when a bounded connector projection would be incomplete.
 - `scripts/install-dsh-read-connector.sh` is the repeatable snapshot install/check path. It copies only `index.mjs`, `read-operations.mjs`, `package.json`, and `cordis.patch.yml` into a private `~/.dsh/connectors/sea-bridge/` snapshot, verifies hashes and modes, atomically restores the previous snapshot on verification failure, and never restarts the Host itself. A temporary `DSH_HOME` acceptance proved install -> check and intentional drift detection.
@@ -165,7 +165,7 @@ Verification after this implementation: full `bun test` passed 122/122 with 403 
 
 ## Full bridge implementation (connector 0.4.0)
 
-The read-only stage above is retained as historical evidence. The current feature-branch implementation has advanced to the complete Telegram bridge contract, while the target Mac still requires a separate deployment/restart before that code is live.
+The read-only stage above is retained as historical evidence. This section records the complete Telegram bridge implementation at its code-completion checkpoint; the later target-Mac deployment and live acceptance are recorded at the end of this document.
 
 The exact dsh write API was verified against upstream tag `dsh-v0.1.7-rc.2` before implementation:
 
@@ -196,4 +196,13 @@ The install/check command is now `scripts/install-dsh-connector.sh` and snapshot
 
 Final automated verification for the complete branch implementation: `bun test` passed **165/165** with **628 expectations**; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. The connector's own Node suite passed, including authenticated write operations, the 8K CJK socket prompt, title projection, exact-turn committed assistant-text projection, and reasoning/tool-data exclusion. Populated-state migration, provider isolation, crash-window recovery, lifecycle gating/backoff, observer shutdown, ordered multipart delivery, and Codex regressions are included in those tests.
 
-**Deployment boundary:** this code-completion pass does not by itself prove the installed target-Mac connector is `0.4.0` or that live Telegram receives final-answer text. The installed connector snapshot must be resynced, the existing dsh Web Host restarted/revalidated, and target-Mac E2E must verify title/final-text projection plus short and multipart notifications. Repository tests remain separate from that deployment acceptance.
+**Code-completion boundary at that checkpoint:** repository tests alone did not prove the installed target-Mac connector was `0.4.0` or that live Telegram received final-answer text. The subsequent target-Mac deployment and its separate acceptance evidence follow below.
+
+## Target-Mac deployment and live Telegram acceptance (2026-10-01)
+
+- The user-designated `ai-chat` test session was used; unrelated existing sessions were not selected for prompt tests. Private backups of the preceding connector, LaunchAgent plists, and an online SQLite snapshot were taken before the upgrade. `scripts/install-dsh-connector.sh install` then `check` verified the installed 0.4.0 snapshot. Only the existing dsh Web Host was restarted; live health reported `connectorVersion: 0.4.0`, with 73 sessions, 2 projects, 4 model groups, successful follow/page reads, a durable title, and a nonempty exact-turn `turn.summary` for the test session.
+- Sea-Bridge switched to the isolated `e8b49e6` release with read, write, and notification gates enabled. Startup reported connector 0.4.0; all 73 observer rows migrated from the known metadata-v1 fingerprint to terminal-text-v2 without resetting their cursors or replaying historical notifications. The running release's `src/main.ts` hash matched the later squash-merged `main` content.
+- A short accepted test prompt produced a sent, mapped completion notification (Telegram message 1237). A second accepted prompt produced 5,439 characters of committed visible assistant text; the formatter made two ordered messages of 3,434 and 2,068 characters (1238 and 1239), both sent and mapped to the same test session. The user confirmed both parts were visible on the phone. A native Telegram Reply to **the first, nonfinal part** (1238) was recorded as `delivered` to that exact session with no error, followed by another sent and mapped completion notification (1247).
+- Before integration, `bun test` passed 165/165 with 628 expectations, connector Node tests passed 12/12, `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. After PR #4 squash-merged as `caf52c2`, the same 165/165 suite, 12/12 connector tests, typecheck, and build passed on `main`. The source branch was subsequently deleted. These checks and the live Telegram observations are different evidence scopes.
+
+**Still unproven in live acceptance:** the phone UI placement of the final-chunk-only shortcut Reply button, project/model menu and callback flows in the same run, deliberate connector token-rotation/fault/restart and rollback drills, and the full create/reply crash-window no-replay matrix. Those paths have automated coverage where specified, but this record does not promote it to target-Mac E2E proof. Do not mark the broader implementation-plan E2E tasks complete solely from the short/multipart notification and native Reply results.
