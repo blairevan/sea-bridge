@@ -121,7 +121,7 @@ function setup() {
   const dshStore = new DshBridgeStore(state);
   const hostCalls: Array<{ op: string; args: unknown[] }> = [];
   const host = {
-    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.3.0" }),
+    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.4.0" }),
     listProjects: async () => [
       { id: "workspace-alpha-long-private-id", title: "Alpha", sessionCount: 1 },
       { id: "workspace-beta-long-private-id", title: "Beta", sessionCount: 0 },
@@ -191,7 +191,7 @@ describe("Telegram dsh full integration", () => {
       ]);
       await (service as any).processUpdate(messageUpdate(1, "/dsh_status"));
       expect(client.sent.at(-1)?.text).toContain("完整模式");
-      expect(client.sent.at(-1)?.text).toContain("Connector: 0.3.0");
+      expect(client.sent.at(-1)?.text).toContain("Connector: 0.4.0");
       expect(client.sent.at(-1)?.text).toContain("回复: available");
       expect(client.sent.at(-1)?.text).toContain("新建会话: available");
     } finally {

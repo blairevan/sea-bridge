@@ -1,4 +1,4 @@
-/** Sequential, metadata-only read probe against the temporary Unix connector. */
+/** Sequential fixed-surface read probe; terminal text is validated in memory and never printed. */
 import { strict as assert } from 'node:assert'
 import { readFile, stat } from 'node:fs/promises'
 import { createConnection } from 'node:net'
@@ -21,11 +21,12 @@ function readOperation(token, op, details = {}) {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath)
     let response = ''
-    socket.setTimeout(3500, () => socket.destroy(new Error('read probe timeout')))
+    socket.setTimeout(op === 'turn.summary' ? 25000 : 3500,
+      () => socket.destroy(new Error('read probe timeout')))
     socket.on('connect', () => socket.write(`${JSON.stringify({ token, op, ...details })}\n`))
     socket.on('data', chunk => {
       response += chunk
-      if (response.length > 2_000_000) socket.destroy(new Error('read response too large'))
+      if (response.length > 8_000_000) socket.destroy(new Error('read response too large'))
     })
     socket.on('end', () => {
       try { resolve(JSON.parse(response)) } catch (error) { reject(error) }
@@ -68,6 +69,19 @@ if (sessions.items.length > 0) {
   const page = await requireRead(token, 'history.page', { sessionId, throughSeq: follow.cursor })
   assert.ok(Array.isArray(page.events))
   process.stdout.write('page: passed\n')
+  const terminal = page.events.findLast(event =>
+    event.type === 'turn/end' && Number.isSafeInteger(event.turn))
+  if (terminal) {
+    const summary = await requireRead(token, 'turn.summary', {
+      sessionId, turn: terminal.turn, throughSeq: terminal.seq,
+    })
+    assert.equal(summary.turn, terminal.turn)
+    assert.ok(summary.assistantSeq === null || Number.isSafeInteger(summary.assistantSeq))
+    assert.ok(summary.assistantText === null || typeof summary.assistantText === 'string')
+    process.stdout.write(`turn summary: passed (${summary.assistantText === null ? 'no visible text' : 'visible text projected'})\n`)
+  } else {
+    process.stdout.write('turn summary: unverified (no terminal event in bounded page)\n')
+  }
 } else {
   process.stdout.write('follow/page: unverified (no visible sessions)\n')
 }

@@ -182,7 +182,8 @@ test('allowlisted reads project metadata without paths, projections, or event co
     sessionController: {
       list: async () => ({ items: [{
         sessionId: 'session-1', updatedAt: 42, running: false, blank: false,
-        cwd: '/private/path', projections: { secret: 'private' },
+        cwd: '/private/path',
+        projections: { kind: 'cached', asOfSeq: 2, values: { title: 'Visible Session', secret: 'private' } },
       }] }),
       page: async () => ({ records: [event], hasMore: false }),
       follow: async function* () {
@@ -206,6 +207,7 @@ test('allowlisted reads project metadata without paths, projections, or event co
   assert.equal(followed, true)
   assert.equal(outputs[0].items[0].sessionCount, 1)
   assert.equal(outputs[1].items[0].sessionId, 'session-1')
+  assert.equal(outputs[1].items[0].title, 'Visible Session')
   assert.equal(outputs[2].cursor, 2)
   assert.equal(outputs[3].events[0].seq, 2)
   assert.equal(outputs[4].groups[0].models[0].id, 'm')
@@ -215,6 +217,39 @@ test('allowlisted reads project metadata without paths, projections, or event co
     { ok: false, error: 'unsupported' })
   await assert.rejects(dispatchRead({ op: 'history.page', token: 'test',
     sessionId: '../bad', throughSeq: 2 }, ctx), /invalid_request/)
+})
+
+test('turn summary exposes only the latest committed visible assistant text', async () => {
+  const ctx = { sessionController: { page: async () => ({ records: [
+    { type: 'event', event: { type: 'turn/start', seq: 10, time: 10, data: { turn: 3 } } },
+    { type: 'event', event: { type: 'assistant/message', seq: 11, time: 11, data: {
+      turn: 3,
+      message: { content: [
+        { type: 'reasoning', text: 'private reasoning one' },
+        { type: 'text', text: 'Final ' },
+        { type: 'text', text: 'answer' },
+      ] },
+    } } },
+    { type: 'event', event: { type: 'assistant/message', seq: 12, time: 12, data: {
+      turn: 3,
+      message: { content: [
+        { type: 'reasoning', text: 'private reasoning two' },
+        { type: 'tool-call', id: 'call-1', name: 'secret-tool', arguments: '{"secret":"private"}' },
+      ] },
+    } } },
+    { type: 'event', event: { type: 'turn/end', seq: 13, time: 13,
+      data: { turn: 3, reason: { kind: 'completed' } } } },
+  ], hasMore: false }) } }
+  const result = await dispatchRead({
+    op: 'turn.summary', sessionId: 'session-1', turn: 3, throughSeq: 13,
+  }, ctx)
+  assert.deepEqual(result, {
+    ok: true, turn: 3, assistantSeq: 11, assistantText: 'Final answer',
+  })
+  const serialized = JSON.stringify(result)
+  assert.equal(serialized.includes('private reasoning'), false)
+  assert.equal(serialized.includes('secret-tool'), false)
+  assert.equal(serialized.includes('arguments'), false)
 })
 
 test('bounded follow window projects only the next contiguous live event', async () => {
@@ -243,14 +278,14 @@ test('bounded follow window projects only the next contiguous live event', async
 test('turn end projects only a fixed reason category without error or message contents', async () => {
   const ctx = { sessionController: { page: async () => ({ records: [
     { type: 'event', event: { type: 'turn/end', seq: 3, time: 55,
-      data: { reason: { kind: 'error', failure: { message: 'private failure' } }, text: 'private text' } } },
+      data: { turn: 7, reason: { kind: 'error', failure: { message: 'private failure' } }, text: 'private text' } } },
     { type: 'event', event: { type: 'turn/end', seq: 4, time: 56,
-      data: { reason: { kind: 'private-proprietary', secret: 'private' } } } },
+      data: { turn: 8, reason: { kind: 'private-proprietary', secret: 'private' } } } },
   ], hasMore: false }) } }
   const result = await dispatchRead({ op: 'history.page', sessionId: 'session-1', throughSeq: 4 }, ctx)
   assert.deepEqual(result.events, [
-    { type: 'turn/end', seq: 3, time: 55, reasonKind: 'error' },
-    { type: 'turn/end', seq: 4, time: 56, reasonKind: 'unknown' },
+    { type: 'turn/end', seq: 3, time: 55, turn: 7, reasonKind: 'error' },
+    { type: 'turn/end', seq: 4, time: 56, turn: 8, reasonKind: 'unknown' },
   ])
   assert.equal(JSON.stringify(result).includes('private'), false)
 })
@@ -311,4 +346,27 @@ test('allowlisted writes use exact Session Controller contracts and classify out
   assert.deepEqual(await dispatchRead({
     op: 'session.create', workspaceId: 'missing', sessionId: 'sea-bridge-2',
   }, ctx), { ok: true, status: 'rejected', errorCode: 'project_missing' })
+
+  const invalid = { sessionController: {
+    prompt: async () => { throw Object.assign(new Error('bad request'), { code: 'gateway/bad-request' }) },
+  } }
+  assert.deepEqual(await dispatchRead({
+    op: 'prompt.submit', sessionId: 'session-1', requestId: 'req-4', text: 'hello',
+  }, invalid), { ok: true, status: 'rejected', errorCode: 'validation_failed' })
+
+  const missing = { sessionController: {
+    prompt: async () => { throw Object.assign(new Error('missing'), { code: 'session/not-found' }) },
+  } }
+  assert.deepEqual(await dispatchRead({
+    op: 'prompt.submit', sessionId: 'session-1', requestId: 'req-5', text: 'hello',
+  }, missing), { ok: true, status: 'rejected', errorCode: 'session_missing' })
+
+  const noModel = { sessionController: {
+    selectModel: async () => {
+      throw Object.assign(new Error('model unavailable'), { code: 'session/model-unavailable' })
+    },
+  } }
+  assert.deepEqual(await dispatchRead({
+    op: 'session.selectModel', sessionId: 'session-1', provider: 'p', model: 'm',
+  }, noModel), { ok: true, status: 'rejected', errorCode: 'model_unavailable' })
 })

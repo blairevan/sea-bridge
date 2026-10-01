@@ -2,11 +2,12 @@
   "version": "0.1.7-rc.2",
   "protocol": 1,
   "examples": {
-    "health": { "request": { "op": "health" }, "response": { "ok": true, "status": "mounted", "protocol": 1, "connectorVersion": "0.3.0" } },
+    "health": { "request": { "op": "health" }, "response": { "ok": true, "status": "mounted", "protocol": 1, "connectorVersion": "0.4.0" } },
     "projects.list": { "request": { "op": "projects.list" }, "response": { "ok": true, "totalCount": 1, "items": [{ "id": "workspace-example", "title": "Example", "sessionCount": 1 }] } },
-    "sessions.list": { "request": { "op": "sessions.list" }, "response": { "ok": true, "totalCount": 1, "items": [{ "sessionId": "session-example", "updatedAt": 42, "running": false, "blank": false }] } },
+    "sessions.list": { "request": { "op": "sessions.list" }, "response": { "ok": true, "totalCount": 1, "items": [{ "sessionId": "session-example", "updatedAt": 42, "running": false, "blank": false, "title": "Example Session" }] } },
     "history.follow": { "request": { "op": "history.follow", "sessionId": "session-example" }, "response": { "ok": true, "cursor": 2, "hasMore": false, "truncated": false, "events": [{ "type": "assistant/message", "seq": 2, "time": 42 }] } },
     "history.page": { "request": { "op": "history.page", "sessionId": "session-example", "throughSeq": 2 }, "response": { "ok": true, "hasMore": false, "truncated": false, "events": [{ "type": "assistant/message", "seq": 2, "time": 42 }] } },
+    "turn.summary": { "request": { "op": "turn.summary", "sessionId": "session-example", "turn": 1, "throughSeq": 3 }, "response": { "ok": true, "turn": 1, "assistantSeq": 2, "assistantText": "Example answer" } },
     "models.catalog": { "request": { "op": "models.catalog" }, "response": { "ok": true, "default": { "provider": "provider-example", "model": "model-example" }, "groupCount": 1, "groups": [{ "id": "provider-example", "name": "Example", "modelCount": 1, "models": [{ "id": "model-example", "name": "Example Model" }] }], "failureCount": 0 } }
   }
 }

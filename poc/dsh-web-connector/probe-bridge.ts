@@ -12,14 +12,16 @@ const client = new DshWebHostClient({
   tokenPath: join(homedir(), ".dsh/run/sea-bridge.token"),
 });
 const sessions = await client.listSessions();
-let candidate: { sessionId: string; cursor: number; eventSeq: number } | null = null;
+let candidate: { sessionId: string; cursor: number; eventSeq: number; turn: number } | null = null;
 for (const session of sessions.slice(0, 30)) {
   const snapshot = await client.followSnapshot(session.sessionId);
   if (snapshot.cursor < 0 || snapshot.truncated) continue;
   const page = await client.pageHistory(session.sessionId, snapshot.cursor);
   const terminal = page.events.findLast((event) => event.type === "turn/end" && event.reasonKind === "completed");
-  if (terminal && snapshot.cursor - terminal.seq <= 32 && !page.truncated) {
-    candidate = { sessionId: session.sessionId, cursor: snapshot.cursor, eventSeq: terminal.seq };
+  if (terminal && Number.isSafeInteger(terminal.turn) &&
+    snapshot.cursor - terminal.seq <= 32 && !page.truncated) {
+    candidate = { sessionId: session.sessionId, cursor: snapshot.cursor,
+      eventSeq: terminal.seq, turn: terminal.turn! };
     break;
   }
 }
@@ -37,6 +39,7 @@ if (!candidate) {
       listSessions: async () => (await client.listSessions()).filter((row) => row.sessionId === selected.sessionId),
       followSnapshot: (sessionId) => client.followSnapshot(sessionId),
       pageHistory: (sessionId, throughSeq, beforeSeq) => client.pageHistory(sessionId, throughSeq, beforeSeq),
+      getTurnSummary: (sessionId, turn, throughSeq) => client.getTurnSummary(sessionId, turn, throughSeq),
     }, store, { sendMessage: async (chatId, text) => {
       assert.equal(chatId, "fake-chat");
       assert.ok(text.includes("dsh Web"));

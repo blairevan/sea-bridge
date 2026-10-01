@@ -1,6 +1,12 @@
 import type { DshBridgeStore, DshMessageLink } from "../state/dsh-bridge-store.ts";
 import type { DshWebHostClient } from "./web-host-client.ts";
-import type { DshHostHealth, DshModelCatalog, DshProject } from "./types.ts";
+import type {
+  DshCapabilityName,
+  DshCapabilityState,
+  DshHostHealth,
+  DshModelCatalog,
+  DshProject,
+} from "./types.ts";
 import { dshReadOnlyCapabilityBaseline } from "./capabilities.ts";
 
 type ReadOnlyHost = Pick<DshWebHostClient, "health" | "listProjects" | "listModels">;
@@ -18,9 +24,22 @@ export class DshReadOnlyBridge {
   ) {}
 
   async status(): Promise<DshReadOnlyStatus> {
+    const health = await this.host.health();
+    const capabilities = dshReadOnlyCapabilityBaseline();
+    const probes = await Promise.allSettled([
+      this.host.listProjects(),
+      this.host.listModels(),
+    ]);
+    const runtimeUnavailable = new Map<DshCapabilityName, boolean>([
+      ["projects", probes[0]?.status === "rejected"],
+      ["models", probes[1]?.status === "rejected"],
+    ]);
     return {
-      health: await this.host.health(),
-      capabilities: dshReadOnlyCapabilityBaseline(),
+      health,
+      capabilities: capabilities.map((capability): DshCapabilityState =>
+        runtimeUnavailable.get(capability.name)
+          ? { ...capability, status: "unavailable", reason: "runtime_probe_failed" }
+          : capability),
     };
   }
 

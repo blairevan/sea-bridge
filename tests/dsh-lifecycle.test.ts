@@ -110,6 +110,7 @@ describe("dsh observer fail-soft lifecycle", () => {
       "456",
       60_000,
       true,
+      () => 0.5,
     );
     try {
       observer.start();
@@ -119,9 +120,17 @@ describe("dsh observer fail-soft lifecycle", () => {
       expect(observer.getStatus()).toMatchObject({
         running: true,
         lastErrorCode: "host_unavailable",
+        consecutiveFailures: 1,
       });
+      expect(observer.getStatus().nextPollAt).toBeNumber();
+      expect((observer as any).retryDelayMs(1)).toBe(60_000);
+      expect((observer as any).retryDelayMs(2)).toBe(120_000);
+      expect((observer as any).retryDelayMs(4)).toBe(300_000);
       await observer.stop();
-      expect(observer.getStatus().running).toBe(false);
+      expect(observer.getStatus()).toMatchObject({
+        running: false,
+        nextPollAt: null,
+      });
     } finally {
       await observer.stop();
       state.close();

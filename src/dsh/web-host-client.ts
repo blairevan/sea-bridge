@@ -12,6 +12,7 @@ import type {
   DshModelSelection,
   DshProject,
   DshSessionSummary,
+  DshTurnSummary,
   DshWriteResult,
   DshCreateSessionResult,
   DshSelectModelResult,
@@ -20,7 +21,8 @@ import { DSH_CONNECTOR_VERSION, DshHostClientError } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 3_500;
 const WRITE_TIMEOUT_MS = 15_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
+const TURN_SUMMARY_TIMEOUT_MS = 22_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,160}$/;
 
 export interface DshWebHostClientOptions {
@@ -35,6 +37,7 @@ interface ConnectorRequest {
   sessionId?: string;
   throughSeq?: number;
   beforeSeq?: number;
+  turn?: number;
   requestId?: string;
   text?: string;
   workspaceId?: string;
@@ -101,6 +104,7 @@ function eventMetadata(value: unknown): DshEventMetadata {
     time: finiteNumber(row.time, "event.time"),
   };
   if (event.type === "turn/end") {
+    event.turn = safeInteger(row.turn, "event.turn");
     const reason = row.reasonKind;
     if (reason !== undefined && reason !== "completed" && reason !== "error" &&
       reason !== "aborted" && reason !== "blocked" && reason !== "max-tokens" &&
@@ -139,12 +143,14 @@ function parseSessions(payload: unknown): DshSessionSummary[] {
   }
   return items.map((value) => {
     const item = record(value);
-    return {
+    const session: DshSessionSummary = {
       sessionId: requiredString(item.sessionId, "session.sessionId"),
       updatedAt: finiteNumber(item.updatedAt, "session.updatedAt"),
       running: requiredBoolean(item.running, "session.running"),
       blank: requiredBoolean(item.blank, "session.blank"),
     };
+    if (typeof item.title === "string" && item.title.trim()) session.title = item.title;
+    return session;
   });
 }
 
@@ -169,6 +175,23 @@ function parsePage(payload: unknown): DshHistoryPage {
     truncated: requiredBoolean(body.truncated, "page.truncated"),
     events: parseEvents(body),
   };
+}
+
+function parseTurnSummary(payload: unknown): DshTurnSummary {
+  const body = record(payload);
+  const turn = safeInteger(body.turn, "turnSummary.turn");
+  const assistantSeq = body.assistantSeq === null
+    ? null
+    : safeInteger(body.assistantSeq, "turnSummary.assistantSeq");
+  const assistantText = body.assistantText === null
+    ? null
+    : typeof body.assistantText === "string"
+      ? body.assistantText
+      : (() => { throw new DshHostClientError("invalid_response", "dsh connector returned invalid turnSummary.assistantText"); })();
+  if ((assistantSeq === null) !== (assistantText === null)) {
+    throw new DshHostClientError("invalid_response", "dsh connector returned inconsistent turn summary");
+  }
+  return { turn, assistantSeq, assistantText };
 }
 
 function parseModels(payload: unknown): DshModelCatalog {
@@ -382,6 +405,28 @@ export class DshWebHostClient {
     const request: ConnectorRequest = { op: "history.page", sessionId, throughSeq };
     if (beforeSeq !== undefined) request.beforeSeq = beforeSeq;
     return parsePage(await this.request(request, this.timeoutMs, signal));
+  }
+
+  async getTurnSummary(
+    sessionId: string,
+    turn: number,
+    throughSeq: number,
+    signal?: AbortSignal,
+  ): Promise<DshTurnSummary> {
+    assertSessionId(sessionId);
+    if (!Number.isSafeInteger(turn) || turn < 0 ||
+      !Number.isSafeInteger(throughSeq) || throughSeq < 0) {
+      throw new DshHostClientError("invalid_request", "invalid dsh turn summary request");
+    }
+    const summary = parseTurnSummary(await this.request(
+      { op: "turn.summary", sessionId, turn, throughSeq },
+      TURN_SUMMARY_TIMEOUT_MS,
+      signal,
+    ));
+    if (summary.turn !== turn || (summary.assistantSeq !== null && summary.assistantSeq >= throughSeq)) {
+      throw new DshHostClientError("invalid_response", "dsh connector returned mismatched turn summary");
+    }
+    return summary;
   }
 
   async listModels(signal?: AbortSignal): Promise<DshModelCatalog> {

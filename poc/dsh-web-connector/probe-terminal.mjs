@@ -50,7 +50,11 @@ for (const session of sessions.items.slice(0, 30)) {
   const page = await read(token, 'history.page', { sessionId: session.sessionId, throughSeq: opening.cursor })
   for (const event of page.events) {
     if (event.type !== 'turn/end') continue
-    assert.ok(['stop', 'error', 'aborted', 'max-tokens', 'tool-calls', 'completed', 'unknown'].includes(event.reasonKind))
+    assert.ok([
+      'stop', 'error', 'aborted', 'blocked', 'max-tokens', 'interrupted', 'forked',
+      'tool-calls', 'completed', 'unknown',
+    ].includes(event.reasonKind))
+    assert.ok(Number.isSafeInteger(event.turn))
     counts.set(event.reasonKind, (counts.get(event.reasonKind) ?? 0) + 1)
   }
   scanned++

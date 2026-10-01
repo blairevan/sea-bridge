@@ -349,6 +349,15 @@ export class DshBridgeStore {
     return consume();
   }
 
+  expireCallback(token: string, now = Date.now()): boolean {
+    const result = this.state.db.query(
+      `UPDATE dsh_callback_tokens
+       SET status='expired',expires_at=MIN(expires_at,?)
+       WHERE token_hash=? AND status='pending'`,
+    ).run(now, callbackHash(token));
+    return result.changes === 1;
+  }
+
   getCallbackStatus(token: string): "pending" | "consumed" | "expired" | null {
     const row = this.state.db.query(
       "SELECT status FROM dsh_callback_tokens WHERE token_hash=?",
@@ -356,7 +365,11 @@ export class DshBridgeStore {
     return row?.status ?? null;
   }
 
-  enqueueNotification(notification: DshNotificationInput, now = Date.now()): boolean {
+  enqueueNotification(
+    notification: DshNotificationInput,
+    now = Date.now(),
+    createdAt = now,
+  ): boolean {
     const result = this.state.db.query(
       `INSERT OR IGNORE INTO dsh_notification_outbox(
         event_fingerprint,telegram_chat_id,session_id,event_kind,message_text,status,
@@ -369,7 +382,7 @@ export class DshBridgeStore {
       notification.eventKind,
       notification.text,
       now,
-      now,
+      createdAt,
       now,
     );
     return result.changes === 1;
@@ -377,11 +390,23 @@ export class DshBridgeStore {
 
   listPendingNotifications(now = Date.now(), limit = 50): PendingDshNotification[] {
     const rows = this.state.db.query(
-      `SELECT event_fingerprint,telegram_chat_id,session_id,event_kind,message_text,attempt_count,next_attempt_at
-       FROM dsh_notification_outbox
-       WHERE status='pending' AND next_attempt_at<=?
-       ORDER BY created_at,event_fingerprint LIMIT ?`,
-    ).all(now, limit) as Array<{
+      `SELECT current.event_fingerprint,current.telegram_chat_id,current.session_id,current.event_kind,
+              current.message_text,current.attempt_count,current.next_attempt_at
+       FROM dsh_notification_outbox AS current
+       WHERE current.status='pending' AND current.next_attempt_at<=?
+         AND NOT EXISTS (
+           SELECT 1 FROM dsh_notification_outbox AS prior
+           WHERE prior.status='pending'
+             AND prior.telegram_chat_id=current.telegram_chat_id
+             AND prior.session_id=current.session_id
+             AND prior.next_attempt_at>?
+             AND (
+               prior.created_at < current.created_at OR
+               (prior.created_at=current.created_at AND prior.event_fingerprint < current.event_fingerprint)
+             )
+         )
+       ORDER BY current.created_at,current.event_fingerprint LIMIT ?`,
+    ).all(now, now, limit) as Array<{
       event_fingerprint: string;
       telegram_chat_id: string;
       session_id: string;
@@ -555,8 +580,20 @@ export class DshBridgeStore {
       const marker = this.getCreatedSession(state.sessionId);
       if (expectedCursor === null && !consumeCreatedBaseline && marker?.baselinePending) return false;
       if (consumeCreatedBaseline && marker?.baselinePending !== true) return false;
-      for (const notification of notifications) this.enqueueNotification(notification);
-      this.saveObserverState(state);
+      const now = Date.now();
+      const lastCreated = this.state.db.query(
+        `SELECT MAX(created_at) AS value
+         FROM dsh_notification_outbox
+         WHERE telegram_chat_id=? AND session_id=?`,
+      ).get(
+        notifications[0]?.chatId ?? "",
+        state.sessionId,
+      ) as { value: number | null } | null;
+      const createdBase = Math.max(now, Number(lastCreated?.value ?? -1) + 1);
+      notifications.forEach((notification, index) => {
+        this.enqueueNotification(notification, now, createdBase + index);
+      });
+      this.saveObserverState(state, now);
       if (consumeCreatedBaseline) this.consumeCreatedSessionBaseline(state.sessionId);
       return true;
     });

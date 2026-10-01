@@ -29,6 +29,8 @@ interface DshObserverStatusSource {
     running: boolean;
     lastSuccessfulPollAt: number | null;
     lastErrorCode: string | null;
+    consecutiveFailures: number;
+    nextPollAt: number | null;
   };
 }
 
@@ -885,6 +887,7 @@ export class TelegramService {
       ? `${outcome.model.provider} / ${outcome.model.model}`
       : "Host 默认";
     let acknowledgement;
+    let acknowledgementCallbackToken: string | null = null;
     try {
       const callback = createDshCallback(
         this.dshStore,
@@ -894,6 +897,7 @@ export class TelegramService {
         Date.now(),
         24 * 60 * 60_000,
       );
+      acknowledgementCallbackToken = callback.slice("dsh:".length);
       acknowledgement = await this.client.sendMessage(
         chatId,
         [
@@ -905,6 +909,7 @@ export class TelegramService {
         [[{ text: "💬 回复", callback_data: callback }]],
       );
     } catch (error) {
+      if (acknowledgementCallbackToken) this.dshStore.expireCallback(acknowledgementCallbackToken);
       this.logger.warn("dsh_new_session_ack_unknown", {
         updateId,
         sessionId: outcome.sessionId,
@@ -918,6 +923,7 @@ export class TelegramService {
       acknowledgement.message_id,
       outcome.sessionId,
     )) {
+      if (acknowledgementCallbackToken) this.dshStore.expireCallback(acknowledgementCallbackToken);
       this.logger.error("dsh_new_session_ack_mapping_failed", {
         updateId,
         sessionId: outcome.sessionId,
@@ -942,6 +948,10 @@ export class TelegramService {
             ? "-"
             : new Date(observer.lastSuccessfulPollAt).toISOString()}`,
           `观察错误: ${observer.lastErrorCode ?? "-"}`,
+          `连续失败: ${observer.consecutiveFailures}`,
+          `下次观察: ${observer.nextPollAt === null
+            ? "-"
+            : new Date(observer.nextPollAt).toISOString()}`,
         ] : []),
         `项目: ${byName.get("projects")?.status ?? "unknown"}`,
         `模型: ${byName.get("models")?.status ?? "unknown"}`,

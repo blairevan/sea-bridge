@@ -14,7 +14,7 @@ export interface DshCapabilityState {
   reason: string | null;
 }
 
-export const DSH_CONNECTOR_VERSION = "0.3.0";
+export const DSH_CONNECTOR_VERSION = "0.4.0";
 
 export interface DshHostHealth {
   status: "mounted";
@@ -33,12 +33,14 @@ export interface DshSessionSummary {
   updatedAt: number;
   running: boolean;
   blank: boolean;
+  title?: string;
 }
 
 export interface DshEventMetadata {
   type: string;
   seq: number;
   time: number;
+  turn?: number;
   reasonKind?:
     | "completed"
     | "error"
@@ -63,6 +65,12 @@ export interface DshHistoryPage {
   hasMore: boolean;
   truncated: boolean;
   events: DshEventMetadata[];
+}
+
+export interface DshTurnSummary {
+  turn: number;
+  assistantSeq: number | null;
+  assistantText: string | null;
 }
 
 export type DshLiveWindow =

@@ -8,7 +8,7 @@ function setup(overrides: Partial<Record<string, any>> = {}) {
   const store = new DshBridgeStore(state);
   const calls: Array<{ op: string; args: unknown[] }> = [];
   const host = {
-    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.3.0" }),
+    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.4.0" }),
     listProjects: async () => [
       { id: "p1", title: "Alpha", sessionCount: 1 },
       { id: "p2", title: "Duplicate", sessionCount: 2 },

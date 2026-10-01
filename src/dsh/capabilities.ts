@@ -9,7 +9,7 @@ const READ_BASELINE: Readonly<Record<Exclude<DshCapabilityName, "reply" | "creat
   observation: {
     name: "observation",
     status: "partial",
-    reason: "bounded_live_follow_and_recovery_verified; production_end_to_end_unverified",
+    reason: "bounded_recovery_and_terminal_text_contract_verified; production_end_to_end_unverified",
   },
   projects: {
     name: "projects",

@@ -1,9 +1,11 @@
-/** Fixed, metadata-only Host read surface for the temporary connector. */
+/** Fixed Host surface: metadata reads plus one bounded terminal-text projection and allowlisted writes. */
 
-export const CONNECTOR_VERSION = '0.3.0'
+export const CONNECTOR_VERSION = '0.4.0'
 const READ_TIMEOUT_MS = 2500
 const LIVE_WINDOW_MS = 12000
 const WRITE_TIMEOUT_MS = 12000
+const TURN_SUMMARY_MAX_PAGES = 8
+const TURN_SUMMARY_MAX_TEXT_CHARS = 1_000_000
 
 /** Require one opaque Session id without accepting paths or arbitrary objects. */
 function sessionIdOf(request) {
@@ -31,20 +33,22 @@ async function withDeadline(read, durationMs = READ_TIMEOUT_MS) {
   }
 }
 
-/** Strip cwd, projections, text, and other unverified Host fields. */
+/** Strip cwd and arbitrary projections while allowing the verified durable title projection. */
 function sessionSummary(row) {
   if (typeof row?.sessionId !== 'string' || typeof row.updatedAt !== 'number') {
     throw new Error('invalid_host_response')
   }
+  const title = row?.projections?.values?.title
   return {
     sessionId: row.sessionId,
     updatedAt: row.updatedAt,
     running: row.running === true,
     blank: row.blank === true,
+    ...(typeof title === 'string' && title.trim().length > 0 ? { title: title.slice(0, 2048) } : {}),
   }
 }
 
-/** Expose only event identity and ordering, never event data. */
+/** Expose only event identity/order plus the verified turn number for terminal records. */
 function eventMetadata(record) {
   const event = record?.event
   if (record?.type !== 'event' || typeof event?.type !== 'string' ||
@@ -53,6 +57,10 @@ function eventMetadata(record) {
   }
   const metadata = { type: event.type, seq: event.seq, time: event.time }
   if (event.type === 'turn/end') {
+    if (!Number.isSafeInteger(event.data?.turn) || event.data.turn < 0) {
+      throw new Error('invalid_host_response')
+    }
+    metadata.turn = event.data.turn
     const kind = event.data?.reason?.kind
     metadata.reasonKind = [
       'completed', 'error', 'aborted', 'blocked', 'max-tokens', 'interrupted', 'forked',
@@ -60,6 +68,62 @@ function eventMetadata(record) {
     ].includes(kind) ? kind : 'unknown'
   }
   return metadata
+}
+
+/** Extract only user-visible committed assistant text; reasoning/tool/file/image blocks stay private. */
+function assistantTextOf(event) {
+  const content = event?.data?.message?.content
+  if (!Array.isArray(content)) throw new Error('invalid_host_response')
+  let text = ''
+  for (const block of content) {
+    if (block?.type !== 'text') continue
+    if (typeof block.text !== 'string') throw new Error('invalid_host_response')
+    text += block.text
+    if (text.length > TURN_SUMMARY_MAX_TEXT_CHARS) throw new Error('assistant_text_too_large')
+  }
+  return text
+}
+
+/** Find the latest committed assistant message for one completed turn without exposing arbitrary event data. */
+async function readTurnSummary(ctx, sessionId, turn, throughSeq) {
+  let beforeSeq
+  for (let pageIndex = 0; pageIndex < TURN_SUMMARY_MAX_PAGES; pageIndex++) {
+    const pageRequest = {
+      address: { kind: 'session', sessionId },
+      throughSeq,
+      maxMessages: 1,
+    }
+    if (beforeSeq !== undefined) pageRequest.beforeSeq = beforeSeq
+    const result = await withDeadline(signal => ctx.sessionController.page(pageRequest, signal))
+    if (!Array.isArray(result?.records)) throw new Error('invalid_host_response')
+    if (result.records.length === 0) return { turn, assistantSeq: null, assistantText: null }
+    for (let index = result.records.length - 1; index >= 0; index--) {
+      const record = result.records[index]
+      const event = record?.event
+      if (record?.type !== 'event' || typeof event?.type !== 'string' || !Number.isSafeInteger(event.seq)) {
+        throw new Error('invalid_host_response')
+      }
+      if (event.type === 'assistant/message' && event.data?.turn === turn) {
+        const assistantText = assistantTextOf(event)
+        if (assistantText.length > 0) {
+          return { turn, assistantSeq: event.seq, assistantText }
+        }
+      }
+      if (event.type === 'turn/start' && event.data?.turn === turn) {
+        return { turn, assistantSeq: null, assistantText: null }
+      }
+      if (Number.isSafeInteger(event.data?.turn) && event.data.turn < turn) {
+        return { turn, assistantSeq: null, assistantText: null }
+      }
+    }
+    if (result.hasMore !== true) return { turn, assistantSeq: null, assistantText: null }
+    const firstSeq = result.records[0]?.event?.seq
+    if (!Number.isSafeInteger(firstSeq) || (beforeSeq !== undefined && firstSeq >= beforeSeq)) {
+      throw new Error('invalid_host_response')
+    }
+    beforeSeq = firstSeq
+  }
+  throw new Error('turn_summary_page_limit')
 }
 
 /** Require no caller-controlled arguments for fixed collection operations. */
@@ -97,7 +161,7 @@ function classifyWriteError(error) {
   if (code === 'session/conflict' || code === 'agent-preset/conflict' ||
     code === 'session/invalid-time-zone' || code === 'session/attachment-invalid' ||
     code === 'gateway/bad-request') {
-    return { ok: true, status: 'rejected', errorCode: code }
+    return { ok: true, status: 'rejected', errorCode: 'validation_failed' }
   }
   if (typeof code === 'string' && (code.endsWith('/not-found') || code.includes('not-found'))) {
     return { ok: true, status: 'rejected', errorCode: 'session_missing' }
@@ -183,6 +247,17 @@ export async function dispatchRead(request, ctx) {
       }
       throw error
     }
+  }
+  if (request.op === 'turn.summary') {
+    const allowed = ['token', 'op', 'sessionId', 'turn', 'throughSeq']
+    if (Object.keys(request).some(key => !allowed.includes(key))) throw new Error('invalid_request')
+    const sessionId = sessionIdOf(request)
+    if (!Number.isSafeInteger(request.turn) || request.turn < 0 ||
+      !Number.isSafeInteger(request.throughSeq) || request.throughSeq < 0) {
+      throw new Error('invalid_request')
+    }
+    const summary = await readTurnSummary(ctx, sessionId, request.turn, request.throughSeq)
+    return { ok: true, ...summary }
   }
   if (request.op === 'history.page') {
     const allowed = ['token', 'op', 'sessionId', 'throughSeq', 'beforeSeq']

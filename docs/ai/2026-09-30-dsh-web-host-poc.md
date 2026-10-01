@@ -163,7 +163,7 @@ The feature worktree now contains the production-side read-only wiring, while li
 
 Verification after this implementation: full `bun test` passed 122/122 with 403 expectations; `./node_modules/.bin/tsc --noEmit`, `bun run build`, `git diff --check`, JSON parsing, connector Node tests, and temporary installer acceptance all passed.
 
-## Full bridge implementation (connector 0.3.0)
+## Full bridge implementation (connector 0.4.0)
 
 The read-only stage above is retained as historical evidence. The current feature-branch implementation has advanced to the complete Telegram bridge contract, while the target Mac still requires a separate deployment/restart before that code is live.
 
@@ -174,7 +174,7 @@ The exact dsh write API was verified against upstream tag `dsh-v0.1.7-rc.2` befo
 - `sessionController.selectModel({ sessionId, provider, model, reasoningEffort? })` returns the effective selection. In dsh `0.1.7-rc.2` it also persists the selection as the Host default asynchronously, so the Telegram model menu warns that later Web sessions may inherit the changed default.
 - Explicit `session/agent-busy` and `session/writer-held` outcomes are surfaced. Unknown transport/Host outcomes become `delivery_unknown`; Sea-Bridge never automatically replays them.
 
-Connector `0.3.0` exposes only a fixed local Unix-socket allowlist: health/project/session/history/model reads plus `prompt.submit`, `session.create`, and `session.selectModel`. There is no generic method dispatch, browser credential reuse, direct session-file mutation, second Host, or force writer takeover. The socket request limit is 64 KiB so the supported 8192-character prompt bound also works for multi-byte CJK text; an authenticated socket test covers an 8K CJK prompt.
+Connector `0.4.0` exposes only a fixed local Unix-socket allowlist: health/project/session/history/model reads, the narrow `turn.summary` terminal-text projection, plus `prompt.submit`, `session.create`, and `session.selectModel`. General history remains metadata-only. `sessions.list` may expose only the durable title projection; `turn.summary` may expose only the last non-empty committed assistant `text` blocks for the exact terminal turn. Reasoning, tool-call arguments, paths, files/images, and arbitrary event data remain private. There is no generic method dispatch, browser credential reuse, direct session-file mutation, second Host, or force writer takeover. The socket request limit is 64 KiB so the supported 8192-character prompt bound also works for multi-byte CJK text; an authenticated socket test covers an 8K CJK prompt.
 
 The application-side complete mode adds:
 
@@ -186,12 +186,14 @@ The application-side complete mode adds:
 - accepted-creation recovery that can finish Telegram acknowledgement without rediscovering projects/models or replaying Host writes;
 - created-session first-turn observer markers and conflict detection;
 - opaque, hashed, chat-bound, expiring, single-use Telegram callback tokens with periodic cleanup;
-- completion/failure/interruption notifications with optional 24-hour reply buttons in write mode;
+- completion/failure/interruption notifications that include the durable session title when available and the complete redacted committed assistant answer when present; long answers are split into ordered Telegram-safe chunks, every chunk maps to the exact session, and only the final chunk carries the optional 24-hour Reply button in write mode;
 - fail-soft `SEA_BRIDGE_DSH_READ_ONLY_ENABLED`, `SEA_BRIDGE_DSH_WRITE_ENABLED`, and `SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED` gates;
-- restart recovery that moves unresolved dispatching reply/creation writes to `delivery_unknown`.
+- restart recovery that moves unresolved dispatching reply/creation writes to `delivery_unknown`;
+- observer-contract migration from the known metadata-only fingerprint to the terminal-text fingerprint without resetting the cursor or replaying old history; unknown contracts still fail closed;
+- per-session outbox ordering across polls/retries so an earlier chunk failure blocks later chunks for that session without blocking other sessions.
 
 The install/check command is now `scripts/install-dsh-connector.sh` and snapshots `index.mjs`, `host-operations.mjs`, `package.json`, and `cordis.patch.yml`. It verifies file hashes/private modes and does not restart the Host implicitly.
 
-Final automated verification for the complete branch implementation: `bun test` passed **154/154** with **574 expectations**; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. The connector's own Node suite passed, including authenticated write operations and the 8K CJK socket prompt. Populated-state migration, provider isolation, crash-window recovery, lifecycle gating, observer shutdown, and Codex regressions are included in those tests.
+Final automated verification for the complete branch implementation: `bun test` passed **163/163** with **616 expectations**; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. The connector's own Node suite passed, including authenticated write operations, the 8K CJK socket prompt, title projection, exact-turn committed assistant-text projection, and reasoning/tool-data exclusion. Populated-state migration, provider isolation, crash-window recovery, lifecycle gating/backoff, observer shutdown, ordered multipart delivery, and Codex regressions are included in those tests.
 
-**Deployment boundary:** this code-completion pass did not overwrite the currently installed connector snapshot, restart the live dsh Web Host, enable the three dsh environment gates in the production Sea-Bridge service, send a real Telegram message, or create/write a real dsh session. Those are deployment/target-Mac acceptance actions, separate from repository implementation completeness.
+**Deployment boundary:** this code-completion pass does not by itself prove the installed target-Mac connector is `0.4.0` or that live Telegram receives final-answer text. The installed connector snapshot must be resynced, the existing dsh Web Host restarted/revalidated, and target-Mac E2E must verify title/final-text projection plus short and multipart notifications. Repository tests remain separate from that deployment acceptance.

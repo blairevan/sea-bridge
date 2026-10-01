@@ -94,12 +94,12 @@ function fixtureResponder(request: Record<string, unknown>): Record<string, unkn
 describe("DshWebHostClient", () => {
   test("accepts a bounded live event window and rejects a noncontiguous event", async () => {
     const { client } = await startConnector(() => ({ ok: true, observed: true, cursor: 4,
-      event: { type: "turn/end", seq: 5, time: 55, reasonKind: "completed", data: "private" },
+      event: { type: "turn/end", seq: 5, time: 55, turn: 2, reasonKind: "completed", data: "private" },
     }));
     expect(await client.followWindow("session-example")).toEqual({ observed: true, cursor: 4,
-      event: { type: "turn/end", seq: 5, time: 55, reasonKind: "completed" } });
+      event: { type: "turn/end", seq: 5, time: 55, turn: 2, reasonKind: "completed" } });
     const invalid = await startConnector(() => ({ ok: true, observed: true, cursor: 4,
-      event: { type: "turn/end", seq: 6, time: 55, reasonKind: "completed" },
+      event: { type: "turn/end", seq: 6, time: 55, turn: 2, reasonKind: "completed" },
     }));
     await expect(invalid.client.followWindow("session-example")).rejects.toMatchObject({
       code: "invalid_response",
@@ -142,11 +142,11 @@ describe("DshWebHostClient", () => {
 
   test("accepts only a fixed turn reason category and never exposes extra fields", async () => {
     const { client } = await startConnector(() => ({ ok: true, hasMore: false, truncated: false,
-      events: [{ type: "turn/end", seq: 3, time: 55, reasonKind: "completed", private: "secret" }],
+      events: [{ type: "turn/end", seq: 3, time: 55, turn: 7, reasonKind: "completed", private: "secret" }],
     }));
     expect(await client.pageHistory("session-example", 3)).toEqual({
       hasMore: false, truncated: false,
-      events: [{ type: "turn/end", seq: 3, time: 55, reasonKind: "completed" }],
+      events: [{ type: "turn/end", seq: 3, time: 55, turn: 7, reasonKind: "completed" }],
     });
   });
 
@@ -156,7 +156,7 @@ describe("DshWebHostClient", () => {
     expect(await client.health()).toEqual({
       status: "mounted",
       protocol: fixture.protocol,
-      connectorVersion: "0.3.0",
+      connectorVersion: "0.4.0",
     });
     expect(await client.listProjects()).toEqual(fixture.examples["projects.list"]!.response.items as DshProject[]);
     expect(await client.listSessions()).toEqual(fixture.examples["sessions.list"]!.response.items as DshSessionSummary[]);
@@ -170,6 +170,11 @@ describe("DshWebHostClient", () => {
       hasMore: false,
       truncated: false,
       events: [{ type: "assistant/message", seq: 2, time: 42 }],
+    });
+    expect(await client.getTurnSummary("session-example", 1, 3)).toEqual({
+      turn: 1,
+      assistantSeq: 2,
+      assistantText: "Example answer",
     });
     expect(await client.listModels()).toEqual({
       default: { provider: "provider-example", model: "model-example" },
@@ -187,10 +192,30 @@ describe("DshWebHostClient", () => {
     expect("readEvents" in client).toBe(false);
   });
 
+  test("rejects inconsistent or mismatched turn summaries", async () => {
+    const wrongTurn = await startConnector(() => ({
+      ok: true, turn: 2, assistantSeq: 2, assistantText: "answer",
+    }));
+    await expect(wrongTurn.client.getTurnSummary("session-example", 1, 3))
+      .rejects.toMatchObject({ code: "invalid_response" });
+
+    const futureSeq = await startConnector(() => ({
+      ok: true, turn: 1, assistantSeq: 3, assistantText: "answer",
+    }));
+    await expect(futureSeq.client.getTurnSummary("session-example", 1, 3))
+      .rejects.toMatchObject({ code: "invalid_response" });
+
+    const inconsistent = await startConnector(() => ({
+      ok: true, turn: 1, assistantSeq: null, assistantText: "answer",
+    }));
+    await expect(inconsistent.client.getTurnSummary("session-example", 1, 3))
+      .rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   test("maps the fixed write operations into typed results", async () => {
     const { client } = await startConnector((request) => {
       if (request.op === "health") {
-        return { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.3.0" };
+        return { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.4.0" };
       }
       if (request.op === "prompt.submit") {
         expect(request).toMatchObject({
@@ -234,7 +259,7 @@ describe("DshWebHostClient", () => {
   test("preserves explicit busy/rejected/unknown write outcomes", async () => {
     const responseAfterHealth = (response: Record<string, unknown>) =>
       (request: Record<string, unknown>) => request.op === "health"
-        ? { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.3.0" }
+        ? { ok: true, status: "mounted", protocol: 1, connectorVersion: "0.4.0" }
         : response;
 
     const busy = await startConnector(responseAfterHealth({
@@ -273,7 +298,7 @@ describe("DshWebHostClient", () => {
     expect(dshReadOnlyCapability("observation")).toEqual({
       name: "observation",
       status: "partial",
-      reason: "bounded_live_follow_and_recovery_verified; production_end_to_end_unverified",
+      reason: "bounded_recovery_and_terminal_text_contract_verified; production_end_to_end_unverified",
     });
     expect(dshReadOnlyCapability("projects").status).toBe("available");
     expect(dshReadOnlyCapability("models").status).toBe("available");
@@ -301,7 +326,7 @@ describe("DshWebHostClient", () => {
     expect(await connector.client.health()).toEqual({
       status: "mounted",
       protocol: 1,
-      connectorVersion: "0.3.0",
+      connectorVersion: "0.4.0",
     });
     const nextToken = "b".repeat(64);
     connector.setAcceptedToken(nextToken);
@@ -309,7 +334,7 @@ describe("DshWebHostClient", () => {
     expect(await connector.client.health()).toEqual({
       status: "mounted",
       protocol: 1,
-      connectorVersion: "0.3.0",
+      connectorVersion: "0.4.0",
     });
   });
 
@@ -337,7 +362,7 @@ describe("DshWebHostClient", () => {
       ok: true,
       status: "mounted",
       protocol: 2,
-      connectorVersion: "0.3.0",
+      connectorVersion: "0.4.0",
     }));
     await expect(invalid.client.health()).rejects.toMatchObject({
       code: "contract_unsupported",

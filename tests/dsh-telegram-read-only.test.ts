@@ -72,7 +72,7 @@ function setup() {
   const desktop = new DesktopMessageStore(state);
   const dshStore = new DshBridgeStore(state);
   const host = {
-    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.3.0" }),
+    health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.4.0" }),
     listProjects: async () => [
       { id: "p1", title: "Alpha", sessionCount: 2 },
       { id: "p2", title: "Beta", sessionCount: 1 },
@@ -110,6 +110,33 @@ function setup() {
   );
   return { state, desktop, dshStore, client, queueCalls, service };
 }
+
+describe("DshReadOnlyBridge capability probes", () => {
+  test("reports project/model runtime availability independently after health succeeds", async () => {
+    const state = new StateDb(":memory:");
+    try {
+      const store = new DshBridgeStore(state);
+      const bridge = new DshReadOnlyBridge({
+        health: async () => ({ status: "mounted" as const, protocol: 1, connectorVersion: "0.4.0" }),
+        listProjects: async () => { throw new Error("project registry unavailable"); },
+        listModels: async () => ({
+          default: { provider: "p", model: "m" },
+          groups: [],
+          failureCount: 0,
+        }),
+      } as any, store);
+      const status = await bridge.status();
+      expect(status.capabilities.find((item) => item.name === "projects")).toMatchObject({
+        status: "unavailable",
+        reason: "runtime_probe_failed",
+      });
+      expect(status.capabilities.find((item) => item.name === "models")?.status).toBe("available");
+      expect(status.capabilities.find((item) => item.name === "transport")?.status).toBe("available");
+    } finally {
+      state.close();
+    }
+  });
+});
 
 describe("Telegram dsh read-only integration", () => {
   test("registers and serves dsh read-only commands without mutation controls", async () => {

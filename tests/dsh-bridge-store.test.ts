@@ -189,6 +189,18 @@ describe("DshBridgeStore", () => {
     }, now);
     expect(store.consumeCallback("expiring-token", "chat-a", now + 10)).toBeNull();
     expect(store.getCallbackStatus("expiring-token")).toBe("expired");
+
+    store.putCallback({
+      token: "invalidated-token",
+      chatId: "chat-a",
+      action: "reply",
+      payload: { sessionId: "session-a" },
+      expiresAt: now + 1_000,
+    }, now);
+    expect(store.expireCallback("invalidated-token", now + 3)).toBe(true);
+    expect(store.expireCallback("invalidated-token", now + 4)).toBe(false);
+    expect(store.getCallbackStatus("invalidated-token")).toBe("expired");
+    expect(store.consumeCallback("invalidated-token", "chat-a", now + 5)).toBeNull();
     state.close();
   });
 
@@ -241,6 +253,70 @@ describe("DshBridgeStore", () => {
     expect(store.listPendingNotifications(now + 3).map((row) => row.eventFingerprint)).toContain("event-conflict");
     expect(store.findMessageLink("chat-a", 502)?.eventFingerprint).toBe("existing-link");
     state.close();
+  });
+
+  test("preserves per-session notification order while allowing other sessions to continue", () => {
+    const state = new StateDb(":memory:");
+    const store = new DshBridgeStore(state);
+    try {
+      store.enqueueNotification({
+        eventFingerprint: "a-1", chatId: "chat", sessionId: "session-a",
+        eventKind: "completed_part", text: "a1",
+      }, 100, 100);
+      store.enqueueNotification({
+        eventFingerprint: "a-2", chatId: "chat", sessionId: "session-a",
+        eventKind: "completed", text: "a2",
+      }, 100, 101);
+      store.enqueueNotification({
+        eventFingerprint: "b-1", chatId: "chat", sessionId: "session-b",
+        eventKind: "completed", text: "b1",
+      }, 100, 102);
+
+      expect(store.listPendingNotifications(100).map((row) => row.eventFingerprint))
+        .toEqual(["a-1", "a-2", "b-1"]);
+
+      store.markNotificationFailed("a-1", "telegram_rate_limited", 500, 101);
+      expect(store.listPendingNotifications(200).map((row) => row.eventFingerprint))
+        .toEqual(["b-1"]);
+
+      expect(store.completeNotification("b-1", 900, 201)).toBe(true);
+      expect(store.listPendingNotifications(500).map((row) => row.eventFingerprint))
+        .toEqual(["a-1", "a-2"]);
+    } finally {
+      state.close();
+    }
+  });
+
+  test("uses monotonic per-session outbox ordering across observation commits", () => {
+    const state = new StateDb(":memory:");
+    const store = new DshBridgeStore(state);
+    try {
+      expect(store.commitObservation(null, {
+        sessionId: "session-order", cursor: 1,
+        contractFingerprint: "contract", lastEventFingerprint: "event-1",
+      }, [{
+        eventFingerprint: "event-1", chatId: "chat", sessionId: "session-order",
+        eventKind: "completed", text: "one",
+      }], false)).toBe(true);
+      expect(store.completeNotification("event-1", 901)).toBe(true);
+
+      expect(store.commitObservation(1, {
+        sessionId: "session-order", cursor: 2,
+        contractFingerprint: "contract", lastEventFingerprint: "event-2",
+      }, [{
+        eventFingerprint: "event-2", chatId: "chat", sessionId: "session-order",
+        eventKind: "completed", text: "two",
+      }], false)).toBe(true);
+
+      const rows = state.db.query(
+        `SELECT event_fingerprint,created_at FROM dsh_notification_outbox
+         WHERE session_id=? ORDER BY created_at,event_fingerprint`,
+      ).all("session-order") as Array<{ event_fingerprint: string; created_at: number }>;
+      expect(rows.map((row) => row.event_fingerprint)).toEqual(["event-1", "event-2"]);
+      expect(rows[1]!.created_at).toBeGreaterThan(rows[0]!.created_at);
+    } finally {
+      state.close();
+    }
   });
 
   test("persists created-session marker and observer cursor independently", () => {

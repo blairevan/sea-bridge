@@ -104,6 +104,7 @@ function handleClient(socket, token, ctx) {
         respond(socket, { ok: false, error: 'unauthorized' })
       } else {
         if (request.op === 'history.followWindow') socket.setTimeout(18000, () => socket.destroy())
+        if (request.op === 'turn.summary') socket.setTimeout(25000, () => socket.destroy())
         void dispatchRead(request, ctx).then(result => respond(socket, result)).catch(error => {
           respond(socket, {
             ok: false,

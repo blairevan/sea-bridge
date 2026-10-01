@@ -205,9 +205,13 @@ Unknown, expired, wrong-chat, or already-consumed tokens produce a safe message 
 - Observe dsh Web sessions through the verified Host interface.
 - On the first enablement of ordinary pre-existing sessions, establish a baseline instead of replaying old history.
 - Notify only for verified terminal outcomes. Typical expected states are completed, failed, and interrupted, but the adapter must not invent a state the Host contract does not expose.
-- Include a dsh source label and session title, plus a redacted/truncated final-text summary when available.
-- Telegram-send failures stay in the durable dsh outbox and retry with bounded backoff. A notification is marked sent only after the Telegram message ID and dsh reply mapping are persisted atomically. A mapping-key conflict is an invariant failure and rolls back the outbox completion rather than silently marking the notification sent.
-- Replies to a mapped dsh notification always target that exact session.
+- Include a dsh source label and the Host's durable session-title projection when available; fall back to a generic session label when the title projection is absent.
+- For an exact terminal `turn/end`, read final answer content only through the bounded `turn.summary(sessionId, turn, throughSeq)` projection. It may expose the last non-empty committed `assistant/message` text blocks for that turn and nothing else: no reasoning, tool-call arguments, file/image payloads, cwd, or arbitrary event data.
+- Redact the committed assistant text before it enters the notification outbox. Deliver the complete redacted answer rather than silently truncating it: split it into ordered Telegram-safe chunks, map every chunk to the exact dsh session, and expose the shortcut Reply button only on the final chunk. Native Telegram reply-to on any chunk still routes to the exact session.
+- Notification chunks are strictly ordered per dsh session. A retryable or ambiguous failure on an earlier chunk blocks later chunks for that session until the earlier row is resolved, while other sessions may continue independently.
+- A legitimate terminal turn with no non-empty visible assistant text produces a status-only notification. If the terminal-text contract is unavailable, malformed, exceeds its bounded safety limit, or cannot be reconciled to the exact turn, observation fails closed without advancing that session cursor; Sea-Bridge must not silently downgrade that turn to a text-less success.
+- Telegram-send failures stay in the durable dsh outbox and retry with bounded backoff. A notification chunk is marked sent only after the Telegram message ID and dsh reply mapping are persisted atomically. A mapping-key conflict is an invariant failure and rolls back the outbox completion rather than silently marking the notification sent.
+- Replies to any mapped dsh notification chunk always target that exact session.
 
 ### 6.4 Bridge-created session observation
 
@@ -328,7 +332,7 @@ Full mode requires `SEA_BRIDGE_DSH_READ_ONLY_ENABLED=true` and `SEA_BRIDGE_DSH_W
 - Connector/observer shutdown must be bounded and independent from Codex shutdown; active Host reads are cancellable and observer stop waits for the current poll to unwind before shared SQLite state is closed.
 - The tracked connector source is the canonical install source. Installation/update copies only the fixed connector file set (`index.mjs`, `host-operations.mjs`, `package.json`, `cordis.patch.yml`) into a private snapshot, verifies hashes and permissions, and never restarts the Host implicitly.
 - After an unclean Host exit, the connector may remove only stale runtime socket/token paths that are owner-private and of the expected type. It must never replace a live socket or an unsafe/wrong-owner path.
-- A disk snapshot hash match does not prove the running Host loaded it; target-Mac restart validation must also verify connector `0.3.0` via the runtime `connectorVersion` returned by health.
+- A disk snapshot hash match does not prove the running Host loaded it; target-Mac restart validation must also verify connector `0.4.0` via the runtime `connectorVersion` returned by health.
 
 ## 8. Delivery and Failure Semantics
 
@@ -372,11 +376,15 @@ Automated tests must cover:
 13. model preference namespace isolation from Codex and stale-model handling;
 14. additive database migration from a populated current-version Sea-Bridge database;
 15. regressions: existing Codex notification, reply, direct no-reply input, `/new`, `/projects`, `/model`, and `/status` behavior remains unchanged;
-16. dsh connector/observer failure does not prevent Telegram polling or Codex startup.
+16. dsh connector/observer failure does not prevent Telegram polling or Codex startup;
+17. durable session-title projection and exact-turn final assistant text are projected without reasoning/tool/path leakage;
+18. long final answers are fully redacted then split into ordered Telegram-safe chunks, every chunk maps to the same exact dsh session, and only the final chunk carries the shortcut Reply button;
+19. an earlier chunk retry/quarantine blocks later chunks only for that session, while notifications for other sessions remain deliverable;
+20. a known metadata-only observer fingerprint upgrades in place without replaying old history, while an unknown observer contract still fails closed.
 
 Target-Mac end-to-end acceptance must demonstrate:
 
-1. an existing dsh Web session turn produces exactly one Telegram notification;
+1. an existing dsh Web session terminal turn produces exactly one logical notification: one Telegram message when it fits, or multiple ordered Telegram messages when the complete redacted answer requires chunking;
 2. replying to that notification reaches that exact session in the active Web Host;
 3. a Codex notification reply still reaches Codex and cannot cross-route to dsh;
 4. plain text without reply preserves the current latest-Codex behavior and never targets dsh;
