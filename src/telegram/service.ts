@@ -961,7 +961,7 @@ export class TelegramService {
     } catch {
       await this.client.sendMessage(
         chatId,
-        "dsh Web 只读连接当前不可用；Codex 功能不受影响。",
+        "dsh Web 连接当前不可用；Codex 功能不受影响。",
       );
     }
   }

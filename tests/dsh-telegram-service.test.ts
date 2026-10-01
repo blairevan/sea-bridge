@@ -231,6 +231,24 @@ describe("Telegram dsh full integration", () => {
     }
   });
 
+  test("expires a creation Reply token when acknowledgement mapping fails", async () => {
+    const { state, client, dshStore, dshNew, service } = setup();
+    try {
+      dshNew.acknowledge = () => false;
+      await (service as any).processUpdate(messageUpdate(
+        8,
+        "/dsh_new workspace-alpha-long-private-id create with broken ack mapping",
+      ));
+      const ack = client.sent.at(-1)!;
+      const callbackData = ack.buttons?.[0]?.[0]?.callback_data ?? "";
+      expect(callbackData).toMatch(/^dsh:/);
+      expect(dshStore.getCallbackStatus(callbackData.slice(4))).toBe("expired");
+      expect(dshStore.findMessageLink("456", ack.messageId)).toBeNull();
+    } finally {
+      state.close();
+    }
+  });
+
   test("/dsh_model stores opaque model selection and applies it before first prompt", async () => {
     const { state, client, hostCalls, dshNew, service } = setup();
     try {

@@ -3,8 +3,8 @@
 - **Date**: 2026-09-30
 - **Branch**: `feature/dsh-web-bridge-design`
 - **Project**: sea-bridge
-- **Status**: Reviewed and revised — ready for implementation planning; Phase 0 Host PoC remains a mandatory implementation gate
-- **Last Review**: 2026-09-30
+- **Status**: Implemented on `feature/dsh-web-bridge-design`; connector 0.4.0 target-Mac deployment/E2E acceptance remains pending
+- **Last Review**: 2026-10-01
 
 ## 0. Review Findings and Design Decisions
 
