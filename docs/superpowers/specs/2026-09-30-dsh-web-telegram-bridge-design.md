@@ -320,6 +320,12 @@ Full mode requires `SEA_BRIDGE_DSH_READ_ONLY_ENABLED=true` and `SEA_BRIDGE_DSH_W
 - notification and creation reply buttons use a longer bounded expiry than transient project/model menus, while a user can still use Telegram's native reply-to mapping when the callback button has expired;
 - Codex direct text without `reply_to_message` remains the latest-Codex behavior and never consults dsh mappings.
 
+### 6.11 Live observation wakeups (2026-10-01)
+
+Each discovered session has one independently cancellable `history.followWindow` loop. A newly observed sequence ahead of its persisted cursor immediately wakes a serialized reconciliation; a wake received during an active scan requests another immediate pass. The opening cursor returned by an empty window also triggers recovery when ahead of durable state. Windows carry metadata only; notification bodies still come from exact terminal `turn.summary` projections.
+
+Live events are wakeups, not a substitute for contiguous recovery. Reconciliation obtains a fresh snapshot and backward pages, then atomically commits cursor/outbox intents before delivery. Periodic scanning (default two seconds, configurable) remains the discovery and missed-window fallback. Per-session follow failures reconnect with bounded exponential backoff and jitter independently of that scan. Removal cancels a session's window; shutdown aborts and drains every window and active reconciliation before closing SQLite. `/dsh_status` reports subscription and reconnect counts. No connector upgrade or schema migration is required.
+
 ## 7. Host Connector Safety and Lifecycle
 
 - Accept only the verified local transport. For TCP/HTTP-style endpoints, enforce loopback targets (`127.0.0.1` / `::1`) unless the verified Host contract uses a Unix socket. Do not accept arbitrary LAN/public endpoint configuration for this integration.
