@@ -5,8 +5,8 @@ import { DshSessionObserver } from "../src/dsh/session-observer.ts";
 import type { DshEventMetadata, DshLiveWindow } from "../src/dsh/types.ts";
 
 /** Wait for an observable condition with a bounded failure rather than a long polling interval. */
-async function until(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 500;
+async function until(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) await Bun.sleep(5);
   expect(predicate()).toBe(true);
 }
@@ -106,6 +106,27 @@ test("a failed live subscription leaves periodic recovery and exact reply mappin
     await until(() => sent);
     expect(f.store.findMessageLink("test-chat", 202)?.sessionId).toBe("session-live");
   } finally { await observer.stop(); f.db.close(); }
+});
+
+test("a failed window reconnects and resumes immediate delivery before the fallback interval", async () => {
+  const f = fixture();
+  const follow = f.host.followWindow;
+  let offline = true;
+  f.host.followWindow = async (id, signal) => {
+    if (offline) throw new Error("connection lost");
+    return await follow(id, signal);
+  };
+  try {
+    await f.observer.pollOnce();
+    f.observer.start();
+    await until(() => f.observer.getStatus().liveReconnecting === 1);
+    offline = false;
+    await until(f.ready, 2_000);
+    f.complete(true);
+    await until(() => f.sends() === 1);
+    expect(f.observer.getStatus().liveReconnecting).toBe(0);
+    expect(f.store.findMessageLink("test-chat", 101)?.sessionId).toBe("session-live");
+  } finally { await f.observer.stop(); f.db.close(); }
 });
 
 test("session removal cancels its live window before shutdown", async () => {
