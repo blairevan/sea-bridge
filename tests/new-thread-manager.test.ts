@@ -4,6 +4,29 @@ import { NewThreadStateStore } from "../src/state/new-thread-state-store.ts";
 import { NewThreadManager } from "../src/desktop/new-thread-manager.ts";
 
 describe("NewThreadManager", () => {
+  test("keeps Telegram prefixes in both manager creation paths", async () => {
+    const state = new StateDb(":memory:");
+    const prompts: string[] = [];
+    const manager = new NewThreadManager({
+      listProjects: async () => [],
+      listModels: async () => [],
+      startThreadAndTurn: async (params) => {
+        prompts.push(params.prompt);
+        return { threadId: "thread", turnId: "turn", projectId: params.projectId, cwd: params.cwd, model: null };
+      },
+    }, new NewThreadStateStore(state), { pathExists: () => true });
+    try {
+      await manager.startThread("chat", { id: "project", primaryRoot: "/repo" }, "hello");
+      await manager.startPendingThread("chat", {
+        chatId: "chat", promptMessageId: 1, projectId: "project", projectName: "project",
+        cwd: "/repo", expiresAt: Date.now() + 1000,
+      }, "hello");
+      expect(prompts).toEqual(["[Telegram init]\nhello", "[Telegram init]\nhello"]);
+    } finally {
+      state.close();
+    }
+  });
+
   test("filters missing project paths and reindexes visible projects", async () => {
     const state = new StateDb(":memory:");
     const store = new NewThreadStateStore(state);

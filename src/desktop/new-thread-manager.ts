@@ -128,7 +128,7 @@ export class NewThreadManager {
       projectId: project.id,
       cwd: project.primaryRoot,
       ...(model ? { model } : {}),
-      prompt,
+      prompt: `[Telegram init]\n${prompt}`,
       onThreadStarted: this.onThreadStarted,
     });
   }
@@ -142,7 +142,7 @@ export class NewThreadManager {
       projectId: pending.projectId,
       cwd: pending.cwd,
       ...(model ? { model } : {}),
-      prompt,
+      prompt: `[Telegram init]\n${prompt}`,
       onThreadStarted: this.onThreadStarted,
     });
   }

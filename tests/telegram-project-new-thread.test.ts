@@ -156,7 +156,7 @@ describe("Telegram project new-thread flow", () => {
     expect(starts).toEqual([{
       projectId: "p1",
       cwd: "/repo",
-      prompt: "review this",
+      prompt: "[Telegram init]\nreview this",
     }]);
     expect(messages.getCursor("thread-1")?.byteOffset).toBe(0);
     expect(messages.findLatestLink("456")?.threadId).toBe("thread-1");
@@ -188,7 +188,7 @@ describe("Telegram project new-thread flow", () => {
     await (service as any).processUpdate(messageUpdate(6, "build it", promptMessageId));
     expect(starts).toHaveLength(1);
     expect(starts[0].projectId).toBe("p1");
-    expect(starts[0].prompt).toBe("build it");
+    expect(starts[0].prompt).toBe("[Telegram init]\nbuild it");
 
     await (service as any).processUpdate(messageUpdate(11, "build it again", promptMessageId));
     expect(starts).toHaveLength(1);

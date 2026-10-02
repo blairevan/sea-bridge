@@ -225,6 +225,11 @@ class AppServerSession {
     });
   }
 
+  /** Whether process termination has been observed, proving ownership release. */
+  isClosed(): boolean {
+    return this.closed;
+  }
+
   async closeGracefully(): Promise<void> {
     if (this.closed) return;
     this.closing = true;
@@ -380,6 +385,7 @@ export class CodexAppServerClient {
   private readonly spawner: ProcessSpawner;
   private readonly inboundRequestHandler: AppServerInboundRequestHandler | undefined;
   private readonly sessions = new Set<AppServerSession>();
+  private readonly releases = new Map<AppServerSession, Promise<boolean>>();
   private readonly permissionsResolver: () => ResolvedDesktopPermissions;
 
   constructor(
@@ -469,6 +475,7 @@ export class CodexAppServerClient {
     }
   }
 
+  /** Start a transport-neutral first turn and release ownership after process exit. */
   async startThreadAndTurn(params: {
     projectId: string;
     cwd: string;
@@ -476,9 +483,20 @@ export class CodexAppServerClient {
     prompt: string;
     permissions?: ResolvedDesktopPermissions;
     onThreadStarted?: (threadId: string) => void;
+    onOwnershipReleased?: (threadId: string, turnId: string | null) => void;
   }): Promise<StartedThread> {
     const session = await this.openSession();
     let handedToBackground = false;
+    let ownedThreadId: string | null = null;
+    let ownedTurnId: string | null = null;
+    /** Notify once only after the owning process is confirmed closed. */
+    const releaseOwner = async (): Promise<void> => {
+      if (await this.releaseSession(session) && ownedThreadId) {
+        const releasedThread = ownedThreadId;
+        ownedThreadId = null;
+        params.onOwnershipReleased?.(releasedThread, ownedTurnId);
+      }
+    };
     try {
       const permissions = params.permissions ?? this.permissionsResolver();
       const threadParams: Record<string, unknown> = {
@@ -496,6 +514,7 @@ export class CodexAppServerClient {
       }>("thread/start", threadParams);
       const threadId = threadResponse?.thread?.id;
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
+      ownedThreadId = threadId;
       params.onThreadStarted?.(threadId);
 
       const turnPermissions = permissions.turnStart(params.cwd);
@@ -503,7 +522,7 @@ export class CodexAppServerClient {
         threadId,
         input: [{
           type: "text",
-          text: `[Telegram init]\n${params.prompt}`,
+          text: params.prompt,
           textElements: [],
         }],
         approvalPolicy: turnPermissions.approvalPolicy,
@@ -513,6 +532,7 @@ export class CodexAppServerClient {
       const turnId = turnResponse?.turn?.id;
       if (!turnId) throw new Error("app_server_turn_start_missing_id");
 
+      ownedTurnId = turnId;
       handedToBackground = true;
       void session.waitForNotification(
         (message) => message.method === "turn/completed"
@@ -525,7 +545,7 @@ export class CodexAppServerClient {
         } catch {
           // Closing the app-server process below is still the final ownership release boundary.
         }
-      }).catch(() => undefined).finally(() => void this.releaseSession(session));
+      }).catch(() => undefined).finally(releaseOwner).catch(() => undefined);
 
       return {
         threadId,
@@ -535,7 +555,7 @@ export class CodexAppServerClient {
         model: threadResponse?.model ?? params.model ?? null,
       };
     } finally {
-      if (!handedToBackground) await this.releaseSession(session);
+      if (!handedToBackground) await releaseOwner();
     }
   }
 
@@ -556,8 +576,20 @@ export class CodexAppServerClient {
     }
   }
 
-  private async releaseSession(session: AppServerSession): Promise<void> {
-    if (!this.sessions.delete(session)) return;
-    await session.closeGracefully();
+  /** Coalesce concurrent shutdowns so callers cannot observe premature release. */
+  private async releaseSession(session: AppServerSession): Promise<boolean> {
+    const pending = this.releases.get(session);
+    if (pending) return pending;
+    const release = session.closeGracefully().then(() => {
+      const closed = session.isClosed();
+      if (closed) this.sessions.delete(session);
+      return closed;
+    });
+    this.releases.set(session, release);
+    try {
+      return await release;
+    } finally {
+      this.releases.delete(session);
+    }
   }
 }
