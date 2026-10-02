@@ -339,15 +339,15 @@ Use Web-prefixed tables, with exact final names chosen once and kept stable. Sug
 
 Do not add an active pair-code table.
 
-- [ ] **Step 1: Write an on-disk upgrade test.**
+- [x] **Step 1: Write an on-disk upgrade test.**
 
 Seed a database with representative current Telegram/Codex/dsh rows, close it, run Web migrations, reopen, and assert every existing row is unchanged.
 
-- [ ] **Step 2: Test migration idempotency and transaction rollback.**
+- [x] **Step 2: Test migration idempotency and transaction rollback.**
 
 Run migrations twice. Inject a migration failure in a test transaction and prove no half-created version is recorded.
 
-- [ ] **Step 3: Test default settings.**
+- [x] **Step 3: Test default settings.**
 
 First initialization creates:
 - redaction enabled;
@@ -355,7 +355,7 @@ First initialization creates:
 
 Concurrent compare-and-set update must allow only the expected version.
 
-- [ ] **Step 4: Test device/session and CSRF storage.**
+- [x] **Step 4: Test device/session and CSRF storage.**
 
 Assert:
 - only hashes are stored;
@@ -363,7 +363,7 @@ Assert:
 - last activity update is bounded to avoid a DB write for every polling request (e.g. update at most once per minute);
 - cleanup removes expired sessions/tokens.
 
-- [ ] **Step 5: Test operation atomic claim.**
+- [x] **Step 5: Test operation atomic claim.**
 
 `claimOperation(id, canonicalDigest, ...)` returns:
 - `new` for the first claim;
@@ -372,7 +372,7 @@ Assert:
 
 Use a keyed HMAC for the canonical raw operation payload with an install-local random pepper so low-entropy prompts are not represented by a plain offline-guessable digest in SQLite. The pepper lives in a private `0600` file and never appears in logs/API/database. Tests must recreate the store/auth stack with the same pepper file and prove a previously claimed operation still compares as the same request after process restart; missing/corrupt pepper after operations exist is a Web startup error, not a silent key regeneration that would destroy idempotency.
 
-- [ ] **Step 6: Test legal state transitions and crash recovery.**
+- [x] **Step 6: Test legal state transitions and crash recovery.**
 
 At startup:
 - `dispatching` becomes `delivery_unknown`;
@@ -381,21 +381,21 @@ At startup:
 
 Prefer the invariant: transactionally transition to `dispatching` immediately before source invocation; any recovered `dispatching` is unknown and never auto-replayed.
 
-- [ ] **Step 7: Test early session-ID persistence.**
+- [x] **Step 7: Test early session-ID persistence.**
 
 A creation operation can store `session_id` independently from final operation state.
 
-- [ ] **Step 8: Test retention.**
+- [x] **Step 8: Test retention.**
 
 Enforce both age and count:
 - Web logs: 7 days / max 10,000;
 - operations, snapshots, audit: 30 days / max 10,000 each.
 
-- [ ] **Step 9: Implement store and crypto helpers.**
+- [x] **Step 9: Implement store and crypto helpers.**
 
 Use constant-time comparisons where comparing secret-derived values is relevant. Do not invent custom encryption.
 
-- [ ] **Step 10: Run focused and full checks.**
+- [x] **Step 10: Run focused and full checks.**
 
 ```bash
 bun test tests/web-store.test.ts

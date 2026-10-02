@@ -29,3 +29,9 @@
 - 独立 `loadWebConfig` 避免错误 Web 配置阻断 core 启动；默认关闭，7310 默认端口，精确 HTTPS origin 校验。
 - 生命周期测试覆盖关闭模式无构造、部分启动清理、失败隔离与重复关闭。当前为不暴露任何路由的生命周期骨架。
 - 聚焦 5 pass，全套 181 pass；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
+
+## Task 3：Web 独立持久化
+
+- 新增事务迁移、设置 CAS、设备/CSRF 摘要、操作原子认领及状态转换、早期会话 ID、重启派发隔离、双重保留期限清理。
+- 安装级 0600 HMAC key 不入库；重启摘要一致，已有操作时缺失/损坏 key 拒绝启动。
+- 聚焦 8 pass，全套 189 pass；`bun run typecheck`、`bun run build` 通过。运行数据库尚未迁移。
