@@ -1,7 +1,11 @@
 "use strict";
-const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, paused: true, busy: new Set(), pending: null, awaitingReply: null, followLatest: false };
+const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, lastConnectedAt: null, paused: true, busy: new Set(), pending: null, awaitingReply: null, followLatest: false };
+const READ_TIMEOUT_MS = 8000;
+const WRITE_TIMEOUT_MS = 20000;
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
 const labels = { queued: "已入队，尚未确认执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
 const reads = new Map();
+let historyTools;
 
 /** Generate an RFC 4122 UUID with secure randomness on HTTP Tailnet pages too. */
 function operationUuid() {
@@ -90,28 +94,59 @@ function el(id) { return document.getElementById(id); }
 function node(tag, text, className = "") { const value = document.createElement(tag); value.textContent = text; value.className = className; return value; }
 /** Show a transient human-readable status. */
 function notice(text) { el("notice").textContent = text; }
+/** Create a typed client error without exposing lower-level transport details. */
+function clientError(code, message) { const error = new Error(message); error.code = code; return error; }
+/** Classify only failures that require connection recovery. */
+function isTransportError(error) { return ["network_unavailable", "network_timeout", "transport_invalid_response"].includes(error?.code); }
+/** Cancel the single scheduled recovery attempt. */
+function cancelReconnectTimer() { if (state.reconnectTimer !== null && typeof clearTimeout === "function") clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+/** Cancel the SSE opening deadline. */
+function cancelStreamTimer() { if (state.streamTimer !== null && typeof clearTimeout === "function") clearTimeout(state.streamTimer); state.streamTimer = null; }
+/** Keep the application shell visible while all sensitive render state is hidden. */
+function showConnectionPanel(detail = "连接已中断，敏感内容已隐藏。") {
+  el("connection-title").textContent = "服务暂不可达";
+  el("connection-detail").textContent = detail;
+  el("connection-panel").hidden = false;
+}
+/** Clear connection status only after recovery or explicit pairing. */
+function hideConnectionPanel() { el("connection-panel").hidden = true; el("connection-retry-state").textContent = ""; }
 /** Drop sensitive render state before applying a new display policy. */
 function clearSensitive() {
-  for (const id of ["messages", "session-items", "recent-sessions", "record-items", "log-items", "device-items", "status-cards", "create-project", "create-model"]) el(id).replaceChildren();
+  for (const id of ["session-items", "recent-sessions", "record-items", "log-items", "device-items", "status-cards", "create-project", "create-model"]) el(id).replaceChildren();
   el("session-title").textContent = "会话"; el("session-meta").textContent = "";
+  el("messages").replaceChildren(historyTools ?? el("history-tools"));
   state.messages = []; state.sessions = [];
   if (state.selected) state.selected = { ...state.selected, title: "会话" };
 }
 /** Read the double-submit cookie; keep it only in the current request. */
 function csrf() { return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("sea_csrf="))?.slice(9) ?? ""; }
-/** Make a version-aware same-origin API request without persistent client storage. */
+/** Make a version-aware same-origin API request with bounded client-side waiting. */
 async function requestApi(path, method = "GET", body) {
-  let response;
-  try { response = await fetch(path, { method, credentials: "same-origin", cache: "no-store", headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(method !== "GET" ? { "X-Sea-Bridge-CSRF": csrf() } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); }
-  catch { throw new Error("网络请求失败，请检查 Shadowrocket 连接后重试"); }
+  let response; const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timeoutMs = method === "GET" ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS;
+  const timeout = controller && typeof setTimeout === "function" ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    response = await fetch(path, { method, credentials: "same-origin", cache: "no-store",
+      headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(method !== "GET" ? { "X-Sea-Bridge-CSRF": csrf() } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...(controller ? { signal: controller.signal } : {}) });
+  } catch (cause) {
+    if (timeout !== null && typeof clearTimeout === "function") clearTimeout(timeout);
+    throw clientError(cause?.name === "AbortError" ? "network_timeout" : "network_unavailable",
+      cause?.name === "AbortError" ? "服务响应超时" : "服务暂不可达");
+  }
   let payload;
   try { payload = await response.json(); }
-  catch { throw new Error(`接口返回异常（HTTP ${response.status}，${response.headers.get("Content-Type") || "未提供内容类型"}），请截图反馈`); }
+  catch (cause) {
+    if (controller?.signal.aborted || cause?.name === "AbortError") throw clientError("network_timeout", "服务响应超时");
+    if (response.status >= 500) throw clientError("transport_invalid_response", "服务暂不可达");
+    throw clientError("invalid_response", `接口返回异常（HTTP ${response.status}，${response.headers.get("Content-Type") || "未提供内容类型"}）`);
+  }
+  finally { if (timeout !== null && typeof clearTimeout === "function") clearTimeout(timeout); }
   const version = Number(response.headers.get("X-Sea-Bridge-Settings-Version") ?? state.version);
-  if (version < state.version) throw new Error("设置已变化，正在刷新");
+  if (version < state.version) throw clientError("settings_stale", "设置已变化，正在刷新");
   if (version > state.version) { clearSensitive(); state.version = version; }
-  if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw new Error("设备登录已失效，请重新配对"); }
-  if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw new Error("连接尚未重新确认设置");
+  if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw clientError("auth_required", "设备登录已失效，请重新配对"); }
+  if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
   if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
@@ -125,25 +160,95 @@ async function api(path, method = "GET", body) {
 /** Prevent repeated work for one UI action and keep errors visible. */
 async function run(key, work) {
   if (state.busy.has(key)) return; state.busy.add(key);
-  try { await work(); } catch (error) { notice(`[诊断 pair3 · ${key}] ${error.message || "操作失败"}`); } finally { state.busy.delete(key); }
+  try { await work(); }
+  catch (error) {
+    if (isTransportError(error)) enterDisconnected();
+    else if (error?.code !== "auth_required") notice(error?.message || "操作失败");
+  } finally { state.busy.delete(key); }
 }
-/** Hide all authenticated content and stop its event connection. */
-function showPairing() { state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); }
-/** Revalidate settings before any sensitive display resumes. */
+/** Stop retry machinery and return to the explicit pairing boundary. */
+function showPairing() {
+  cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false;
+  state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); hideConnectionPanel();
+  el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close();
+}
+/** Validate both session and current display policy before restoring sensitive content. */
+async function validateConnection() {
+  const session = await requestApi("/api/auth/session");
+  const settings = await requestApi("/api/settings");
+  state.device = session.device; state.settings = settings;
+  state.version = Math.max(state.version, session.settings?.version ?? 0, settings.version ?? 0);
+  el("pairing").hidden = true; el("console").hidden = false;
+}
+/** Schedule bounded exponential recovery attempts without replaying writes. */
+function scheduleReconnect(immediate = false) {
+  if (document.hidden || state.reconnectTimer !== null || typeof setTimeout !== "function") return;
+  const delay = immediate ? 0 : RETRY_DELAYS_MS[Math.min(state.retryAttempt, RETRY_DELAYS_MS.length - 1)];
+  el("connection-retry-state").textContent = delay === 0 ? "正在重试…" : `${Math.ceil(delay / 1000)} 秒后自动重试`;
+  state.reconnectTimer = setTimeout(() => { state.reconnectTimer = null; void recoverConnection(); }, delay);
+}
+/** Enter a safe disconnected state; keep the shell but remove all sensitive render content. */
+function enterDisconnected() {
+  const failedRecovery = state.recovering;
+  state.paused = true; state.recovering = false; cancelStreamTimer();
+  if (failedRecovery) state.retryAttempt++;
+  state.stream?.close(); state.stream = null; clearSensitive();
+  if (el("create-dialog").open) el("create-dialog").close();
+  showConnectionPanel(state.pending ? "连接已中断。发送结果待确认，恢复后会核查原请求，不会自动重发。" : "连接已中断，敏感内容已隐藏。");
+  if (state.pending) el("operation-status").textContent = "结果待确认；恢复连接后自动核查";
+  scheduleReconnect();
+}
+/** Complete recovery only after HTTP auth/settings and the SSE control channel are both healthy. */
+async function finishRecovery(stream = state.stream) {
+  if (!stream || state.stream !== stream || stream.readyState !== EventSource.OPEN || document.hidden) return;
+  await validateConnection();
+  if (state.stream !== stream || stream.readyState !== EventSource.OPEN || document.hidden) return;
+  state.paused = false; state.retryAttempt = 0; state.recovering = false; state.lastConnectedAt = Date.now();
+  cancelReconnectTimer(); hideConnectionPanel(); notice("");
+  if (state.pending) await reconcilePending();
+  else await refresh();
+}
+/** Revalidate HTTP state, then establish a fresh SSE channel. */
+async function recoverConnection() {
+  if (document.hidden || state.recovering || !state.paused) return;
+  state.recovering = true; cancelReconnectTimer(); el("connection-retry-state").textContent = "正在重试…";
+  try {
+    await validateConnection();
+    state.stream?.close(); state.stream = null; connectEvents();
+    el("connection-retry-state").textContent = "服务已响应，正在恢复实时连接…";
+  } catch (error) {
+    state.recovering = false;
+    if (error?.code === "auth_required") return;
+    state.retryAttempt++;
+    showConnectionPanel();
+    scheduleReconnect();
+  }
+}
+/** Initial auth bootstrap reuses the same recovery contract as later reconnects. */
 async function bootstrap() {
-  const session = await api("/api/auth/session"); state.device = session.device; state.settings = session.settings;
-  state.version = Math.max(state.version, session.settings.version); el("pairing").hidden = true; el("console").hidden = false;
+  await validateConnection();
   if (!state.stream) connectEvents();
 }
-/** Subscribe only to control events and clear display while the stream is disconnected. */
+/** Subscribe only to control events; EventSource failure enters the same bounded recovery path. */
 function connectEvents() {
+  cancelStreamTimer();
   const stream = new EventSource("/api/events"); state.stream = stream;
-  stream.onopen = () => run("reconnect", async () => { await bootstrap(); state.paused = false; notice(""); await refresh(); });
-  stream.onerror = () => { state.paused = true; clearSensitive(); notice("连接暂时中断，正在重新确认设置"); };
+  if (typeof setTimeout === "function") state.streamTimer = setTimeout(() => {
+    if (state.stream === stream && stream.readyState !== EventSource.OPEN) enterDisconnected();
+  }, READ_TIMEOUT_MS);
+  stream.onopen = () => {
+    if (state.stream !== stream) return;
+    cancelStreamTimer();
+    run("reconnect", () => finishRecovery(stream));
+  };
+  stream.onerror = () => { if (state.stream === stream) enterDisconnected(); };
   stream.addEventListener("session_revoked", () => { showPairing(); notice("设备已被撤销，请重新配对"); });
   stream.addEventListener("settings_version", (event) => {
     const version = JSON.parse(event.data).version;
-    if (version > state.version) { state.version = version; clearSensitive(); run("settings-sync", async () => { await bootstrap(); if (!state.paused) await refresh(); }); }
+    if (version > state.version) {
+      state.version = version; state.paused = true; clearSensitive();
+      run("settings-sync", async () => { await validateConnection(); if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); } });
+    }
   });
 }
 /** Switch views using fixed IDs and load the corresponding data. */
@@ -212,17 +317,17 @@ async function loadHistory(older) {
   // Latest polling must not move the "older" boundary forward after the user has paged back.
   if (older || !hadMessages) state.historyCursor = result.cursor;
   el("more-history").hidden = !state.historyCursor;
-  const container = el("messages"); const scroll = container.scrollTop;
+  const container = el("messages"); const scroll = container.scrollTop; const previousHeight = container.scrollHeight;
   const nearBottom = container.scrollHeight - container.clientHeight - scroll < 100;
   const follow = !older && (!hadMessages || state.followLatest || nearBottom);
-  container.replaceChildren();
+  container.replaceChildren(historyTools ?? el("history-tools"));
   for (const message of state.messages) {
     const item = node("div", "", "message " + message.role);
     const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
     item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}`, "message-meta"), renderMarkdown(message.text)); container.append(item);
   }
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
-  if (follow) scrollMessagesToLatest(container); else container.scrollTop = scroll;
+  if (follow) scrollMessagesToLatest(container); else container.scrollTop = older ? scroll + container.scrollHeight - previousHeight : scroll;
   state.followLatest = false;
   if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
     const latest = [...state.messages].reverse().find((message) => message.role === "assistant");
@@ -293,7 +398,10 @@ async function submitWrite(create) {
     if (definite.has(error.code)) {
       state.pending = null; notice(error.message || "提交失败"); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
     } else {
-      notice("提交结果待确认，请刷新核查；不会自动重发。"); el("reconcile").hidden = false; el("create-reconcile").hidden = false;
+      el("operation-status").textContent = "结果待确认；不会自动重发";
+      el("reconcile").hidden = false; el("create-reconcile").hidden = false;
+      if (isTransportError(error)) enterDisconnected();
+      else notice("提交结果待确认，请刷新核查；不会自动重发。");
     }
   }
   finally { if (create && !state.pending) el("create-submit").disabled = !state.caps[source]?.createEnabled; }
@@ -314,7 +422,39 @@ async function reconcilePending() {
   await refresh();
 }
 
+
+/** Bound the draft to one through three lines without changing the reading position. */
+function resizeComposer() {
+  const prompt = el("prompt"); const style = getComputedStyle(prompt);
+  const messages = el("messages"); const follow = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 100;
+  const line = parseFloat(style.lineHeight) || 24;
+  const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(line * 3 + padding + border, Math.max(line + padding + border, prompt.scrollHeight + border))}px`;
+  if (follow && !state.paused) scrollMessagesToLatest(messages);
+}
+/** Fit the mobile authenticated shell to the visible screen, including the software keyboard. */
+function syncViewport() {
+  if (window.innerWidth > 760) return;
+  const viewport = window.visualViewport;
+  if (viewport && viewport.scale !== 1) return;
+  const messages = el("messages"); const follow = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 100;
+  document.documentElement.style.setProperty("--app-height", `${viewport?.height ?? window.innerHeight}px`);
+  document.documentElement.style.setProperty("--app-top", `${viewport?.offsetTop ?? 0}px`);
+  document.documentElement.classList.toggle("keyboard-open", document.activeElement === el("prompt") && window.innerHeight - (viewport?.height ?? window.innerHeight) > 120);
+  if (follow && !state.paused) scrollMessagesToLatest(messages);
+}
+
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
+historyTools = el("history-tools");
+el("prompt").oninput = resizeComposer;
+el("prompt").addEventListener("focus", syncViewport);
+el("prompt").addEventListener("blur", syncViewport);
+window.visualViewport?.addEventListener("resize", syncViewport);
+window.visualViewport?.addEventListener("scroll", syncViewport);
+window.addEventListener("resize", syncViewport);
+syncViewport();
 el("client-version").textContent = "配对诊断版本：pair3";
 /** Validate explicitly so mobile native form validation cannot silently block pairing. */
 async function pairDevice() {
@@ -346,14 +486,18 @@ el("more-records").onclick = () => run("records", () => loadRecords(true));
 el("redaction-form").onsubmit = (event) => { event.preventDefault(); run("settings", async () => { const enabled = el("redaction-enabled").checked; await api("/api/settings/redaction", "PUT", { enabled, expectedVersion: state.settings.version }); await loadSettings(); }); };
 el("reconcile").onclick = () => run("reconcile", reconcilePending);
 el("create-reconcile").onclick = () => run("reconcile", reconcilePending);
+el("connection-retry").onclick = () => {
+  if (state.recovering) return;
+  cancelReconnectTimer(); scheduleReconnect(true);
+};
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { state.paused = true; clearSensitive(); return; }
-  run("resume", async () => {
-    await bootstrap();
-    if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); }
-    else { state.paused = true; clearSensitive(); notice("连接尚未恢复，敏感内容保持隐藏"); }
-  });
+  if (document.hidden) {
+    state.paused = true; cancelReconnectTimer(); cancelStreamTimer(); state.stream?.close(); state.stream = null; clearSensitive(); return;
+  }
+  showConnectionPanel("正在重新确认连接和显示设置…"); scheduleReconnect(true);
 });
-window.addEventListener("pageshow", () => run("resume", async () => { await bootstrap(); if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); } }));
+window.addEventListener("pageshow", () => { if (state.paused) { showConnectionPanel("正在重新确认连接和显示设置…"); scheduleReconnect(true); } });
+window.addEventListener("online", () => { if (state.paused) { cancelReconnectTimer(); scheduleReconnect(true); } });
+window.addEventListener("offline", () => enterDisconnected());
 setInterval(() => run("poll", refresh), 3000);
 run("startup", async () => { await bootstrap(); });

@@ -9,11 +9,15 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const html = await Bun.file("src/web/public/index.html").text();
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
-  expect(html).toContain('src="/app.js?v=20261002-message6"'); expect(html).toContain('href="/app.css?v=20261002-message6"');
+  expect(html).toContain('src="/app.js?v=20261002-message8"'); expect(html).toContain('href="/app.css?v=20261002-message8"');
+  expect(html).toContain('id="connection-panel"'); expect(html).toContain('id="connection-retry"');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|localStorage|indexedDB|serviceWorker/);
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
-  expect(script.match(/state\.stream\?\.readyState === EventSource\.OPEN/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  expect(script).toContain('run("reconnect", () => finishRecovery(stream))');
+  expect(script).toContain('const session = await requestApi("/api/auth/session")');
+  expect(script).toContain('const settings = await requestApi("/api/settings")');
+  expect(script).toContain("state.stream?.readyState === EventSource.OPEN");
   expect(script).toContain('new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"])');
   expect(css).toContain(".workspace{display:flex;height:calc(100dvh - 64px);min-height:0;overflow:hidden}");
   expect(css).toContain("#sessions{padding:0;display:flex;height:100%;min-height:0;overflow:hidden}");

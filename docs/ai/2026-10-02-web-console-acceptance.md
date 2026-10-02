@@ -233,3 +233,40 @@
 - 修复 Tailnet HTTP 退出响应误加 Secure：Cookie 删除与签发均按 origin 的 HTTPS 协议判断。HTTP/HTTPS 回归修复前失败，修复后通过。服务端仍先撤销登录凭据。
 - `bun run typecheck`、`bun test`（236 pass / 0 fail，1011 assertions）、`bun run build`、`git diff --check` 通过。
 - 此退出 Cookie 清理补丁尚未重新部署；运行服务仍为此前 message6 release。
+
+
+## message7 手机阅读空间优化（2026-10-02 20:24）
+
+- 品牌栏/导航/会话栏压缩；输入框一行至三行，发送按钮并排；历史说明与加载较早控件置于消息滚动区顶部；卡片缩小留白。
+- VisualViewport 约束手机已登录界面高度与 offsetTop；输入聚焦且检测到键盘缩短 viewport 时隐藏品牌/导航，保留会话返回和输入框；缩放时避免误判。
+- 旧页前插按 scrollHeight 增量保持阅读锚点，最新内容在输入增高与 viewport 改变时按原阅读位置决定跟随。
+- `bun run typecheck`、`bun test`（238 pass / 0 fail）、`bun run build`、`git diff --check` 通过。
+- 浏览器合成消息预览：390×844 消息区 663px（约79%）；五行输入高度限92px；500px 键盘模式消息区404px、输入底部500px。截图：2026-10-02-mobile-message-space.png。此模拟不能替代真实 iPhone 键盘验收。
+- 部署 `/opt/app/aitools/sea-bridge-releases/web-message7-20261002-202410`；IP 首页/JS/CSS 200，未授权 status 401，运行 release 与构建哈希匹配。未改 Tailnet 配置，未提交或 push 本轮改动。
+- 本次部署也包含此前已提交的 HTTP logout Cookie 清理补丁。
+## message8 断线与自动恢复（2026-10-02）
+
+- 保留当前 Tailnet IP HTTP 入口，不修改 Tailscale Serve/Funnel；本轮只改善已加载页面的断线体验。
+- 新增全屏连接状态面板：断线后保留导航/界面外壳，清空会话、消息、日志、设备等敏感渲染内容；文案统一为“服务暂不可达”，不把网络失败归因到 Shadowrocket/Tailscale 插件。只有服务端明确返回 401 才回到配对页。
+- API 客户端增加 AbortController 超时：GET 8 秒、写请求 20 秒。空 5xx/代理异常归类为 transport unavailable；底层网络异常不直接展示浏览器/代理细节。
+- 自动恢复使用 1/2/4/8/15/30 秒有界指数退避；“立即重试”、浏览器 online/pageshow/visibility 恢复可触发即时核查。隐藏页面时停止重试并关闭 SSE，重新可见后重新校验。
+- 恢复门槛为双重验证：先重新读取 auth session 与全局脱敏 settings，再新建 SSE；只有 SSE open 后才解除 paused 并重新加载敏感内容。SSE 建连本身也有 8 秒客户端超时。
+- 写请求在网络/超时边界失败时保留原 operationId 和“结果待确认”状态；恢复后查询 /api/operations/:id 进行核查，绝不自动重新 POST 原消息。创建对话框在断线时关闭，未提交草稿仍只保留在当前页面内存。
+- 前端静态资源版本提升为 20261002-message8。新增回归覆盖：通用不可达文案、请求超时、敏感内容隐藏、1 秒首轮重连、待确认操作保留、恢复后核查而非重发。
+- 全量验证：241 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。本轮未部署 message8，未修改 Tailnet 配置。
+
+
+## message8 部署验收（2026-10-02 20:48）
+
+- 已部署 `/opt/app/aitools/sea-bridge-releases/web-message8-20261002-204738`，launchd 已运行此 release。
+- `bun run typecheck`、`bun test`（241 pass / 0 fail）、`bun run build`、`git diff --check` 通过。
+- Tailscale IP 首页、message8 JS/CSS 均返回 200；未授权 status 返回 401；部署产物 SHA-256 与当前 dist 匹配。
+- 未修改 Tailscale Serve/Funnel、未提交或 push 本轮改动。未关闭真实手机隧道，iPhone 断线与恢复体验仍需设备侧验证。
+
+
+## message8 提交前复核
+
+- 修复超时只覆盖响应头的问题，计时器保留到正文读取结束；正文 AbortError 映射为明确超时。
+- 恢复校验前后绑定同一 OPEN SSE，连接中途丢失或被替换时旧恢复结果不能解除 paused。新增两条失败回归后修复。
+- 去掉新增测试 any，补充恢复辅助函数说明；`bun run typecheck`、`bun test`（243 pass / 0 fail）、`bun run build`、`git diff --check` 通过。
+- 这些提交前补丁未重新部署，运行态仍为 web-message8-20261002-204738。
