@@ -67,3 +67,10 @@
 - 接入 Web 与 Telegram 历史投递的只读操作记录；Telegram getStatus 仅投影现有 polling 状态。
 - Loopback HTTP 服务与静态 allowlist/CSP 已实现，但静态资源尚未生成，其实测响应门槛仍未勾选。
 - 全套 207 pass；类型检查、构建、diff 检查通过。未启动真实 Web 服务。
+
+## Task 9：无依赖网页与静态响应
+
+- 配对、概览、会话、创建/续发、操作/日志、全局设置和设备撤销页面；桌面三栏、手机列表/详情分屏。
+- 纯文本 DOM、内存状态、同查询并发合并、设置版本检查、SSE 断开清空、明确 queued/unknown 状态、只做手动核查。
+- Loopback 实际 HTTP 测试验证静态 CSP/no-store/nosniff、allowlist 和缺失资源 fail-soft；静态结构检查不替代浏览器验收。
+- 全套 209 pass；类型、构建、diff 检查通过。目标浏览器交互仍待 Task 12。

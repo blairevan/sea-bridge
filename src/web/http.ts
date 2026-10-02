@@ -156,6 +156,12 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const { limit, offset } = pagination(url);
         return json({ items: deps.store.db.query("SELECT level,event,fields_json AS fields,created_at AS createdAt FROM web_logs ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) });
       }
+      if (path.startsWith("/api/operations/") && method === "GET") {
+        const id = text(decodeURIComponent(path.slice(16)), 36) ?? "";
+        const operation = deps.store.getOperation(id);
+        if (!operation) throw new HttpError(404, "operation_not_received");
+        return json(operation);
+      }
       const send = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/messages$/);
       if (method === "POST" && (path === "/api/sessions" || send)) {
         const body = await readJson(request, 65536);
