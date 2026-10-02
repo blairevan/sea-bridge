@@ -1,5 +1,5 @@
 "use strict";
-const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info" } };
+const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -99,10 +99,12 @@ function cancelNoticeTimer() {
 }
 /** Clear both authenticated and pairing notices without touching persistent operation state. */
 function clearNotice() {
-  cancelNoticeTimer(); state.noticeState.seq++; state.noticeState.expanded = false;
+  cancelNoticeTimer(); state.noticeState.seq++; state.noticeState.expanded = false; state.noticeState.connection = false;
   const bar = el("notice-bar"); if (bar) { bar.hidden = true; bar.className = "notice-bar notice-info"; }
   const content = el("notice-text"); if (content) content.textContent = "";
   const toggle = el("notice-toggle"); if (toggle) { toggle.hidden = true; toggle.textContent = "展开"; }
+  const retry = el("notice-retry"); if (retry) { retry.hidden = true; retry.disabled = false; retry.textContent = "立即重试"; }
+  const close = el("notice-close"); if (close) close.hidden = false;
   const pairing = el("pairing-notice"); if (pairing) pairing.textContent = "";
 }
 /** Start a fresh full-duration timer after rendering or collapsing a transient notice. */
@@ -129,14 +131,16 @@ function refreshNoticeLayout(seq, explicitDuration) {
 /** Show an inline authenticated notice, or an inline pairing status before login. */
 function notice(text, options = {}) {
   if (!text) { clearNotice(); return; }
+  if (state.noticeState.connection) return;
   if (el("console").hidden) { el("pairing-notice").textContent = text; return; }
   el("pairing-notice").textContent = "";
   cancelNoticeTimer();
   const seq = ++state.noticeState.seq;
-  state.noticeState.sticky = Boolean(options.sticky); state.noticeState.expanded = false;
+  state.noticeState.sticky = Boolean(options.sticky); state.noticeState.expanded = false; state.noticeState.connection = false;
   state.noticeState.kind = ["success", "warning", "error"].includes(options.kind) ? options.kind : "info";
   const bar = el("notice-bar"); bar.hidden = false; bar.className = `notice-bar notice-${state.noticeState.kind}`;
   el("notice-text").textContent = text; el("notice-toggle").hidden = true; el("notice-toggle").textContent = "展开";
+  el("notice-retry").hidden = true; el("notice-close").hidden = false;
   const apply = () => refreshNoticeLayout(seq, Number.isFinite(options.durationMs) ? Number(options.durationMs) : null);
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply); else apply();
 }
@@ -156,21 +160,50 @@ function isTransportError(error) { return ["network_unavailable", "network_timeo
 function cancelReconnectTimer() { if (state.reconnectTimer !== null && typeof clearTimeout === "function") clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
 /** Cancel the SSE opening deadline. */
 function cancelStreamTimer() { if (state.streamTimer !== null && typeof clearTimeout === "function") clearTimeout(state.streamTimer); state.streamTimer = null; }
-/** Keep the application shell visible while all sensitive render state is hidden. */
-function showConnectionPanel(detail = "连接已中断，敏感内容已隐藏。") {
-  el("connection-title").textContent = "服务暂不可达";
-  el("connection-detail").textContent = detail;
-  el("connection-panel").hidden = false;
+/** Keep connection loss visible in the ordinary message region without blocking navigation. */
+function showConnectionNotice(detail = "服务暂不可达，已加载会话保留供阅读，内容可能不是最新。", retryState = "") {
+  state.connectionDetail = detail;
+  const text = retryState ? `${detail} · ${retryState}` : detail;
+  if (el("console").hidden) {
+    el("pairing-notice").textContent = text;
+    return;
+  }
+  cancelNoticeTimer();
+  const seq = ++state.noticeState.seq;
+  state.noticeState.sticky = true; state.noticeState.expanded = false; state.noticeState.connection = true; state.noticeState.kind = "connection";
+  const bar = el("notice-bar"); bar.hidden = false; bar.className = "notice-bar notice-connection";
+  el("notice-text").textContent = text; el("notice-toggle").hidden = true; el("notice-toggle").textContent = "展开";
+  const retry = el("notice-retry"); retry.hidden = false; retry.disabled = state.recovering; retry.textContent = state.recovering ? "重试中…" : "立即重试";
+  el("notice-close").hidden = true;
+  const apply = () => refreshNoticeLayout(seq, null);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply); else apply();
 }
-/** Clear connection status only after recovery or explicit pairing. */
-function hideConnectionPanel() { el("connection-panel").hidden = true; el("connection-retry-state").textContent = ""; }
-/** Drop sensitive render state before applying a new display policy. */
-function clearSensitive() {
-  for (const id of ["session-items", "recent-sessions", "record-items", "log-items", "device-items", "status-cards", "create-project", "create-model"]) el(id).replaceChildren();
+/** Remove the connection notice only after recovery or an explicit auth boundary change. */
+function hideConnectionNotice() { state.connectionDetail = ""; clearNotice(); }
+/** Disable server-mutating controls while disconnected, while keeping navigation available. */
+function setConnectionControls(disabled) {
+  const logout = el("logout"); if (logout) logout.disabled = disabled;
+  const create = el("new-session"); if (create) create.disabled = disabled;
+  const send = el("send-button"); if (send) send.disabled = disabled || !state.selected?.sendEnabled || Boolean(state.pending);
+  const reconcile = el("reconcile"); if (reconcile) reconcile.disabled = disabled;
+  const createReconcile = el("create-reconcile"); if (createReconcile) createReconcile.disabled = disabled;
+  const createSubmit = el("create-submit");
+  if (createSubmit) createSubmit.disabled = disabled || !state.caps[el("create-source")?.value]?.createEnabled;
+  const settingsSubmit = el("redaction-form")?.querySelector?.('button[type="submit"]');
+  if (settingsSubmit) settingsSubmit.disabled = disabled;
+}
+/** Clear protected views; optionally retain already loaded conversation content for offline reading. */
+function clearSensitive(retainConversation = false) {
+  for (const id of ["record-items", "log-items", "device-items", "status-cards", "create-project", "create-model"]) el(id).replaceChildren();
+  if (retainConversation) {
+    if (state.selected) state.selected = { ...state.selected, sendEnabled: false };
+    return;
+  }
+  for (const id of ["session-items", "recent-sessions"]) el(id).replaceChildren();
   el("session-title").textContent = "会话"; el("session-meta").textContent = "";
   el("messages").replaceChildren(historyTools ?? el("history-tools"));
   state.messages = []; state.sessions = [];
-  if (state.selected) state.selected = { ...state.selected, title: "会话" };
+  if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false };
 }
 /** Read the double-submit cookie; keep it only in the current request. */
 function csrf() { return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("sea_csrf="))?.slice(9) ?? ""; }
@@ -206,6 +239,11 @@ async function requestApi(path, method = "GET", body) {
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
 async function api(path, method = "GET", body) {
+  const base = path.split("?")[0];
+  const shell = typeof document.getElementById === "function" ? el("console") : null;
+  if (state.paused && shell && !shell.hidden && !["/api/auth/session", "/api/settings"].includes(base)) {
+    throw clientError("connection_unverified", "连接尚未恢复");
+  }
   if (method !== "GET") return requestApi(path, method, body);
   if (reads.has(path)) return reads.get(path);
   const pending = requestApi(path); reads.set(path, pending);
@@ -217,19 +255,21 @@ async function run(key, work) {
   try { await work(); }
   catch (error) {
     if (isTransportError(error)) enterDisconnected();
-    else if (error?.code !== "auth_required") notice(error?.message || "操作失败", { sticky: true, kind: "error" });
+    else if (!["auth_required", "connection_unverified"].includes(error?.code)) notice(error?.message || "操作失败", { sticky: true, kind: "error" });
   } finally { state.busy.delete(key); }
 }
 /** Stop retry machinery and return to the explicit pairing boundary. */
 function showPairing() {
-  cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false;
-  state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); hideConnectionPanel(); clearNotice();
+  cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
+  state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close();
 }
 /** Validate both session and current display policy before restoring sensitive content. */
 async function validateConnection() {
   const session = await requestApi("/api/auth/session");
   const settings = await requestApi("/api/settings");
+  const verifiedVersion = Math.max(session.settings?.version ?? 0, settings.version ?? 0);
+  if (verifiedVersion > state.version) clearSensitive();
   state.device = session.device; state.settings = settings;
   state.version = Math.max(state.version, session.settings?.version ?? 0, settings.version ?? 0);
   el("pairing").hidden = true; el("console").hidden = false;
@@ -238,7 +278,8 @@ async function validateConnection() {
 function scheduleReconnect(immediate = false) {
   if (document.hidden || state.reconnectTimer !== null || typeof setTimeout !== "function") return;
   const delay = immediate ? 0 : RETRY_DELAYS_MS[Math.min(state.retryAttempt, RETRY_DELAYS_MS.length - 1)];
-  el("connection-retry-state").textContent = delay === 0 ? "正在重试…" : `${Math.ceil(delay / 1000)} 秒后自动重试`;
+  const retryState = delay === 0 ? "正在重试…" : `${Math.ceil(delay / 1000)} 秒后自动重试`;
+  showConnectionNotice(state.connectionDetail || "服务暂不可达，已加载会话保留供阅读，内容可能不是最新。", retryState);
   state.reconnectTimer = setTimeout(() => { state.reconnectTimer = null; void recoverConnection(); }, delay);
 }
 /** Enter a safe disconnected state; keep the shell but remove all sensitive render content. */
@@ -246,9 +287,12 @@ function enterDisconnected() {
   const failedRecovery = state.recovering;
   state.paused = true; state.recovering = false; cancelStreamTimer();
   if (failedRecovery) state.retryAttempt++;
-  state.stream?.close(); state.stream = null; clearSensitive();
+  state.stream?.close(); state.stream = null; clearSensitive(true); setConnectionControls(true);
   if (el("create-dialog").open) el("create-dialog").close();
-  showConnectionPanel(state.pending ? "连接已中断。发送结果待确认，恢复后会核查原请求，不会自动重发。" : "连接已中断，敏感内容已隐藏。");
+  state.connectionDetail = state.pending
+    ? "服务暂不可达。发送结果待确认，恢复后会核查原请求，不会自动重发。"
+    : "服务暂不可达，已加载会话保留供阅读，内容可能不是最新。";
+  showConnectionNotice(state.connectionDetail);
   if (state.pending) el("operation-status").textContent = "结果待确认；恢复连接后自动核查";
   scheduleReconnect();
 }
@@ -258,23 +302,24 @@ async function finishRecovery(stream = state.stream) {
   await validateConnection();
   if (state.stream !== stream || stream.readyState !== EventSource.OPEN || document.hidden) return;
   state.paused = false; state.retryAttempt = 0; state.recovering = false; state.lastConnectedAt = Date.now();
-  cancelReconnectTimer(); hideConnectionPanel(); notice("");
+  cancelReconnectTimer(); hideConnectionNotice(); setConnectionControls(false);
   if (state.pending) await reconcilePending();
   else await refresh();
 }
 /** Revalidate HTTP state, then establish a fresh SSE channel. */
 async function recoverConnection() {
   if (document.hidden || state.recovering || !state.paused) return;
-  state.recovering = true; cancelReconnectTimer(); el("connection-retry-state").textContent = "正在重试…";
+  state.recovering = true; cancelReconnectTimer();
+  showConnectionNotice(state.connectionDetail || "服务暂不可达，已加载会话保留供阅读，内容可能不是最新。", "正在重试…");
   try {
     await validateConnection();
     state.stream?.close(); state.stream = null; connectEvents();
-    el("connection-retry-state").textContent = "服务已响应，正在恢复实时连接…";
+    showConnectionNotice("服务已响应", "正在恢复实时连接…");
   } catch (error) {
     state.recovering = false;
     if (error?.code === "auth_required") return;
     state.retryAttempt++;
-    showConnectionPanel();
+    if (!state.connectionDetail || state.connectionDetail === "服务已响应") state.connectionDetail = "服务暂不可达，已加载会话保留供阅读，内容可能不是最新。";
     scheduleReconnect();
   }
 }
@@ -341,6 +386,7 @@ async function loadSessions(more) {
       const button = node("button", "", "session-row"); button.type = "button";
       button.append(node("span", session.title), node("small", `${session.source} · ${labels[session.state] ?? "未知"}`, "muted"));
       button.onclick = () => run("select", async () => {
+        if (state.paused) return;
         state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
         el("sessions").classList.add("detail-open"); await showPage("sessions");
       });
@@ -523,6 +569,10 @@ function syncViewport() {
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
 historyTools = el("history-tools");
 el("notice-toggle").onclick = toggleNoticeExpanded;
+el("notice-retry").onclick = () => {
+  if (state.recovering) return;
+  cancelReconnectTimer(); scheduleReconnect(true);
+};
 el("notice-close").onclick = clearNotice;
 el("prompt").oninput = resizeComposer;
 el("prompt").addEventListener("focus", syncViewport);
@@ -562,17 +612,21 @@ el("more-records").onclick = () => run("records", () => loadRecords(true));
 el("redaction-form").onsubmit = (event) => { event.preventDefault(); run("settings", async () => { const enabled = el("redaction-enabled").checked; await api("/api/settings/redaction", "PUT", { enabled, expectedVersion: state.settings.version }); await loadSettings(); }); };
 el("reconcile").onclick = () => run("reconcile", reconcilePending);
 el("create-reconcile").onclick = () => run("reconcile", reconcilePending);
-el("connection-retry").onclick = () => {
-  if (state.recovering) return;
-  cancelReconnectTimer(); scheduleReconnect(true);
-};
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    state.paused = true; cancelReconnectTimer(); cancelStreamTimer(); state.stream?.close(); state.stream = null; clearSensitive(); return;
+    state.paused = true; state.recovering = false; cancelReconnectTimer(); cancelStreamTimer(); state.stream?.close(); state.stream = null;
+    state.connectionDetail = "页面已暂停，回到前台后会重新确认连接和显示设置。";
+    clearSensitive(true); setConnectionControls(true); showConnectionNotice(state.connectionDetail); return;
   }
-  showConnectionPanel("正在重新确认连接和显示设置…"); scheduleReconnect(true);
+  state.connectionDetail = "正在重新确认连接和显示设置。";
+  showConnectionNotice(state.connectionDetail); scheduleReconnect(true);
 });
-window.addEventListener("pageshow", () => { if (state.paused) { showConnectionPanel("正在重新确认连接和显示设置…"); scheduleReconnect(true); } });
+window.addEventListener("pageshow", () => {
+  if (state.paused) {
+    state.connectionDetail = "正在重新确认连接和显示设置。";
+    showConnectionNotice(state.connectionDetail); scheduleReconnect(true);
+  }
+});
 window.addEventListener("online", () => { if (state.paused) { cancelReconnectTimer(); scheduleReconnect(true); } });
 window.addEventListener("offline", () => enterDisconnected());
 setInterval(() => run("poll", refresh), 3000);

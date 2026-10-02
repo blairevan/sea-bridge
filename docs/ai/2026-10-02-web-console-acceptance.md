@@ -314,3 +314,40 @@
 - 首轮 owner 只证明会话运行，不将任意 operation turnId 认定为精确执行证据；增加不匹配 turn 回归断言。
 - 新最终回复提示改为“会话收到新的最终回复”，避免缺少 operation/turn 关联时误报当前任务完成。
 - 此两处提交前修正尚未部署。
+
+
+## message11 后台恢复重连修复（2026-10-02）
+
+- 复现：SSE 恢复中切后台，原 visibilitychange 保留 recovering=true 并取消 SSE 超时，导致前台恢复和手动重试被守卫拦截。
+- 修复：后台暂停时释放恢复守卫，并立即保留连接状态页，防止敏感内容清空后提示仍隐藏。
+- 回归：修复前断言失败；修复后连续 10 次恢复失败仍按 30 秒封顶重试，连接面板保持显示。
+- 验证：bun run typecheck、bun test（246 pass / 0 fail）、bun run build、git diff --check。
+- 部署：web-message11-20261002-214614；LaunchAgent running；Tailnet JS 200 且 SHA-256 与源码一致；未登录 status 401。iPhone 真实断网/后台往返待设备验收。未修改 Tailscale 配置，未提交或 push 此轮修复。
+## message12 断线提示统一到顶部消息区（2026-10-02）
+
+- 移除已登录态的全屏 connection-panel；服务不可达、后台恢复、SSE 重连等状态统一使用登录栏下方的 notice-bar，不再阻断导航和页面外壳交互。
+- connection 通知为 sticky：显示“服务暂不可达/正在重试/恢复实时连接”等状态，保留“立即重试”，隐藏 × 关闭按钮；较长内容仍可展开/收起。连接恢复后由状态机主动清除。
+- 断线安全边界保持不变：立即清空会话、消息、日志、设备等敏感渲染内容，并将已选会话 sendEnabled 置 false；发送、新建、保存/核查等服务端写操作禁用，导航切页仍可用。
+- 已登录但 paused 时，普通 API 在前端直接返回 connection_unverified，不再发起无意义请求，也不会用普通错误提示覆盖 connection 通知；配对页和恢复所需 auth/session、settings 请求不受此保护影响。
+- 自动重连继续使用 1/2/4/8/15/30 秒退避；手动“立即重试”、online/pageshow/visibility 恢复仍走同一恢复链路。恢复仍要求 session + settings + SSE OPEN 全部成功后才重新显示敏感内容。
+- 若发送结果待确认，顶部连接提示明确说明恢复后只核查原 operation、不会自动重发；operation-status 继续保留待确认状态。
+- 前端资源版本提升为 20261002-message12，避免与已部署的旧 message11 混淆。
+- 全量验证：246 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。message12 尚未部署；Tailscale 配置未修改。
+
+
+## message12 部署验收（2026-10-02 22:16）
+
+- 发布快照：/opt/app/aitools/sea-bridge-releases/web-message12-20261002-221626；LaunchAgent running。
+- 验证：bun run typecheck、bun test（246 pass / 0 fail，1089 assertions）、bun run build、git diff --check。
+- Tailnet IP 首页、JS/CSS 均 HTTP 200，SHA-256 与 dist/web 全部一致；未授权 API HTTP 401；Bun 仍只监听 127.0.0.1:7310。
+- 未改变配对数据或 Tailscale 配置；iPhone 实际断线顶部提示交互待设备侧验收。此轮未 commit/push。
+
+
+## message13 断线保留已加载会话（2026-10-02）
+
+- 按用户要求，断线及后台暂停保留会话列表、当前会话消息、分页及 DOM 阅读位置，仅供当前页面内存阅读；不增加持久化缓存。
+- 顶部说明内容可能不是最新；写操作禁用；离线点击其他会话不清空当前消息；日志、设备、状态与创建目录仍清空。
+- 登录失效、设备撤销、设置版本变化仍完整清空；重连核验脱敏版本后更新。未自动重发写请求。
+- 回归先证明旧实现清空消息，再验证保留消息和标题、禁用发送、清空日志。
+- bun run typecheck、bun test（246 pass / 0 fail，1096 assertions）、bun run build、git diff --check 通过。
+- 已部署 web-message13-20261002-223623；Tailnet 首页/JS/CSS 200 且哈希匹配 dist。手机实际断线保留待设备验收；未 commit/push。
