@@ -2,6 +2,34 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync as fsReadFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import type { WebConfig } from "./web/types.ts";
+
+/** Parse Web settings outside core startup so malformed Web settings fail softly. */
+export function loadWebConfig(env: Readonly<Record<string, string | undefined>> = process.env): WebConfig {
+  const enabledValue = (env.SEA_BRIDGE_WEB_ENABLED ?? "false").trim().toLowerCase();
+  if (!["true", "false", "1", "0", "yes", "no", "on", "off"].includes(enabledValue)) {
+    throw new Error("web_enabled_invalid");
+  }
+  const rawPort = (env.SEA_BRIDGE_WEB_PORT ?? "7310").trim();
+  const port = Number(rawPort);
+  if (!/^\d+$/.test(rawPort) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("web_port_invalid");
+  }
+  const remoteOrigin = env.SEA_BRIDGE_WEB_REMOTE_ORIGIN?.trim() || null;
+  if (remoteOrigin) {
+    const url = new URL(remoteOrigin);
+    if (url.protocol !== "https:" || url.origin !== remoteOrigin || url.username || url.password) {
+      throw new Error("web_remote_origin_invalid");
+    }
+  }
+  return {
+    enabled: ["true", "1", "yes", "on"].includes(enabledValue),
+    port,
+    remoteOrigin,
+    controlSocketPath: expandHome(env.SEA_BRIDGE_WEB_CONTROL_SOCKET ?? "~/Library/Application Support/SeaBridge/run/web-control.sock"),
+    operationPepperPath: expandHome(env.SEA_BRIDGE_WEB_OPERATION_PEPPER_PATH ?? "~/Library/Application Support/SeaBridge/web-operation.key"),
+  };
+}
 
 function expandHome(input: string): string {
   if (input === "~") return homedir();

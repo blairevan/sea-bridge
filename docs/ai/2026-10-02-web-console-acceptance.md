@@ -23,3 +23,9 @@
 - 本机配对、设备撤销、双浏览器全局脱敏：待实施。
 - Codex/dsh 网页真实创建、发送和审批链路：待实施。
 - Tailnet HTTPS Serve 配置、手机、第二台电脑：待实施，未宣称通过。
+
+## Task 2：Web 配置与生命周期
+
+- 独立 `loadWebConfig` 避免错误 Web 配置阻断 core 启动；默认关闭，7310 默认端口，精确 HTTPS origin 校验。
+- 生命周期测试覆盖关闭模式无构造、部分启动清理、失败隔离与重复关闭。当前为不暴露任何路由的生命周期骨架。
+- 聚焦 5 pass，全套 181 pass；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
