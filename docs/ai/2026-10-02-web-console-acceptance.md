@@ -47,3 +47,10 @@
 - 永久凭证过滤与可选展示隐私过滤分层；响应使用一个设置版本快照。原始 prompt 保持不变，新增存储只接收永久过滤后的副本。
 - 共享新增 filterSecretText，不改变原有 redact 行为；覆盖已知值、嵌套/多行、URL、Bearer/Cookie、私钥、手机号、邮箱、IPv4/IPv6、绝对路径。
 - 聚焦 5 pass，全套 199 pass；类型、构建和 diff 检查通过。跨设备 SSE 尚未接入，未宣称运行同步已完成。
+
+## Task 6：Codex Web adapter 与有界历史
+
+- 仅核对本机记录结构，未复制真实内容；fixture 保存确认的 user/input_text 和 assistant/final_answer/output_text 形状。
+- 路径 confinement、普通文件/no-follow 检查、256 KiB 单页与 64 MiB 文件上限、倒序 byte cursor；不展示工具或 reasoning。
+- 目录缓存合并并发，Web raw prompt、按请求模型、首轮 owner gate、早期 session callback、外部审批状态投影、queue/failed/unknown 分离。
+- 全套 203 pass；`bun run typecheck` 与 `git diff --check` 通过。数据库派发顺序的 HTTP 集成验证归 Task 8，不以 adapter 代替该证据。
