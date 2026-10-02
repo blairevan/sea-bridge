@@ -275,7 +275,7 @@ webOperationPepperPath: string;       // private high-entropy persisted HMAC key
 
 Do not add `SEA_BRIDGE_WEB_HOST`; bind host is a code constant `127.0.0.1`.
 
-- [ ] **Step 1: Write config tests first.**
+- [x] **Step 1: Write config tests first.**
 
 Cover:
 - Web disabled by default;
@@ -286,7 +286,7 @@ Cover:
 - control socket and pepper paths expand under home correctly;
 - legacy configs/tests still construct `AppConfig`.
 
-- [ ] **Step 2: Add lifecycle tests.**
+- [x] **Step 2: Add lifecycle tests.**
 
 Inject a fake Web service and prove:
 - disabled Web creates nothing;
@@ -294,15 +294,15 @@ Inject a fake Web service and prove:
 - shutdown stops Web HTTP and control socket before closing StateDb;
 - double shutdown remains safe.
 
-- [ ] **Step 3: Implement configuration.**
+- [x] **Step 3: Implement configuration.**
 
 Create private parent directories with mode `0700` where appropriate. Do not print secret-file contents.
 
-- [ ] **Step 4: Add the disabled/no-op lifecycle skeleton.**
+- [x] **Step 4: Add the disabled/no-op lifecycle skeleton.**
 
 Do not expose routes yet. The server constructor should require explicit dependencies; avoid importing global singleton state.
 
-- [ ] **Step 5: Re-run full regression.**
+- [x] **Step 5: Re-run full regression.**
 
 ```bash
 bun test tests/web-lifecycle.test.ts

@@ -1,4 +1,5 @@
-import { loadConfig, isExecutableUsable } from "./config.ts";
+import { loadConfig, loadWebConfig, isExecutableUsable } from "./config.ts";
+import { startWebLifecycle, WebServer } from "./web/server.ts";
 import { createLogger } from "./logger.ts";
 import { StateDb } from "./state/db.ts";
 import { ContinuationQueue } from "./state/continuation-queue.ts";
@@ -178,11 +179,13 @@ async function main(): Promise<void> {
     dshObserver ?? undefined,
   );
 
+  const web = await startWebLifecycle(loadWebConfig, () => new WebServer(), logger);
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
+    await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
     telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
     await observer.stop();
