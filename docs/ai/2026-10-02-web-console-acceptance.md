@@ -54,3 +54,9 @@
 - 路径 confinement、普通文件/no-follow 检查、256 KiB 单页与 64 MiB 文件上限、倒序 byte cursor；不展示工具或 reasoning。
 - 目录缓存合并并发，Web raw prompt、按请求模型、首轮 owner gate、早期 session callback、外部审批状态投影、queue/failed/unknown 分离。
 - 全套 203 pass；`bun run typecheck` 与 `git diff --check` 通过。数据库派发顺序的 HTTP 集成验证归 Task 8，不以 adapter 代替该证据。
+
+## Task 7：dsh Web adapter
+
+- 读写门控、未知旧会话项目、exact-turn 最终回复、有界 cursor、注入式 Web 快照合并、合并并发目录缓存。
+- Web 独立 request/session 命名空间、按请求模型、创建早期 ID、busy 不排队、派发丢失为 unknown；无 Telegram store/manager 引用。
+- 全套 204 pass；`bun run typecheck`、`git diff --check` 通过。真实 Host Web 操作验收仍待生命周期集成后执行。
