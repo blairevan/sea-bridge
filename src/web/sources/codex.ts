@@ -14,6 +14,7 @@ export interface CodexSourceDependencies {
   pathExists: (path: string) => boolean;
   queueUsable: boolean;
   pendingApproval: (id: string) => boolean;
+  registerCreatedThread?: (id: string) => void;
 }
 
 /** Transport-neutral Codex adapter with a first-turn ownership gate. */
@@ -80,7 +81,7 @@ export class CodexWebSource implements WebSource {
     try {
       const result = await this.deps.appServer.startThreadAndTurn({
         projectId: project.id, cwd: project.primaryRoot, prompt: input.prompt, ...(input.modelId ? { model: input.modelId } : {}),
-        onThreadStarted: (id) => { known = id; this.owners.add(id); input.onSessionKnown(id); },
+        onThreadStarted: (id) => { known = id; this.owners.add(id); input.onSessionKnown(id); this.deps.registerCreatedThread?.(id); },
         onOwnershipReleased: (id) => { this.owners.delete(id); },
       });
       return { state: "accepted", sessionId: result.threadId, turnId: result.turnId };
