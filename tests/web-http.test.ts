@@ -30,6 +30,8 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   }), "127.0.0.1");
   try {
     expect((await request("/api/status")).status).toBe(401);
+    expect((await request("/api/auth/pair", "POST", { code: auth.createPairCode().code, name: "fixture-secret" })).status).toBe(200);
+    expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
     const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
     const payload = { operationId: randomUUID(), source: "codex", projectId: "project", modelId: null, prompt: "hello fixture-secret" };

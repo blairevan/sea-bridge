@@ -87,7 +87,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       if (url.searchParams.has("token") || url.searchParams.has("sessionToken")) throw new HttpError(400, "url_credential_denied");
       if (path === "/api/auth/pair" && method === "POST") {
         const body = await readJson(request, 1024);
-        const paired = deps.auth.pair(text(body.code, 8) ?? "", context.bucket, text(body.name, 80, true) ?? "设备");
+        const paired = deps.auth.pair(text(body.code, 8) ?? "", context.bucket, deps.redaction.storage(text(body.name, 80, true) ?? "设备"));
         if (!paired) throw new HttpError(401, "pair_failed");
         const response = json({ paired: true });
         for (const cookie of deps.auth.cookies(paired, context.remote)) response.headers.append("Set-Cookie", cookie);
