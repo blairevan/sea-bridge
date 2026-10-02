@@ -38,4 +38,3 @@ export function filterSecretText(text: string, secrets: readonly string[] = []):
     .replace(/([?&](?:token|key|secret|password|api[_-]?key|access_token)=)[^&\s]+/gi, `$1${"[REDACTED]"}`)
     .replace(/\b(?:token|secret|password|api[_-]?key|credential)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "[REDACTED]");
 }
-

@@ -612,11 +612,11 @@ Commit boundary recommendation: `feat: add web display redaction policy`.
 
 ### 6A. Transcript reader
 
-- [ ] **Step 1: Collect sanitized fixture shapes from existing verified rollout data/code.**
+- [x] **Step 1: Collect sanitized fixture shapes from existing verified rollout data/code.**
 
 Fixtures contain no real prompt, path, token, user identifier, or project name. Record the Codex schema/version evidence available in the repo/target environment.
 
-- [ ] **Step 2: Write parser tests before implementation.**
+- [x] **Step 2: Write parser tests before implementation.**
 
 Accept only verified message records:
 - user text message;
@@ -631,7 +631,7 @@ Ignore:
 
 Do not synthesize missing user messages.
 
-- [ ] **Step 3: Test path confinement.**
+- [x] **Step 3: Test path confinement.**
 
 Given `CodexThreadStore.rolloutPath`:
 - resolve real path;
@@ -643,13 +643,13 @@ Given `CodexThreadStore.rolloutPath`:
 
 A bad rollout path yields `history_unavailable`, not arbitrary file content.
 
-- [ ] **Step 4: Implement byte/cursor-bounded pagination.**
+- [x] **Step 4: Implement byte/cursor-bounded pagination.**
 
 Prefer a byte-offset/cursor contract that can read recent pages without parsing an unbounded entire rollout on every 3-second refresh. Keep line-boundary handling deterministic.
 
 ### 6B. Codex source adapter
 
-- [ ] **Step 5: Add capability/status tests.**
+- [x] **Step 5: Add capability/status tests.**
 
 Codex adapter reports independently:
 - thread metadata readable;
@@ -661,15 +661,15 @@ Codex adapter reports independently:
 
 No fresh evidence may be represented as permanent “connected”.
 
-- [ ] **Step 6: Add session-list tests.**
+- [x] **Step 6: Add session-list tests.**
 
 Use `CodexThreadStore.listActive()`, sort newest first for Web, paginate/filter in the adapter/API, and leave project unknown unless verified.
 
-- [ ] **Step 7: Add catalog cache tests.**
+- [x] **Step 7: Add catalog cache tests.**
 
 Use `CodexAppServerClient.listProjects/listModels` with a Web-specific TTL cache. Concurrent requests coalesce; 3-second session polling does not start App Server discovery repeatedly.
 
-- [ ] **Step 8: Add Web new-thread tests.**
+- [x] **Step 8: Add Web new-thread tests.**
 
 Input includes explicit:
 - project ID;
@@ -685,13 +685,13 @@ Track first-turn ownership. While held:
 - `sendEnabledForSession=false`;
 - attempting Web follow-up returns stable `first_turn_owned` without calling queue.
 
-- [ ] **Step 9: Add approval-evidence tests.**
+- [x] **Step 9: Add approval-evidence tests.**
 
 For a known created `threadId/turnId`, query existing `pending_approvals` state through a narrow reader. If pending, project `waiting_external_approval` with `approvalTransport=telegram`.
 
 Do not expose callback tokens or Telegram internals.
 
-- [ ] **Step 10: Add follow-up queue tests.**
+- [x] **Step 10: Add follow-up queue tests.**
 
 Existing/released thread:
 - operation enters dispatching before `codex queue`;
@@ -700,7 +700,7 @@ Existing/released thread:
 - no exit/process-aborted maps to `delivery_unknown`;
 - no automatic repeat after unknown.
 
-- [ ] **Step 11: Run focused/full checks.**
+- [x] **Step 11: Run focused/full checks.**
 
 ```bash
 bun test tests/web-codex-transcript.test.ts tests/web-codex-source.test.ts
