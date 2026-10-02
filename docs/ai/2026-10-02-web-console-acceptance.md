@@ -80,3 +80,10 @@
 - Bun 构建 main.js/server.js，并复制 Web 三个静态资源；不递归清理操作员指定路径。
 - 临时构建目录动态载入 server.js，资产路径指向该目录的 web，实际请求 HTML/JS/CSS/API 均成功。
 - 全套 210 pass；类型、构建、diff 检查通过。
+
+## Task 11：主进程集成
+
+- WebRuntime 只在开启时构造；复用既有 Codex/dsh clients，新增线程通知 baselining 标记，不修改 Telegram 默认模型。
+- HTTP/control/SSE/retention 生命周期、派发恢复、构建资源路径集成；关闭 Web 在 core clients 和数据库之前执行。
+- 全套 211 pass；类型、构建、diff 检查通过。
+- 目标服务当前运行旧 release `cfdee7c`，尚未部署本功能。实际 launch agent 使用 releases 下的启动脚本，中央 env 为 0600、尚无 Web 配置。

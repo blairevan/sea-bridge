@@ -1,5 +1,10 @@
 import { loadConfig, loadWebConfig, isExecutableUsable } from "./config.ts";
-import { startWebLifecycle, WebServer } from "./web/server.ts";
+import { startWebLifecycle } from "./web/server.ts";
+import { WebRuntime } from "./web/runtime.ts";
+import { CodexWebSource } from "./web/sources/codex.ts";
+import { DshWebSource } from "./web/sources/dsh.ts";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createLogger } from "./logger.ts";
 import { StateDb } from "./state/db.ts";
 import { ContinuationQueue } from "./state/continuation-queue.ts";
@@ -84,9 +89,10 @@ async function main(): Promise<void> {
   let dshReplyRouter: DshReplyRouter | undefined;
   let dshNewSessions: DshNewSessionManager | undefined;
   let dshObserver: DshSessionObserver | null = null;
+  let dshHost: DshWebHostClient | undefined;
   if (config.dshReadOnlyEnabled) {
     dshStore = new DshBridgeStore(state);
-    const dshHost = new DshWebHostClient({
+    dshHost = new DshWebHostClient({
       socketPath: config.dshSocketPath,
       tokenPath: config.dshTokenPath,
     });
@@ -129,7 +135,8 @@ async function main(): Promise<void> {
       });
     }
   }
-  if (!isExecutableUsable(config.codexCliPath)) {
+  const codexCliUsable = isExecutableUsable(config.codexCliPath);
+  if (!codexCliUsable) {
     const errorMsg = [
       "⚠️ [Sea-Bridge 警告] 未找到可用的 Codex CLI 可执行文件！",
       `尝试路径: ${config.codexCliPath}`,
@@ -179,7 +186,25 @@ async function main(): Promise<void> {
     dshObserver ?? undefined,
   );
 
-  const web = await startWebLifecycle(loadWebConfig, () => new WebServer(), logger);
+  const web = await startWebLifecycle(loadWebConfig, (webConfig) => {
+    const secrets = [config.telegramBotToken];
+    if (dshHost && existsSync(config.dshTokenPath)) {
+      const tokenStat = lstatSync(config.dshTokenPath);
+      if (!tokenStat.isFile() || tokenStat.size > 4096 || (tokenStat.mode & 0o077) !== 0 ||
+          (process.getuid && tokenStat.uid !== process.getuid())) throw new Error("web_secret_path_unsafe");
+      secrets.push(readFileSync(config.dshTokenPath, "utf8").trim());
+    }
+    return new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
+      sourceFactory: (webStore) => ({
+        codex: new CodexWebSource({ threads: threadStore, appServer: appServerClient, queue: queueClient,
+          sessionRoots: [join(config.codexHome, "sessions"), join(config.codexHome, "archived_sessions")], pathExists: existsSync,
+          queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),
+          pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
+        }),
+        ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled, (id) => webStore.db.query("SELECT operation_id AS id,'user' AS role,text FROM web_message_snapshots WHERE source='dsh' AND session_id=? ORDER BY created_at ASC LIMIT 100").all(id) as Array<{ id: string; role: "user"; text: string }>) } : {}),
+      }),
+    });
+  }, logger);
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;

@@ -1208,7 +1208,7 @@ Commit boundary recommendation: `build: package web console assets`.
 - Create/expand: `tests/web-lifecycle.test.ts`
 - Modify relevant existing Telegram/dsh lifecycle tests only as required for dependency injection
 
-- [ ] **Step 1: Compose Web dependencies only after core state is healthy.**
+- [x] **Step 1: Compose Web dependencies only after core state is healthy.**
 
 Suggested order:
 1. load config / logger / `StateDb`;
@@ -1220,11 +1220,11 @@ Suggested order:
 
 If Web-specific setup fails, log a permanently secret-filtered error and continue existing bridge startup.
 
-- [ ] **Step 2: Recover ambiguous Web operations before accepting writes.**
+- [x] **Step 2: Recover ambiguous Web operations before accepting writes.**
 
 Run operation recovery before HTTP starts.
 
-- [ ] **Step 3: Start/stop ordering tests.**
+- [x] **Step 3: Start/stop ordering tests.**
 
 Shutdown:
 1. stop accepting Web HTTP;
@@ -1233,19 +1233,19 @@ Shutdown:
 4. continue existing Telegram/dsh/observer/hook/app-server shutdown;
 5. close StateDb last.
 
-- [ ] **Step 4: Add Web-disabled regression.**
+- [x] **Step 4: Add Web-disabled regression.**
 
 With default env, main composition behavior must remain materially identical to pre-feature Sea-Bridge.
 
-- [ ] **Step 5: Add Web-enabled/dsh-disabled regression.**
+- [x] **Step 5: Add Web-enabled/dsh-disabled regression.**
 
 Codex Web still works while dsh reports unavailable.
 
-- [ ] **Step 6: Add Web-enabled/dsh-read-only regression.**
+- [x] **Step 6: Add Web-enabled/dsh-read-only regression.**
 
 dsh sessions/catalog/history work; dsh create/send controls are disabled.
 
-- [ ] **Step 7: Run all automated checks.**
+- [x] **Step 7: Run all automated checks.**
 
 ```bash
 bun test
