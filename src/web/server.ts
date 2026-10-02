@@ -3,6 +3,13 @@ import type { WebConfig, WebService } from "./types.ts";
 import { join } from "node:path";
 import { classifyRequest } from "./auth.ts";
 
+/** Resolve development assets or their self-contained packaged siblings. */
+export async function resolveWebStaticRoot(): Promise<string> {
+  const source = join(import.meta.dir, "public");
+  if (await Bun.file(join(source, "index.html")).exists()) return source;
+  return join(import.meta.dir, "web");
+}
+
 /** Contain Web configuration/startup failures and clean partially started services. */
 export async function startWebLifecycle(
   readConfig: () => WebConfig,

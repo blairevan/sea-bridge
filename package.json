@@ -9,7 +9,7 @@
     "test": "bun test",
     "web:pair": "bun run scripts/web-control.ts pair",
     "typecheck": "bunx tsc --noEmit",
-    "build": "bun build src/main.ts --target=bun --outdir dist",
+    "build": "bun run scripts/build.ts",
     "dsh-connector:check": "./scripts/install-dsh-connector.sh check",
     "dsh-connector:install": "./scripts/install-dsh-connector.sh install"
   },

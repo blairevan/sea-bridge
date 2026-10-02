@@ -74,3 +74,9 @@
 - 纯文本 DOM、内存状态、同查询并发合并、设置版本检查、SSE 断开清空、明确 queued/unknown 状态、只做手动核查。
 - Loopback 实际 HTTP 测试验证静态 CSP/no-store/nosniff、allowlist 和缺失资源 fail-soft；静态结构检查不替代浏览器验收。
 - 全套 209 pass；类型、构建、diff 检查通过。目标浏览器交互仍待 Task 12。
+
+## Task 10：独立构建产物
+
+- Bun 构建 main.js/server.js，并复制 Web 三个静态资源；不递归清理操作员指定路径。
+- 临时构建目录动态载入 server.js，资产路径指向该目录的 web，实际请求 HTML/JS/CSS/API 均成功。
+- 全套 210 pass；类型、构建、diff 检查通过。
