@@ -25,6 +25,7 @@ export class CodexWebSource implements WebSource {
   private projectsReadable = false;
   private modelsReadable = false;
   private sessionsReadable = false;
+  private historyReadable = false;
 
   /** Reuse existing clients without changing Telegram preferences or mappings. */
   constructor(private readonly deps: CodexSourceDependencies) {
@@ -35,7 +36,7 @@ export class CodexWebSource implements WebSource {
   /** Report independently proven discovery and configured execution capabilities. */
   capabilities(): WebSourceCapabilities {
     return { sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
-      historyReadable: this.sessionsReadable, completeUserHistoryReadable: false, finalReplyReadable: this.sessionsReadable,
+      historyReadable: this.historyReadable, completeUserHistoryReadable: false, finalReplyReadable: this.historyReadable,
       createEnabled: this.projectsReadable && this.deps.queueUsable, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
   }
 
@@ -68,15 +69,30 @@ export class CodexWebSource implements WebSource {
   /** Read only a stored thread's confined rollout, never a browser-supplied path. */
   async history(id: string, cursor: string | null, limit: number): Promise<WebHistory> {
     const thread = this.deps.threads.getThread?.(id);
-    if (!thread) throw new Error("session_missing");
-    return readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit);
+    if (!thread) { this.historyReadable = false; throw new Error("session_missing"); }
+    try {
+      const history = await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit);
+      this.historyReadable = true;
+      return history;
+    } catch (error) {
+      this.historyReadable = false;
+      throw error;
+    }
   }
 
   /** Start a raw Web prompt with explicit request-local model selection. */
   async create(input: CreateRequest): Promise<SourceResult> {
-    const project = (await this.projectCache.get()).find((item) => item.id === input.projectId);
+    let projects: ProjectItem[];
+    try { projects = await this.projectCache.get(); }
+    catch { return { state: "failed", sessionId: null, errorCode: "projects_unavailable" }; }
+    const project = projects.find((item) => item.id === input.projectId);
     if (!project || !this.deps.pathExists(project.primaryRoot)) return { state: "failed", sessionId: null, errorCode: "project_missing" };
-    if (input.modelId && !(await this.models()).some((model) => model.id === input.modelId)) return { state: "failed", sessionId: null, errorCode: "model_unavailable" };
+    if (input.modelId) {
+      let models: CatalogItem[];
+      try { models = await this.models(); }
+      catch { return { state: "failed", sessionId: null, errorCode: "models_unavailable" }; }
+      if (!models.some((model) => model.id === input.modelId)) return { state: "failed", sessionId: null, errorCode: "model_unavailable" };
+    }
     let known: string | null = null;
     try {
       const result = await this.deps.appServer.startThreadAndTurn({

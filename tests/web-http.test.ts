@@ -46,6 +46,9 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     expect((await request("/api/settings/redaction", "PUT", { enabled: true, expectedVersion: 1 }, cookie, paired.csrfToken)).status).toBe(409);
     expect((await request("/api/sessions?limit=99999", "GET", undefined, cookie)).status).toBe(200);
     expect((await request("/api/sessions?cursor=invalid", "GET", undefined, cookie)).status).toBe(400);
+    const cjk = { operationId: randomUUID(), source: "codex", projectId: "project", modelId: null, prompt: "界".repeat(32000) };
+    expect((await request("/api/sessions", "POST", cjk, cookie, paired.csrfToken)).status).toBe(200);
+    expect(raw).toBe(cjk.prompt); expect(writes).toBe(2);
     expect((await request("/api/devices/" + paired.device.id, "DELETE", undefined, cookie, paired.csrfToken)).status).toBe(200);
     expect((await request("/api/status", "GET", undefined, cookie)).status).toBe(401);
   } finally { events.close(); db.close(); }
@@ -57,4 +60,25 @@ test("pairing body is streaming-bounded before materialization", async () => {
   const response = await handler(new Request("http://127.0.0.1:7310/api/auth/pair", { method: "POST", headers: { Origin: "http://127.0.0.1:7310", "Content-Type": "application/json" }, body: "x".repeat(4096) }), "127.0.0.1");
   expect(response.status).toBe(413); expect(response.headers.get("Cache-Control")).toBe("no-store");
   events.close(); db.close();
+});
+
+test("Tailnet HTTP pairing emits usable host-only cookies while HTTPS remains Secure", async () => {
+  for (const origin of ["http://100.112.22.85:7310", "https://machine.example.test"]) {
+    const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+    const auth = new WebAuth(store); const events = new WebEvents(store);
+    const handler = createWebHandler({ store, auth, events, sources: {}, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: origin, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
+    try {
+      const response = await handler(new Request(origin + "/api/auth/pair", { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ code: auth.createPairCode().code }) }), "127.0.0.1");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Set-Cookie")?.includes("Secure")).toBe(origin.startsWith("https:"));
+      expect(response.headers.get("Set-Cookie")).toContain("HttpOnly");
+      expect(response.headers.get("Set-Cookie")).not.toContain("Domain=");
+      const issued = response.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+      const csrf = /sea_csrf=([^;]+)/.exec(issued)?.[1];
+      if (!csrf) throw new Error("fixture csrf missing");
+      const logout = await handler(new Request(origin + "/api/auth/logout", { method: "POST", headers: { Origin: origin, Cookie: issued, "X-Sea-Bridge-CSRF": csrf } }), "127.0.0.1");
+      expect(logout.status).toBe(200);
+      expect(logout.headers.get("Set-Cookie")?.includes("Secure")).toBe(origin.startsWith("https:"));
+    } finally { events.close(); db.close(); }
+  }
 });

@@ -82,3 +82,10 @@ describe("fail-soft Web lifecycle", () => {
     expect(stops).toBe(1);
   });
 });
+
+test("HTTP remote origin is restricted to canonical Tailnet IPv4", () => {
+  expect(loadWebConfig({ SEA_BRIDGE_WEB_REMOTE_ORIGIN: "http://100.112.22.85:7310" }).remoteOrigin).toBe("http://100.112.22.85:7310");
+  for (const origin of ["http://100.63.0.1:7310", "http://100.128.0.1:7310", "http://192.168.1.1:7310", "http://example.test:7310"]) {
+    expect(() => loadWebConfig({ SEA_BRIDGE_WEB_REMOTE_ORIGIN: origin })).toThrow();
+  }
+});

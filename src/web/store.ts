@@ -97,6 +97,19 @@ export class WebStore {
     return this.db.query(`SELECT ${OP_COLUMNS} FROM web_operations WHERE id=?`).get(id) as WebOperation | null;
   }
 
+  /** Merge only prompts the source explicitly accepted; failed/ambiguous writes never become fake history. */
+  listAcceptedMessageSnapshots(source: "codex" | "dsh", sessionId: string, limit = 100): Array<{ id: string; role: "user"; text: string; createdAt: number }> {
+    const bounded = Math.max(1, Math.min(100, limit));
+    return this.db.query(`
+      SELECT snapshots.operation_id AS id,'user' AS role,snapshots.text,snapshots.created_at AS createdAt
+      FROM web_message_snapshots AS snapshots
+      JOIN web_operations AS operations ON operations.id=snapshots.operation_id
+      WHERE snapshots.source=? AND snapshots.session_id=? AND operations.state='accepted'
+      ORDER BY snapshots.created_at ASC,snapshots.operation_id ASC
+      LIMIT ?
+    `).all(source, sessionId, bounded) as Array<{ id: string; role: "user"; text: string; createdAt: number }>;
+  }
+
   /** Enforce the only legal edges with an atomic expected-state predicate. */
   transitionOperation(id: string, from: OperationState, to: OperationState, now: number, errorCode: string | null = null): boolean {
     const legal = from === "received" ? to === "dispatching" || to === "failed" : from === "dispatching" && ["queued", "accepted", "failed", "delivery_unknown"].includes(to);

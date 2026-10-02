@@ -7,6 +7,8 @@ import { dispatchWebOperation } from "./operations.ts";
 import { operationRecords } from "./records.ts";
 import type { WebSource } from "./sources/types.ts";
 
+export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
+
 /** Explicit handler dependencies make authentication/dispatch ordering independently testable. */
 export interface WebHttpDependencies {
   store: WebStore; auth: WebAuth; events: WebEvents; redaction: WebRedaction; pepper: Uint8Array;
@@ -90,7 +92,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const paired = deps.auth.pair(text(body.code, 8) ?? "", context.bucket, deps.redaction.storage(text(body.name, 80, true) ?? "设备"));
         if (!paired) throw new HttpError(401, "pair_failed");
         const response = json({ paired: true });
-        for (const cookie of deps.auth.cookies(paired, context.remote)) response.headers.append("Set-Cookie", cookie);
+        for (const cookie of deps.auth.cookies(paired, context.origin.startsWith("https://"))) response.headers.append("Set-Cookie", cookie);
         return response;
       }
       const cookie = cookies(request); const device = deps.auth.authenticate(cookie.sea_session ?? "");
@@ -100,7 +102,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       if (path === "/api/auth/logout" && method === "POST") {
         deps.store.revokeDevice(device.id, Date.now()); deps.events.revoke(device.id);
         const response = json({ loggedOut: true });
-        for (const name of ["sea_session", "sea_csrf"]) response.headers.append("Set-Cookie", `${name}=; Path=/; Max-Age=0; SameSite=Strict${context.remote ? "; Secure" : ""}`);
+        for (const name of ["sea_session", "sea_csrf"]) response.headers.append("Set-Cookie", `${name}=; Path=/; Max-Age=0; SameSite=Strict${context.origin.startsWith("https://") ? "; Secure" : ""}`);
         return response;
       }
       if (path === "/api/settings" && method === "GET") return json(deps.store.getSettings());
@@ -164,7 +166,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       }
       const send = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/messages$/);
       if (method === "POST" && (path === "/api/sessions" || send)) {
-        const body = await readJson(request, 65536);
+        const body = await readJson(request, WEB_MAX_REQUEST_BYTES);
         const executionSource = send?.[1] ?? body.source;
         if (executionSource !== "codex" && executionSource !== "dsh") throw new HttpError(400, "invalid_source");
         const source = deps.sources[executionSource]; if (!source) throw new HttpError(503, "source_unavailable");

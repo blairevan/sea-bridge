@@ -18,11 +18,19 @@ export async function dispatchWebOperation(input: WebWriteRequest, deviceId: str
   const prior = store.getOperation(input.operationId);
   if (!prior) throw new Error("operation_missing");
   if (prior.state !== "received") return prior;
+  // Persist the display-only snapshot before crossing the dispatch boundary. A local failure here is
+  // definite because no source call has happened, so do not mislabel it as an ambiguous delivery.
+  try {
+    store.db.query("INSERT OR IGNORE INTO web_message_snapshots(operation_id,source,session_id,text,created_at) VALUES(?,?,?,?,?)").run(input.operationId, input.source, input.targetId, redaction.storage(input.prompt), Date.now());
+  } catch {
+    store.transitionOperation(input.operationId, "received", "failed", Date.now(), "local_persistence_failed");
+    const failed = store.getOperation(input.operationId);
+    if (!failed) throw new Error("operation_missing");
+    return failed;
+  }
   if (!store.transitionOperation(input.operationId, "received", "dispatching", Date.now())) {
     const raced = store.getOperation(input.operationId); if (!raced) throw new Error("operation_missing"); return raced;
   }
-  // This snapshot is permanently filtered; the source still receives the raw prompt.
-  store.db.query("INSERT OR IGNORE INTO web_message_snapshots(operation_id,source,session_id,text,created_at) VALUES(?,?,?,?,?)").run(input.operationId, input.source, input.targetId, redaction.storage(input.prompt), Date.now());
   try {
     const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, prompt: input.prompt,
       onSessionKnown: (id) => { store.setOperationSession(input.operationId, id, Date.now()); },
@@ -35,5 +43,9 @@ export async function dispatchWebOperation(input: WebWriteRequest, deviceId: str
   } catch { store.transitionOperation(input.operationId, "dispatching", "delivery_unknown", Date.now(), "dispatch_unconfirmed"); }
   const operation = store.getOperation(input.operationId);
   if (!operation) throw new Error("operation_missing");
+  if (operation.state === "failed") {
+    try { store.db.query("DELETE FROM web_message_snapshots WHERE operation_id=?").run(input.operationId); }
+    catch { /* Snapshot cleanup must not rewrite a definite source outcome. */ }
+  }
   return operation;
 }

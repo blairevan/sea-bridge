@@ -12,7 +12,7 @@ export interface WebSession {
   state: "running" | "unknown" | "waiting_external_approval"; sendEnabled: boolean;
 }
 /** Only verified user text and visible final assistant text enter the timeline. */
-export interface WebMessage { id: string; role: "user" | "assistant"; text: string; }
+export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; }
 /** Bounded history page with an opaque continuation cursor. */
 export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */

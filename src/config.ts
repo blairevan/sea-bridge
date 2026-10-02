@@ -18,7 +18,11 @@ export function loadWebConfig(env: Readonly<Record<string, string | undefined>> 
   const remoteOrigin = env.SEA_BRIDGE_WEB_REMOTE_ORIGIN?.trim() || null;
   if (remoteOrigin) {
     const url = new URL(remoteOrigin);
-    if (url.protocol !== "https:" || url.origin !== remoteOrigin || url.username || url.password) {
+    const octets = url.hostname.split(".").map(Number);
+    const tailnetHttp = url.protocol === "http:" && octets.length === 4 &&
+      octets.every((value) => Number.isInteger(value) && value >= 0 && value <= 255) &&
+      octets[0] === 100 && octets[1]! >= 64 && octets[1]! <= 127;
+    if ((!tailnetHttp && url.protocol !== "https:") || url.origin !== remoteOrigin || url.username || url.password) {
       throw new Error("web_remote_origin_invalid");
     }
   }

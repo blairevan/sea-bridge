@@ -201,7 +201,8 @@ async function main(): Promise<void> {
           queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),
           pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
         }),
-        ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled, (id) => webStore.db.query("SELECT operation_id AS id,'user' AS role,text FROM web_message_snapshots WHERE source='dsh' AND session_id=? ORDER BY created_at ASC LIMIT 100").all(id) as Array<{ id: string; role: "user"; text: string }>) } : {}),
+        ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled,
+          (id) => webStore.listAcceptedMessageSnapshots("dsh", id)) } : {}),
       }),
     });
   }, logger);

@@ -4,18 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sea-Bridge 控制台</title>
-  <link rel="stylesheet" href="/app.css">
-  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20261002-message6">
+  <script src="/app.js?v=20261002-message6" defer></script>
 </head>
 <body>
   <div id="notice" role="status" aria-live="polite"></div>
   <main id="pairing" class="pairing">
-    <form id="pair-form" class="card">
+    <form id="pair-form" class="card" novalidate>
       <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
-      <p>在本机运行配对命令，输入一次性配对码。</p>
+      <p>在本机运行配对命令，输入一次性配对码。</p><p id="client-version" class="muted">加载配对诊断版本…</p>
       <label for="pair-code">配对码</label><input id="pair-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
       <label for="device-name">设备名称（可选）</label><input id="device-name" maxlength="80" autocomplete="off" placeholder="例如：手机">
-      <button type="submit">配对设备</button><p class="muted">配对码有效期 5 分钟，仅可使用一次。</p>
+      <button id="pair-submit" type="button">配对设备</button><p class="muted">配对码有效期 5 分钟，仅可使用一次。</p>
     </form>
   </main>
   <div id="console" hidden>

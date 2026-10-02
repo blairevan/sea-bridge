@@ -34,7 +34,7 @@ export function filterSecretText(text: string, secrets: readonly string[] = []):
   return result
     .replace(/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g, "[REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, `Bearer ${"[REDACTED]"}`)
-    .replace(/\b(?:authorization|cookie|set-cookie)\s*:\s*[^\r\n]+/gi, "[REDACTED]")
+    .replace(/\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi, "[REDACTED]")
     .replace(/([?&](?:token|key|secret|password|api[_-]?key|access_token)=)[^&\s]+/gi, `$1${"[REDACTED]"}`)
-    .replace(/\b(?:token|secret|password|api[_-]?key|credential)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "[REDACTED]");
+    .replace(/\b(?:token|secret|password|api[_-]?key|credential|cookie|set-cookie)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "[REDACTED]");
 }

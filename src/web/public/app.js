@@ -1,7 +1,88 @@
 "use strict";
-const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, paused: true, busy: new Set(), pending: null };
+const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, paused: true, busy: new Set(), pending: null, awaitingReply: null, followLatest: false };
 const labels = { queued: "已入队，尚未确认执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
 const reads = new Map();
+
+/** Generate an RFC 4122 UUID with secure randomness on HTTP Tailnet pages too. */
+function operationUuid() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+/** Allow web links and HTTPS images, never executable schemes or URL credentials. */
+function safeMessageUrl(value, image) {
+  try {
+    const url = new URL(value, location.origin);
+    if (url.username || url.password || !["http:", "https:"].includes(url.protocol)) return null;
+    if (image && url.protocol !== "https:" && url.origin !== location.origin) return null;
+    return url.href;
+  } catch { return null; }
+}
+/** Render inline Markdown using text nodes; source HTML is never interpreted. */
+function appendInline(parent, text, depth = 0) {
+  if (depth > 3) { parent.append(document.createTextNode(text)); return; }
+  const pattern = /(!?\[([^\]\n]*)\]\(([^\s)]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)/g;
+  let offset = 0;
+  for (const match of text.matchAll(pattern)) {
+    parent.append(document.createTextNode(text.slice(offset, match.index)));
+    if (match[2] !== undefined) {
+      const image = match[1].startsWith("!"); const href = safeMessageUrl(match[3], image);
+      if (!href) parent.append(document.createTextNode(match[0]));
+      else if (image) {
+        const box = node("span", "", "markdown-image"); const button = node("button", `加载图片：${match[2] || "图片"}`, "quiet"); button.type = "button";
+        button.onclick = () => {
+          const img = document.createElement("img"); img.alt = match[2]; img.referrerPolicy = "no-referrer"; img.loading = "lazy";
+          img.onerror = () => { box.replaceChildren(node("span", "图片无法加载", "muted")); };
+          img.src = href; box.replaceChildren(img);
+        };
+        box.append(button); parent.append(box);
+      } else {
+        const link = node("a", match[2]); link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; parent.append(link);
+      }
+    } else {
+      const element = node(match[4] !== undefined ? "code" : match[5] !== undefined ? "strong" : "em", "");
+      if (match[4] !== undefined) element.textContent = match[4]; else appendInline(element, match[5] ?? match[6], depth + 1);
+      parent.append(element);
+    }
+    offset = match.index + match[0].length;
+  }
+  parent.append(document.createTextNode(text.slice(offset)));
+}
+/** Render bounded Markdown blocks: headings, lists, quotes, tables and fenced code. */
+function renderMarkdown(text) {
+  const root = node("div", "", "markdown"); const lines = String(text).split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    if (/^\s*```/.test(line)) {
+      const language = line.trim().slice(3); const code = [];
+      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
+      const pre = node("pre", "", "code-block"); if (language) pre.append(node("small", language, "muted")); pre.append(node("code", code.join("\n"))); root.append(pre); continue;
+    }
+    if (line.includes("|") && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1] ?? "")) {
+      const wrapper = node("div", "", "table-scroll"); const table = node("table", "");
+      /** Build a table row using safe inline nodes. */
+      const row = (value, tag) => { const tr = node("tr", ""); for (const cell of value.trim().replace(/^\||\|$/g, "").split("|")) { const td = node(tag, ""); appendInline(td, cell.trim()); tr.append(td); } return tr; };
+      table.append(row(line, "th")); i++;
+      while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim()) table.append(row(lines[++i], "td"));
+      wrapper.append(table); root.append(wrapper); continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    const list = /^\s*(?:[-*+] |\d+\. )(.+)$/.exec(line);
+    if (list) {
+      const ordered = /^\s*\d+\./.test(line); const container = node(ordered ? "ol" : "ul", "");
+      let value = list[1];
+      while (true) { const li = node("li", ""); appendInline(li, value); container.append(li); const next = (ordered ? /^\s*\d+\. (.+)$/ : /^\s*[-*+] (.+)$/).exec(lines[i + 1] ?? ""); if (!next) break; value = next[1]; i++; }
+      root.append(container); continue;
+    }
+    if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) { root.append(node("hr", "")); continue; }
+    const block = node(heading ? `h${heading[1].length}` : line.startsWith("> ") ? "blockquote" : "p", "");
+    appendInline(block, heading ? heading[2] : line.startsWith("> ") ? line.slice(2) : line); root.append(block);
+  }
+  return root;
+}
 
 /** Resolve a fixed application element. */
 function el(id) { return document.getElementById(id); }
@@ -20,13 +101,18 @@ function clearSensitive() {
 function csrf() { return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("sea_csrf="))?.slice(9) ?? ""; }
 /** Make a version-aware same-origin API request without persistent client storage. */
 async function requestApi(path, method = "GET", body) {
-  const response = await fetch(path, { method, credentials: "same-origin", cache: "no-store", headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(method !== "GET" ? { "X-Sea-Bridge-CSRF": csrf() } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  const payload = await response.json(); const version = Number(response.headers.get("X-Sea-Bridge-Settings-Version") ?? state.version);
+  let response;
+  try { response = await fetch(path, { method, credentials: "same-origin", cache: "no-store", headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(method !== "GET" ? { "X-Sea-Bridge-CSRF": csrf() } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); }
+  catch { throw new Error("网络请求失败，请检查 Shadowrocket 连接后重试"); }
+  let payload;
+  try { payload = await response.json(); }
+  catch { throw new Error(`接口返回异常（HTTP ${response.status}，${response.headers.get("Content-Type") || "未提供内容类型"}），请截图反馈`); }
+  const version = Number(response.headers.get("X-Sea-Bridge-Settings-Version") ?? state.version);
   if (version < state.version) throw new Error("设置已变化，正在刷新");
   if (version > state.version) { clearSensitive(); state.version = version; }
   if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw new Error("设备登录已失效，请重新配对"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw new Error("连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -39,7 +125,7 @@ async function api(path, method = "GET", body) {
 /** Prevent repeated work for one UI action and keep errors visible. */
 async function run(key, work) {
   if (state.busy.has(key)) return; state.busy.add(key);
-  try { await work(); } catch (error) { notice(error.message || "操作失败"); } finally { state.busy.delete(key); }
+  try { await work(); } catch (error) { notice(`[诊断 pair3 · ${key}] ${error.message || "操作失败"}`); } finally { state.busy.delete(key); }
 }
 /** Hide all authenticated content and stop its event connection. */
 function showPairing() { state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); }
@@ -94,7 +180,10 @@ async function loadSessions(more) {
     for (const session of state.sessions.slice(0, target === "recent-sessions" ? 6 : state.sessions.length)) {
       const button = node("button", "", "session-row"); button.type = "button";
       button.append(node("span", session.title), node("small", `${session.source} · ${labels[session.state] ?? "未知"}`, "muted"));
-      button.onclick = () => run("select", async () => { state.selected = session; state.messages = []; await showPage("sessions"); el("sessions").classList.add("detail-open"); });
+      button.onclick = () => run("select", async () => {
+        state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
+        el("sessions").classList.add("detail-open"); await showPage("sessions");
+      });
       container.append(button);
     }
     if (!container.childElementCount) container.append(node("p", result.partial ? "部分来源暂不可用" : "暂无会话", "muted"));
@@ -106,19 +195,41 @@ async function loadSessions(more) {
     el("send-button").disabled = !state.selected.sendEnabled || Boolean(state.pending);
   }
 }
+/** Position the latest rendered message inside the actual message scroller. */
+function scrollMessagesToLatest(container) {
+  container.scrollTop = container.scrollHeight;
+  container.lastElementChild?.scrollIntoView?.({ block: "end", inline: "nearest" });
+}
 /** Read final replies and verified user text; preserve scroll during periodic refresh. */
 async function loadHistory(older) {
   const session = state.selected; if (!session) return;
   const params = new URLSearchParams({ limit: "30" }); if (older && state.historyCursor) params.set("cursor", state.historyCursor);
   const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/history?${params}`);
   if (state.selected?.id !== session.id || state.selected?.source !== session.source) return;
-  state.messages = older ? [...result.messages, ...state.messages] : result.messages;
-  state.messages = [...new Map(state.messages.map((message) => [message.id, message])).values()]; state.historyCursor = result.cursor;
-  el("more-history").hidden = !result.cursor;
-  const container = el("messages"); const scroll = container.scrollTop; container.replaceChildren();
-  for (const message of state.messages) { const item = node("div", "", "message " + message.role); item.append(node("small", message.role === "user" ? "用户" : "助手 · 最终回复", "muted"), node("pre", message.text)); container.append(item); }
+  const hadMessages = state.messages.length > 0;
+  state.messages = older ? [...result.messages, ...state.messages] : hadMessages ? [...state.messages, ...result.messages] : result.messages;
+  state.messages = [...new Map(state.messages.map((message) => [message.id, message])).values()];
+  // Latest polling must not move the "older" boundary forward after the user has paged back.
+  if (older || !hadMessages) state.historyCursor = result.cursor;
+  el("more-history").hidden = !state.historyCursor;
+  const container = el("messages"); const scroll = container.scrollTop;
+  const nearBottom = container.scrollHeight - container.clientHeight - scroll < 100;
+  const follow = !older && (!hadMessages || state.followLatest || nearBottom);
+  container.replaceChildren();
+  for (const message of state.messages) {
+    const item = node("div", "", "message " + message.role);
+    const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
+    item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}`, "message-meta"), renderMarkdown(message.text)); container.append(item);
+  }
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
-  container.scrollTop = scroll;
+  if (follow) scrollMessagesToLatest(container); else container.scrollTop = scroll;
+  state.followLatest = false;
+  if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
+    const latest = [...state.messages].reverse().find((message) => message.role === "assistant");
+    if (latest && latest.id !== state.awaitingReply.baseline) {
+      state.awaitingReply = null; el("operation-status").textContent = "发现新的最终回复"; notice("发现新的最终回复");
+    }
+  }
 }
 /** Render filtered bridge operations and structured logs as plain text. */
 async function loadRecords(more) {
@@ -154,23 +265,37 @@ async function loadCatalogs() {
   el("create-hint").textContent = allowed ? "新会话的审批继续通过 Telegram 处理（如来源需要）。" : "此来源当前不支持新建会话。";
 }
 /** Show a write outcome without treating submission acceptance as task completion. */
-function showOperation(operation) { el("operation-status").textContent = `${labels[operation.state] ?? operation.state}${operation.errorCode ? " · " + operation.errorCode : ""}`; el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending; if (el("create-dialog").open) el("create-hint").textContent = labels[operation.state] ?? operation.state; notice(labels[operation.state] ?? operation.state); }
+function showOperation(operation) {
+  const knownSession = operation.kind === "create" && operation.sessionId ? ` · 已创建会话 ${operation.sessionId}` : "";
+  const detail = `${labels[operation.state] ?? operation.state}${operation.errorCode ? " · " + operation.errorCode : ""}${knownSession}`;
+  el("operation-status").textContent = detail; el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending;
+  if (el("create-dialog").open) el("create-hint").textContent = detail; notice(detail);
+}
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
 async function submitWrite(create) {
   const session = state.selected; if (!create && !session) return;
   if (state.pending) { notice("已有提交待确认，请先刷新核查"); return; }
-  const operationId = crypto.randomUUID(); const source = create ? el("create-source").value : session.source;
+  const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
   const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
     if (operation.state !== "delivery_unknown" && operation.state !== "dispatching") state.pending = null;
     if (["accepted", "queued"].includes(operation.state)) {
+      state.followLatest = true;
+      state.awaitingReply = { sessionId: operation.sessionId ?? session?.id, source, baseline: [...state.messages].reverse().find((message) => message.role === "assistant")?.id ?? null };
       el(create ? "create-prompt" : "prompt").value = "";
-      if (create) { el("create-dialog").close(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; await showPage("sessions"); el("sessions").classList.add("detail-open"); }
+      if (create) { el("create-dialog").close(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
     showOperation(operation); await refresh();
-  } catch { notice("提交结果待确认，请刷新核查；不会自动重发。"); el("reconcile").hidden = false; el("create-reconcile").hidden = false; }
+  } catch (error) {
+    const definite = new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"]);
+    if (definite.has(error.code)) {
+      state.pending = null; notice(error.message || "提交失败"); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
+    } else {
+      notice("提交结果待确认，请刷新核查；不会自动重发。"); el("reconcile").hidden = false; el("create-reconcile").hidden = false;
+    }
+  }
   finally { if (create && !state.pending) el("create-submit").disabled = !state.caps[source]?.createEnabled; }
 }
 /** Reconcile only the recorded operation; no branch resubmits its source write. */
@@ -190,7 +315,19 @@ async function reconcilePending() {
 }
 
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
-el("pair-form").onsubmit = (event) => { event.preventDefault(); run("pair", async () => { await api("/api/auth/pair", "POST", { code: el("pair-code").value, name: el("device-name").value || null }); el("pair-code").value = ""; await bootstrap(); }); };
+el("client-version").textContent = "配对诊断版本：pair3";
+/** Validate explicitly so mobile native form validation cannot silently block pairing. */
+async function pairDevice() {
+  const code = el("pair-code").value.trim();
+  if (!/^[0-9]{8}$/.test(code)) { notice("请输入 8 位数字配对码"); return; }
+  notice("正在配对…"); el("pair-submit").disabled = true;
+  try {
+    await api("/api/auth/pair", "POST", { code, name: el("device-name").value || null });
+    notice("配对已接受，正在确认登录…"); el("pair-code").value = ""; await bootstrap();
+  } finally { el("pair-submit").disabled = false; }
+}
+el("pair-submit").onclick = () => run("pair", pairDevice);
+el("pair-form").onsubmit = (event) => { event.preventDefault(); run("pair", pairDevice); };
 el("logout").onclick = () => run("logout", async () => { await api("/api/auth/logout", "POST"); showPairing(); });
 el("refresh-status").onclick = () => run("refresh", refresh);
 el("source-filter").onchange = () => run("sessions", () => loadSessions(false));
@@ -209,7 +346,14 @@ el("more-records").onclick = () => run("records", () => loadRecords(true));
 el("redaction-form").onsubmit = (event) => { event.preventDefault(); run("settings", async () => { const enabled = el("redaction-enabled").checked; await api("/api/settings/redaction", "PUT", { enabled, expectedVersion: state.settings.version }); await loadSettings(); }); };
 el("reconcile").onclick = () => run("reconcile", reconcilePending);
 el("create-reconcile").onclick = () => run("reconcile", reconcilePending);
-document.addEventListener("visibilitychange", () => { if (document.hidden) { state.paused = true; clearSensitive(); } else run("resume", async () => { await bootstrap(); state.paused = false; await refresh(); }); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { state.paused = true; clearSensitive(); return; }
+  run("resume", async () => {
+    await bootstrap();
+    if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); }
+    else { state.paused = true; clearSensitive(); notice("连接尚未恢复，敏感内容保持隐藏"); }
+  });
+});
 window.addEventListener("pageshow", () => run("resume", async () => { await bootstrap(); if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); } }));
 setInterval(() => run("poll", refresh), 3000);
 run("startup", async () => { await bootstrap(); });
