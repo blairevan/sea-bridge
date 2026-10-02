@@ -97,6 +97,8 @@ describe("TelegramService - reply callback", () => {
     );
 
     await service.run();
+    expect(service.getStatus()).toMatchObject({ stopped: true, pollFailed: false });
+    expect(service.getStatus().lastPollSuccessAt).toBeNumber();
 
     expect(events).toContain("telegram_polling_healthy");
     state.close();

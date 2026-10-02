@@ -51,7 +51,8 @@ export class WebRedaction {
     if (value && typeof value === "object") {
       const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [key, item] of Object.entries(value)) {
-        result[key] = SECRET_KEY.test(key) ? HIDDEN : this.filter(item, privacy, depth + 1);
+        const machineIdentity = ["id", "cursor", "sessionId", "projectId", "modelId", "deviceId", "currentDeviceId", "operationId"].includes(key);
+        result[key] = SECRET_KEY.test(key) ? HIDDEN : this.filter(item, privacy && !machineIdentity, depth + 1);
       }
       return result;
     }

@@ -814,7 +814,7 @@ Commit boundary recommendation: `feat: add dsh web source adapter`.
 
 ## 8A. Request hardening
 
-- [ ] **Step 1: Write bounded-body tests.**
+- [x] **Step 1: Write bounded-body tests.**
 
 Use a streaming/bounded body reader. Reject before full materialization when possible:
 - pairing body over small limit;
@@ -824,7 +824,7 @@ Use a streaming/bounded body reader. Reject before full materialization when pos
 
 Do not trust `Content-Length` alone.
 
-- [ ] **Step 2: Write security-header tests.**
+- [ ] **Step 2: Write security-header tests.** (HTTP server implemented; real static response proof follows with Task 9 assets.)
 
 HTML:
 - `Cache-Control: no-store`;
@@ -852,7 +852,7 @@ GET  /api/auth/session
 
 Before auth, no other API reveals status/capabilities/config/session data.
 
-- [ ] **Step 3: Test pair/auth/logout flows end-to-end through the handler.**
+- [x] **Step 3: Test pair/auth/logout flows end-to-end through the handler.**
 
 `/api/auth/session` returns device identity + settings version but never raw cookie/token hashes.
 
@@ -868,7 +868,7 @@ DELETE /api/devices/:deviceId
 GET /api/events
 ```
 
-- [ ] **Step 4: Test version CAS and SSE.**
+- [x] **Step 4: Test version CAS and SSE.**
 
 Redaction update requires expected version. On success:
 - DB version increments;
@@ -876,7 +876,7 @@ Redaction update requires expected version. On success:
 - all authenticated SSE connections receive only control event `settings_version`;
 - no message body travels over SSE.
 
-- [ ] **Step 5: Test revocation.**
+- [x] **Step 5: Test revocation.**
 
 Revoking a device:
 - marks DB row revoked;
@@ -899,13 +899,13 @@ GET /api/sessions/:source/:sessionId/history?cursor=&limit=
 GET /api/operations?source=&sessionId=&status=&from=&to=&cursor=&limit=
 ```
 
-- [ ] **Step 6: Add pagination/input tests.**
+- [x] **Step 6: Add pagination/input tests.**
 
 Clamp limits to documented maxima. Reject malformed cursor/date/source/session values.
 
 Search only bounded fields; do not build SQL from raw sort/filter fragments.
 
-- [ ] **Step 7: Implement status caching.**
+- [x] **Step 7: Implement status caching.**
 
 Status is evidence-based:
 - Codex thread-store readability;
@@ -918,7 +918,7 @@ Add a narrow `TelegramService.getStatus()` projection backed by the service's ex
 
 Do not spawn `codex --version` every 3 seconds and do not run dsh health for each browser poll. Use TTL/evidence cache.
 
-- [ ] **Step 7A: Persist only useful Web diagnostics.**
+- [x] **Step 7A: Persist only useful Web diagnostics.**
 
 Record bounded, permanently secret-filtered Web lifecycle/API/source failure events in `web_logs` and security/control actions in `web_audit`. Do not log successful 3-second polling requests one-by-one, raw prompts, cookies, CSRF values, pair codes, source response bodies, or Tailscale identity strings in full. Logging failure must not turn a successful source operation into a user-visible failure.
 
@@ -933,7 +933,7 @@ POST /api/sessions/:source/:sessionId/messages
 
 Body requires browser-created UUID `operationId`.
 
-- [ ] **Step 8: Test idempotency at HTTP boundary.**
+- [x] **Step 8: Test idempotency at HTTP boundary.**
 
 Same operation ID + same canonical request:
 - returns same persisted operation result;
@@ -943,19 +943,19 @@ Same ID + changed source/target/model/prompt:
 - stable 409/validation error;
 - no source call.
 
-- [ ] **Step 9: Test dispatch ordering.**
+- [x] **Step 9: Test dispatch ordering.**
 
 Persist/transition to `dispatching` before calling adapter. Test with injected source that inspects DB inside the fake source call.
 
-- [ ] **Step 10: Test raw-vs-snapshot prompt handling.**
+- [x] **Step 10: Test raw-vs-snapshot prompt handling.**
 
 Source adapter receives raw prompt. Snapshot/log receives permanent-secret-filtered version.
 
-- [ ] **Step 11: Test settings-version propagation.**
+- [x] **Step 11: Test settings-version propagation.**
 
 Every successful/error authenticated dynamic response includes current settings version. Client can detect a response older than its latest SSE version.
 
-- [ ] **Step 12: Run focused/full checks.**
+- [x] **Step 12: Run focused/full checks.**
 
 ```bash
 bun test tests/web-http.test.ts tests/web-sse.test.ts
