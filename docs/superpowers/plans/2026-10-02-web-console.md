@@ -824,7 +824,7 @@ Use a streaming/bounded body reader. Reject before full materialization when pos
 
 Do not trust `Content-Length` alone.
 
-- [ ] **Step 2: Write security-header tests.** (HTTP server implemented; real static response proof follows with Task 9 assets.)
+- [x] **Step 2: Write security-header tests.** (Real loopback HTTP response tested with Task 9 assets.)
 
 HTML:
 - `Cache-Control: no-store`;
@@ -996,7 +996,7 @@ Mobile:
 - fixed composer;
 - new session full-screen sheet/page.
 
-- [ ] **Step 1: Add static contract tests.**
+- [x] **Step 1: Add static contract tests.**
 
 Without adding a DOM library, inspect static files for required invariants:
 - no external scripts/styles/fonts;
@@ -1008,7 +1008,7 @@ Without adding a DOM library, inspect static files for required invariants:
 
 Keep this test narrow; do not pretend string checks replace browser acceptance.
 
-- [ ] **Step 2: Implement pairing screen.**
+- [x] **Step 2: Implement pairing screen.**
 
 Only asks for:
 - 8-digit code;
@@ -1018,7 +1018,7 @@ No pre-auth health/status text.
 
 On success reload authenticated shell.
 
-- [ ] **Step 3: Implement auth/session bootstrap.**
+- [x] **Step 3: Implement auth/session bootstrap.**
 
 Fetch `/api/auth/session`, obtain current settings version and CSRF cookie value, keep runtime UI state in memory only.
 
@@ -1026,7 +1026,7 @@ On 401:
 - clear rendered state;
 - show pairing.
 
-- [ ] **Step 4: Implement polling discipline.**
+- [x] **Step 4: Implement polling discipline.**
 
 When visible:
 - session list + selected detail every 3 seconds;
@@ -1042,7 +1042,7 @@ On `visibilitychange`/resume/`pageshow`:
 
 Projects/models/status-expensive probes are not polled every 3 seconds.
 
-- [ ] **Step 5: Implement SSE control handling.**
+- [x] **Step 5: Implement SSE control handling.**
 
 On newer `settings_version`:
 - update known version;
@@ -1056,7 +1056,7 @@ On SSE disconnect:
 On `session_revoked`:
 - clear UI and show pairing.
 
-- [ ] **Step 6: Implement overview/status.**
+- [x] **Step 6: Implement overview/status.**
 
 Use three-state/evidence wording:
 - available/limited/unknown/offline as supplied;
@@ -1064,7 +1064,7 @@ Use three-state/evidence wording:
 
 Show Codex/dsh capability differences explicitly.
 
-- [ ] **Step 7: Implement sessions page.**
+- [x] **Step 7: Implement sessions page.**
 
 Features:
 - source filter;
@@ -1077,7 +1077,7 @@ Features:
 
 Use `textContent` and DOM node creation only for source-derived content.
 
-- [ ] **Step 8: Implement creation/follow-up forms.**
+- [x] **Step 8: Implement creation/follow-up forms.**
 
 New session:
 - choose source;
@@ -1095,7 +1095,7 @@ Unknown result:
 - show “结果待确认” and a refresh/reconcile action;
 - do not add an automatic retry button that silently reuses/new-generates a write.
 
-- [ ] **Step 9: Implement operation records.**
+- [x] **Step 9: Implement operation records.**
 
 Filter by:
 - execution source;
@@ -1105,7 +1105,7 @@ Filter by:
 
 Do not call it a complete message history.
 
-- [ ] **Step 10: Implement settings/devices.**
+- [x] **Step 10: Implement settings/devices.**
 
 Redaction:
 - CAS with expected version;
@@ -1119,7 +1119,7 @@ Devices:
 - current-device marker;
 - revoke action.
 
-- [ ] **Step 11: Add keyboard/mobile/accessibility basics.**
+- [x] **Step 11: Add keyboard/mobile/accessibility basics.**
 
 At minimum:
 - visible focus;
@@ -1130,7 +1130,7 @@ At minimum:
 - no horizontal overflow in message bodies;
 - `white-space: pre-wrap` for plain text.
 
-- [ ] **Step 12: Run static/API regression.**
+- [x] **Step 12: Run static/API regression.**
 
 ```bash
 bun test tests/web-static.test.ts tests/web-http.test.ts

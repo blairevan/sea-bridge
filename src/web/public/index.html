@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sea-Bridge 控制台</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <main id="pairing" class="pairing">
+    <form id="pair-form" class="card">
+      <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
+      <p>在本机运行配对命令，输入一次性配对码。</p>
+      <label for="pair-code">配对码</label><input id="pair-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
+      <label for="device-name">设备名称（可选）</label><input id="device-name" maxlength="80" autocomplete="off" placeholder="例如：手机">
+      <button type="submit">配对设备</button><p class="muted">配对码有效期 5 分钟，仅可使用一次。</p>
+    </form>
+  </main>
+  <div id="console" hidden>
+    <header><strong>SEA-BRIDGE</strong><span class="muted">会话桥接控制台</span><button id="logout" class="quiet">退出登录</button></header>
+    <div class="workspace">
+      <nav aria-label="主导航"><button data-page="overview">概览</button><button data-page="sessions">会话</button><button data-page="records">操作记录</button><button data-page="settings">设置</button></nav>
+      <main class="content">
+        <section id="overview" class="page"><div class="section-heading"><h1>运行概览</h1><button id="refresh-status" class="quiet">刷新</button></div><div id="status-cards" class="status-cards"></div><h2>最近会话</h2><div id="recent-sessions"></div></section>
+        <section id="sessions" class="page" hidden>
+          <aside class="session-list"><div class="section-heading"><h2>会话</h2><button id="new-session">＋ 新建</button></div>
+            <label for="source-filter">执行来源</label><select id="source-filter"><option value="">全部</option><option value="codex">Codex</option><option value="dsh">dsh</option></select>
+            <label for="session-search">搜索会话</label><input id="session-search" type="search" placeholder="搜索标题" maxlength="200">
+            <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>
+          </aside>
+          <article id="session-detail" class="session-detail"><div class="section-heading"><button id="back-to-list" class="quiet mobile-only">← 会话</button><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span></div>
+            <p id="history-limit" class="muted">只展示来源已提供的消息；不保证完整历史。</p>
+            <button id="more-history" class="quiet" hidden>加载较早消息</button><div id="messages" aria-live="polite"></div>
+            <form id="send-form" class="composer"><label for="prompt">发送消息</label><textarea id="prompt" rows="3" maxlength="32000" placeholder="输入要继续执行的任务" required></textarea><div class="composer-footer"><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button><button id="send-button" type="submit" disabled>发送消息</button></div></form>
+          </article>
+        </section>
+        <section id="records" class="page" hidden><h1>操作记录</h1><p class="muted">桥接提交结果与诊断记录；不代表完整聊天历史。</p>
+          <form id="record-filter" class="filters"><label>执行来源<select id="record-source"><option value="">全部</option><option value="codex">Codex</option><option value="dsh">dsh</option></select></label><label>会话 ID<input id="record-session" maxlength="200"></label><label>状态<select id="record-state"><option value="">全部</option><option value="queued">已入队</option><option value="accepted">已接受</option><option value="failed">失败</option><option value="delivery_unknown">待确认</option></select></label><label>开始时间<input id="record-from" type="datetime-local"></label><label>结束时间<input id="record-to" type="datetime-local"></label><button type="submit">筛选</button></form>
+          <div id="record-items"></div><button id="more-records" class="quiet" hidden>加载更多</button><h2>运行日志</h2><div id="log-items"></div>
+        </section>
+        <section id="settings" class="page" hidden><h1>设置</h1><form id="redaction-form" class="card"><h2>全局脱敏</h2><label class="toggle"><input id="redaction-enabled" type="checkbox">隐藏可识别的邮箱、手机号、IP 和本机路径</label><p class="muted">所有已配对设备同步生效。密钥、密码和 Token 始终过滤。自动识别无法覆盖任意个人信息；已查看、复制的内容无法撤回。</p><button type="submit">保存设置</button></form><h2>已配对设备</h2><div id="device-items"></div></section>
+      </main>
+    </div>
+  </div>
+  <dialog id="create-dialog"><form id="create-form"><div class="section-heading"><h2>新建会话</h2><button id="close-create" type="button" class="quiet" aria-label="关闭">×</button></div>
+    <label for="create-source">执行来源</label><select id="create-source"><option value="codex">Codex</option><option value="dsh">dsh</option></select>
+    <label for="create-project">项目</label><select id="create-project" required></select>
+    <label for="create-model">模型</label><select id="create-model"><option value="">使用来源默认模型</option></select>
+    <label for="create-prompt">首条消息</label><textarea id="create-prompt" rows="6" maxlength="32000" required placeholder="描述你希望完成的任务"></textarea>
+    <p id="create-hint" class="muted"></p><button id="create-submit" type="submit">创建并发送</button>
+  </form></dialog>
+</body>
+</html>
