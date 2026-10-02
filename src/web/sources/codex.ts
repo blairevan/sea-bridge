@@ -3,7 +3,7 @@ import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
 import { readCodexTranscript } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
@@ -14,6 +14,7 @@ export interface CodexSourceDependencies {
   pathExists: (path: string) => boolean;
   queueUsable: boolean;
   pendingApproval: (id: string) => boolean;
+  activity?: (id: string) => { state: "active" | "idle" | "unknown"; turnId: string | null } | null;
   registerCreatedThread?: (id: string) => void;
 }
 
@@ -44,12 +45,26 @@ export class CodexWebSource implements WebSource {
   async sessions(): Promise<WebSession[]> {
     try {
       const threads = this.deps.threads.listActive(); this.sessionsReadable = true;
-      return threads.sort((a, b) => b.updatedAtMs - a.updatedAtMs).map((thread) => ({
-        source: "codex", id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
-        state: this.deps.pendingApproval(thread.id) ? "waiting_external_approval" : "unknown",
-        sendEnabled: this.deps.queueUsable && !this.owners.has(thread.id),
-      }));
+      return threads.sort((a, b) => b.updatedAtMs - a.updatedAtMs).map((thread) => {
+        const approval = this.deps.pendingApproval(thread.id);
+        const activity = this.deps.activity?.(thread.id) ?? null;
+        return {
+          source: "codex" as const, id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
+          state: approval ? "waiting_external_approval" as const
+            : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : "unknown" as const,
+          sendEnabled: this.deps.queueUsable && !this.owners.has(thread.id),
+        };
+      });
     } catch { this.sessionsReadable = false; throw new Error("source_unavailable"); }
+  }
+
+  /** Report only observed runtime evidence; idle/absent evidence never proves completion. */
+  async execution(id: string, turnId: string | null): Promise<ExecutionEvidence> {
+    if (this.deps.pendingApproval(id)) return { state: "waiting_external_approval", exact: false };
+    if (this.owners.has(id)) return { state: "running", exact: false };
+    const activity = this.deps.activity?.(id) ?? null;
+    if (activity?.state !== "active") return { state: "unknown", exact: false };
+    return { state: "running", exact: Boolean(turnId && activity.turnId === turnId) };
   }
 
   /** Discover cached live projects, leaving missing-path entries unavailable. */

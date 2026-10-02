@@ -5,7 +5,7 @@ import type { WebEvents } from "./events.ts";
 import { createStatusService, type TelegramStatus } from "./status.ts";
 import { dispatchWebOperation } from "./operations.ts";
 import { operationRecords } from "./records.ts";
-import type { WebSource } from "./sources/types.ts";
+import type { WebSource, ExecutionEvidence } from "./sources/types.ts";
 
 export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
 
@@ -162,7 +162,15 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const id = text(decodeURIComponent(path.slice(16)), 36) ?? "";
         const operation = deps.store.getOperation(id);
         if (!operation) throw new HttpError(404, "operation_not_received");
-        return json(operation);
+        let execution: ExecutionEvidence = { state: "unknown", exact: false };
+        if (operation.sessionId && ["queued", "accepted", "delivery_unknown"].includes(operation.state)) {
+          const source = deps.sources[operation.source];
+          if (source?.execution) {
+            try { execution = await source.execution(operation.sessionId, operation.turnId); }
+            catch { execution = { state: "unknown", exact: false }; }
+          }
+        }
+        return json({ ...operation, execution });
       }
       const send = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/messages$/);
       if (method === "POST" && (path === "/api/sessions" || send)) {

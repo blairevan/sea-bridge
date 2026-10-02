@@ -17,6 +17,11 @@ export interface WebMessage { id: string; role: "user" | "assistant"; text: stri
 export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
+/** Runtime evidence is separate from durable delivery state. */
+export interface ExecutionEvidence {
+  state: "running" | "waiting_external_approval" | "unknown";
+  exact: boolean;
+}
 /** Submission acceptance does not imply source execution completion. */
 export interface SourceResult { state: OperationState; sessionId: string | null; turnId?: string; errorCode?: string; }
 /** Explicit per-request model choice and early persistence callback. */
@@ -31,6 +36,7 @@ export interface WebSource {
   projects(): Promise<CatalogItem[]>;
   models(): Promise<CatalogItem[]>;
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;
+  execution?(id: string, turnId: string | null): Promise<ExecutionEvidence>;
   create(input: CreateRequest): Promise<SourceResult>;
   send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
 }
