@@ -41,3 +41,9 @@
 - 内存 MAC 配对码、过期/一次性/进程重启失效、每来源/每码/全局限速、高熵会话与 CSRF 摘要、Cookie 及 Host/Origin 校验。
 - 私有 socket 只允许单次有界 pair.create；活跃 socket 不替换，非 socket 与 symlink 拒绝，owner-private stale socket 可恢复。
 - `web:pair` CLI 已添加，尚未接入运行服务，未生成真实配对码。聚焦测试通过，完整测试 195 pass（随后新增 stale 测试单独通过）；类型检查、构建和 diff 检查通过。
+
+## Task 5：脱敏策略
+
+- 永久凭证过滤与可选展示隐私过滤分层；响应使用一个设置版本快照。原始 prompt 保持不变，新增存储只接收永久过滤后的副本。
+- 共享新增 filterSecretText，不改变原有 redact 行为；覆盖已知值、嵌套/多行、URL、Bearer/Cookie、私钥、手机号、邮箱、IPv4/IPv6、绝对路径。
+- 聚焦 5 pass，全套 199 pass；类型、构建和 diff 检查通过。跨设备 SSE 尚未接入，未宣称运行同步已完成。
