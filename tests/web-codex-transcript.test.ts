@@ -74,3 +74,16 @@ test("complete final JSON record is visible before a trailing newline is written
     expect(page.messages.map((message) => message.text)).toEqual(["tail final"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("rollout lifecycle evidence follows the last complete event and remains confined", async () => {
+  const { readCodexActivity } = await import("../src/web/codex-transcript.ts");
+  const root = mkdtempSync(join(tmpdir(), "web-activity-"));
+  const file = join(root, "fixture.jsonl");
+  try {
+    writeFileSync(file, JSON.stringify({ timestamp: "2026-10-02T14:00:00Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn" } }) + "\n");
+    expect((await readCodexActivity(file, [root]))?.state).toBe("active");
+    appendFileSync(file, JSON.stringify({ timestamp: "2026-10-02T14:01:00Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn" } }));
+    expect(await readCodexActivity(file, [root])).toEqual({ state: "idle", turnId: "turn", observedAt: Date.parse("2026-10-02T14:01:00Z") });
+    await expect(readCodexActivity(file, [])).rejects.toThrow("history_unavailable");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

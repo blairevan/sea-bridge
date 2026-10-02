@@ -19,7 +19,7 @@ export interface WebHistory { messages: WebMessage[]; cursor: string | null; com
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */
 export interface ExecutionEvidence {
-  state: "running" | "waiting_external_approval" | "unknown";
+  state: "running" | "waiting_external_approval" | "session_ended" | "unknown";
   exact: boolean;
 }
 /** Submission acceptance does not imply source execution completion. */
@@ -36,7 +36,7 @@ export interface WebSource {
   projects(): Promise<CatalogItem[]>;
   models(): Promise<CatalogItem[]>;
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;
-  execution?(id: string, turnId: string | null): Promise<ExecutionEvidence>;
+  execution?(id: string, turnId: string | null, submittedAt?: number): Promise<ExecutionEvidence>;
   create(input: CreateRequest): Promise<SourceResult>;
   send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
 }

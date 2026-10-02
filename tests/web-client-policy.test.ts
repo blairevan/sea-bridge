@@ -49,24 +49,36 @@ test("disconnect retains the loaded conversation read-only and preserves ambiguo
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
-  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
+  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; value: string; scrollTop: number; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
   const node = (id: string) => {
-    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
+    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", value: "", scrollTop: 0, replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
     const result = nodes.get(id); if (!result) throw new Error("fixture missing"); return result;
   };
-  const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected })", {
+  const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected, clearSensitive })", {
     document: { hidden: false, cookie: "", getElementById: node },
     setTimeout: (_fn: () => void, delay: number) => { delays.push(delay); return 17; }, clearTimeout() {},
-  }) as { state: { messages: unknown[]; sessions: unknown[]; selected: { title: string; sendEnabled: boolean } | null; paused: boolean; pending: unknown; stream: { close: () => void } | null }; enterDisconnected: () => void };
+  }) as { clearSensitive: () => void; state: { messages: unknown[]; sessions: unknown[]; selected: { title: string; sendEnabled: boolean } | null; paused: boolean; pending: unknown; stream: { close: () => void } | null }; enterDisconnected: () => void };
   node("console").hidden = false;
   let closed = 0; harness.state.stream = { close: () => { closed++; } }; harness.state.pending = { operationId: "op" };
   harness.state.messages = [{ id: "loaded" }]; harness.state.sessions = [{ id: "session" }];
   harness.state.selected = { title: "Loaded conversation", sendEnabled: true };
+  node("overview-session-count").textContent = "12+"; node("overview-running-count").textContent = "2";
+  node("create-dialog").open = true; node("prompt").value = "unsent draft"; node("create-prompt").value = "new task draft";
+  node("messages").scrollTop = 160; node("create-project").value = "chosen-project";
   harness.enterDisconnected();
+  expect(node("create-dialog").open).toBe(true);
+  expect(node("prompt").value).toBe("unsent draft"); expect(node("create-prompt").value).toBe("new task draft");
+  expect(node("messages").scrollTop).toBe(160); expect(node("create-project").value).toBe("chosen-project");
+  expect(node("create-retry").hidden).toBe(false); expect(node("create-submit").disabled).toBe(true);
+  for (const id of ["record-items", "log-items", "device-items", "create-project", "create-model"]) expect(cleared).not.toContain(id);
+  expect(node("overview-session-count").textContent).toBe("12+");
+  expect(node("overview-running-count").textContent).toBe("2");
+  expect(cleared).not.toContain("status-cards"); expect(cleared).not.toContain("recent-sessions");
+  expect(node("overview-freshness").hidden).toBe(false);
   expect(harness.state.messages).toHaveLength(1); expect(harness.state.sessions).toHaveLength(1);
   expect(harness.state.selected?.title).toBe("Loaded conversation");
   expect(harness.state.selected?.sendEnabled).toBe(false);
-  expect(cleared).not.toContain("messages"); expect(cleared).not.toContain("session-items"); expect(cleared).toContain("log-items");
+  expect(cleared).not.toContain("messages"); expect(cleared).not.toContain("session-items"); expect(cleared).not.toContain("log-items");
   expect(harness.state.paused).toBe(true); expect(closed).toBe(1);
   expect(node("notice-bar").hidden).toBe(false);
   expect(node("notice-bar").className).toContain("notice-connection");
@@ -76,6 +88,9 @@ test("disconnect retains the loaded conversation read-only and preserves ambiguo
   expect(node("send-button").disabled).toBe(true);
   expect(node("operation-status").textContent).toContain("结果待确认");
   expect(delays).toEqual([1000]);
+  harness.clearSensitive();
+  for (const id of ["status-cards", "recent-sessions", "record-items", "log-items", "device-items", "create-project", "create-model", "messages"]) expect(cleared).toContain(id);
+  expect(node("overview-session-count").textContent).toBe("—");
 });
 
 test("successful recovery reconciles an ambiguous operation instead of replaying its write", async () => {
@@ -172,4 +187,16 @@ test("backgrounding an unfinished SSE recovery releases its guard and resumes re
   expect(delays.slice(-3)).toEqual([30000, 30000, 30000]);
   expect(nodes.get("notice-bar")?.hidden).toBe(false);
   expect(nodes.get("notice-bar")?.className).toContain("notice-connection");
+});
+
+test("catalog failure keeps the previously loaded projects and models", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const cleared: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + '\nnode = () => ({}); api = async () => { throw new Error("offline"); }; ({ loadCatalogs })', {
+    document: { getElementById: (id: string) => ({ value: "codex", firstChild: { value: "" }, replaceChildren: () => cleared.push(id) }) },
+    node: () => ({}),
+  }) as { loadCatalogs: () => Promise<void> };
+  await expect(ui.loadCatalogs()).rejects.toThrow("offline");
+  expect(cleared).toEqual([]);
 });

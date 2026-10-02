@@ -2,6 +2,7 @@ import type { Logger } from "../logger.ts";
 import type { WebConfig, WebService } from "./types.ts";
 import { join } from "node:path";
 import { classifyRequest } from "./auth.ts";
+import { renderVersionedShell } from "./version.ts";
 import { WEB_MAX_REQUEST_BYTES } from "./http.ts";
 
 /** Resolve development assets or their self-contained packaged siblings. */
@@ -52,12 +53,13 @@ export class WebServer implements WebService {
   async start(): Promise<void> {
     if (!this.options) throw new Error("web_not_implemented");
     const { config, staticRoot, handler } = this.options;
-    const assets = new Map<string, { bytes: ArrayBuffer; type: string }>();
+    const assets = new Map<string, { bytes: ArrayBuffer | string; type: string }>();
     for (const [path, file, type] of [["/", "index.html", "text/html; charset=utf-8"], ["/app.js", "app.js", "text/javascript; charset=utf-8"], ["/app.css", "app.css", "text/css; charset=utf-8"]]) {
       if (!path || !file || !type) throw new Error("web_asset_invalid");
       const asset = Bun.file(join(staticRoot, file));
       if (!(await asset.exists()) || asset.size > 1024 * 1024) throw new Error("web_asset_missing");
-      assets.set(path, { bytes: await asset.arrayBuffer(), type });
+      const bytes = file === "index.html" ? renderVersionedShell(await asset.text()) : await asset.arrayBuffer();
+      assets.set(path, { bytes, type });
     }
     this.server = Bun.serve({ hostname: "127.0.0.1", port: config.port, maxRequestBodySize: WEB_MAX_REQUEST_BYTES, idleTimeout: 30,
       fetch: async (request, server) => {

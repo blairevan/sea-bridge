@@ -27,6 +27,11 @@ test("message links and images reject executable, local-file and credential URLs
 /** Minimal DOM fixture preserving whether text became markup or an executable element. */
 class ElementFixture {
   children: ElementFixture[] = [];
+  attributes = new Map<string, string>();
+  /** Store accessibility attributes without interpreting markup. */
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  /** Remove a transient accessibility state. */
+  removeAttribute(name: string): void { this.attributes.delete(name); }
   textContent = "";
   src = "";
   onclick?: () => void;
@@ -249,7 +254,7 @@ test("mobile selection reveals the detail before positioning the latest history"
     const input = new ElementFixture("input"); Object.assign(input, { value: "" }); nodes.set(id, input);
   }
   const sessions = new ElementFixture("div");
-  Object.assign(sessions, { classList: { add: () => { detailVisible = true; } } });
+  Object.assign(sessions, { classList: { add: () => { detailVisible = true; }, remove: () => {} } });
   nodes.set("sessions", sessions);
   const harness = runInNewContext(script.slice(0, end) + '\nshowPage = async () => { await loadHistory(false); }; ({ state, loadSessions })', {
     URL, URLSearchParams, location: { origin: "http://100.112.22.85:7310" },
@@ -298,4 +303,248 @@ test("mobile visual viewport bounds the shell and reveals keyboard mode only for
   ui.syncViewport(); expect(properties.get("--app-height")).toBe("500px"); expect(properties.get("--app-top")).toBe("16px"); expect(keyboard).toBe(true);
   window.visualViewport.height = 844; ui.syncViewport(); expect(keyboard).toBe(false);
   window.visualViewport.height = 500; document.activeElement = {}; ui.syncViewport(); expect(keyboard).toBe(false);
+});
+
+test("latest shortcut refreshes online history and only scrolls cached history offline", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const messages = new ElementFixture("div"); const calls = { reads: 0 };
+  const ui = runInNewContext(script.slice(0, end) + '\nloadHistory = async () => { calls.reads++; }; ({ state, jumpToLatest })', {
+    document: { getElementById: () => messages },
+    calls,
+  }) as { state: { paused: boolean; selected: { id: string } | null }; jumpToLatest: () => Promise<void> };
+  ui.state.selected = { id: "session" }; ui.state.paused = false;
+  await ui.jumpToLatest(); expect(calls.reads).toBe(1); expect(messages.scrollTop).toBe(1000);
+  messages.scrollTop = 10; ui.state.paused = true;
+  await ui.jumpToLatest(); expect(calls.reads).toBe(1); expect(messages.scrollTop).toBe(1000);
+});
+
+test("earliest shortcut uses loaded history and cancels forced following", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let aligned = "";
+  const messages = { scrollTop: 800, querySelector: (selector: string) => {
+    expect(selector).toBe(".message");
+    return { scrollIntoView: (options: { block: string }) => { aligned = options.block; } };
+  } };
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, jumpToEarliestLoaded })', {
+    document: { getElementById: () => messages },
+    fetch: () => { throw new Error("earliest navigation must not fetch"); },
+  }) as { state: { followLatest: boolean }; jumpToEarliestLoaded: () => void };
+  ui.state.followLatest = true; ui.jumpToEarliestLoaded();
+  expect(messages.scrollTop).toBe(0); expect(aligned).toBe("start"); expect(ui.state.followLatest).toBe(false);
+});
+
+test("overview describes independent capabilities and Telegram stopped state without inventing availability", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, loadStatus })', {
+    URLSearchParams,
+    fetch: async (path: string) => Response.json({ data: path === "/api/status" ? {
+      observedAt: 1, sources: { codex: { state: "limited", capabilities: { sessionsReadable: true, historyReadable: false, createEnabled: false, sendEnabled: true } } },
+      telegram: { stopped: true, pollFailed: false, lastPollSuccessAt: 1 },
+    } : { items: [{ id: "one", source: "codex", title: "Recent conversation", state: "running", updatedAt: 1 }], cursor: "next", partial: true } }),
+    document: {
+      cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as { state: { paused: boolean; settings: { redactionEnabled: boolean } }; loadStatus: () => Promise<void> };
+  ui.state.paused = false; ui.state.settings = { redactionEnabled: true };
+  await ui.loadStatus();
+  const card = nodes.get("status-cards"); if (!card) throw new Error("status missing");
+  const text = flatten(card).map((item) => item.textContent).join(" ");
+  expect(text).toContain("历史读取"); expect(text).toContain("未就绪"); expect(text).toContain("已停止");
+  expect(text).toContain("未接入");
+  expect(nodes.get("overview-session-count")?.textContent).toBe("1+");
+  expect(nodes.get("overview-session-scope")?.textContent).toContain("部分来源");
+});
+
+test("unchanged history polling retains message nodes and expanded image state", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>(); let includeNewReply = false;
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, loadHistory })', {
+    URL, URLSearchParams, location: { origin: "http://100.112.22.85:7310" },
+    fetch: async () => Response.json({ data: { messages: [{ id: "same", role: "assistant", text: "reply", createdAt: 1 }, ...(includeNewReply ? [{ id: "new", role: "assistant", text: "new reply", createdAt: 2 }] : [])], cursor: null } }),
+    document: { cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; } },
+  }) as { state: { paused: boolean; selected: { id: string; source: string } }; loadHistory: (older: boolean) => Promise<void> };
+  ui.state.paused = false; ui.state.selected = { id: "session", source: "codex" };
+  await ui.loadHistory(false);
+  const messages = nodes.get("messages"); const reply = messages?.lastElementChild;
+  if (!messages || !reply) throw new Error("message fixture missing");
+  const expanded = new ElementFixture("img"); reply.append(expanded); messages.scrollTop = 40;
+  await ui.loadHistory(false);
+  expect(messages.lastElementChild).toBe(reply); expect(reply.lastElementChild).toBe(expanded); expect(messages.scrollTop).toBe(40);
+  includeNewReply = true; await ui.loadHistory(false);
+  expect(messages.children).toContain(reply); expect(reply.lastElementChild).toBe(expanded);
+});
+
+test("write acknowledgement does not erase a newer draft typed while waiting", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let complete: (value: unknown) => void = () => { throw new Error("submission not started"); };
+  const response = new Promise<unknown>((resolve) => { complete = resolve; });
+  const nodes: Record<string, { value: string; textContent: string; hidden: boolean; disabled: boolean; open: boolean }> = {};
+  const ui = runInNewContext(script.slice(0, end) + '\noperationUuid = () => "operation"; api = () => response; refresh = async () => {}; notice = () => {}; ({ state, submitWrite })', {
+    response, document: { getElementById(id: string) { return nodes[id] ??= { value: "", textContent: "", hidden: false, disabled: false, open: false }; } },
+  }) as { state: { selected: { id: string; source: string } }; submitWrite: (create: boolean) => Promise<void> };
+  nodes.prompt = { value: "submitted draft", textContent: "", hidden: false, disabled: false, open: false };
+  ui.state.selected = { id: "session", source: "codex" };
+  const sending = ui.submitWrite(false); nodes.prompt.value = "next draft";
+  complete({ state: "queued", sessionId: "session", source: "codex", kind: "send" }); await sending;
+  expect(nodes.prompt.value).toBe("next draft");
+});
+
+test("operation polling retains loaded older pages and their pagination boundary", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>(); let latestReads = 0;
+  const ui = runInNewContext(script.slice(0, end) + '\napi = read; ({ state, loadRecords })', {
+    URLSearchParams,
+    read: async (path: string) => {
+      if (path === "/api/logs") return { items: [] };
+      const older = path.includes("cursor="); if (!older) latestReads++;
+      return { items: [{ id: older ? "older" : latestReads > 1 ? "newest" : "latest", createdAt: older ? 0 : latestReads > 1 ? 2 : 1, state: "queued" }], cursor: older ? "oldest-page" : "latest-page" };
+    },
+    document: { getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "" })); return nodes.get(id); }, createElement: (tag: string) => new ElementFixture(tag) },
+  }) as { state: { paused: boolean; recordCursor: string; records: Array<{ id: string }> }; loadRecords: (more: boolean) => Promise<void> };
+  ui.state.paused = false;
+  await ui.loadRecords(false); await ui.loadRecords(true); await ui.loadRecords(false);
+  expect(ui.state.records.map((item) => item.id)).toEqual(["newest", "latest", "older"]);
+  expect(ui.state.recordCursor).toBe("oldest-page");
+});
+
+test("overview routes to a clean source and activity-filtered session list", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, { value: string; textContent: string; classList: { add: () => void; remove: () => void } }>();
+  const pages: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + '\nshowPage = async (page) => { pages.push(page); }; ({ state, openOverviewSessions })', {
+    pages, document: { getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, { value: "old search", textContent: "", classList: { add() {}, remove() {} } }); return nodes.get(id); } },
+  }) as { state: { paused: boolean }; openOverviewSessions: (source: string, activity: string) => Promise<void> };
+  ui.state.paused = false;
+  await ui.openOverviewSessions("codex", "running");
+  expect(nodes.get("source-filter")?.value).toBe("codex"); expect(nodes.get("activity-filter")?.value).toBe("running");
+  expect(nodes.get("session-search")?.value).toBe(""); expect(pages).toEqual(["sessions"]);
+});
+
+test("overview capability actions inspect catalogs and preselect creation without dispatch", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const actions: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    openOverviewCreate = async (source) => { actions.push("create:" + source); };
+    openOverviewCatalog = async (source, kind) => { actions.push("catalog:" + source + ":" + kind); };
+    openOverviewSessions = async (source) => { actions.push("sessions:" + source); };
+    openOverviewCapability`, { actions }) as (source: string, capability: string) => Promise<void>;
+  await ui("codex", "createEnabled"); await ui("dsh", "projectsReadable");
+  await ui("codex", "modelsReadable"); await ui("codex", "historyReadable"); await ui("dsh", "sendEnabled");
+  expect(actions).toEqual(["create:codex", "catalog:dsh:projects", "catalog:codex:models", "sessions:codex", "sessions:dsh"]);
+});
+
+test("offline overview browsing preserves messages and never submits or loads an uncached catalog", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>(); const notices: string[] = []; const requests: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    showPage = async () => {}; showConnectionNotice = (text) => { notices.push(text); };
+    api = async (path) => { requests.push(path); throw new Error("offline must not fetch"); };
+    ({ state, openOverviewSessions, openOverviewCreate, openOverviewCatalog })`, {
+    notices, requests, document: {
+      createElement: (tag: string) => new ElementFixture(tag),
+      getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "", classList: { add() {}, remove() {} } })); return nodes.get(id); },
+    },
+  }) as {
+    state: { paused: boolean; overviewSessions: { id: string; source: string; title: string; state: string }[]; messages: { text: string }[] };
+    openOverviewSessions: (source: string, activity: string) => Promise<void>;
+    openOverviewCreate: (source: string) => Promise<void>; openOverviewCatalog: (source: string, kind: string) => Promise<void>;
+  };
+  ui.state.paused = true; ui.state.messages = [{ text: "retained reply" }];
+  ui.state.overviewSessions = [{ id: "active", source: "codex", title: "active", state: "running" }, { id: "other", source: "dsh", title: "other", state: "unknown" }];
+  await ui.openOverviewSessions("codex", "running"); await ui.openOverviewCreate("codex"); await ui.openOverviewCatalog("codex", "projects");
+  expect(nodes.get("session-items")?.children.map((item) => item.textContent)).toEqual(["active"]);
+  expect(ui.state.messages[0]?.text).toBe("retained reply"); expect(requests).toEqual([]); expect(notices).toHaveLength(2);
+});
+
+test("record title suggestions debounce for 500ms and reject stale results", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>(); const timers = new Map<number, () => void>(); const delays: number[] = [];
+  let timerId = 0;
+  const calls: string[] = []; const pending: ((value: unknown) => void)[] = [];
+  const ui = runInNewContext(script.slice(0, end) + '\napi = read; ({ state, scheduleRecordSuggestions, loadRecordSuggestions })', {
+    URLSearchParams, setTimeout: (fn: () => void, delay: number) => { delays.push(delay); timers.set(++timerId, fn); return timerId; }, clearTimeout: (id: number) => timers.delete(id),
+    read: (path: string) => { calls.push(path); return new Promise((resolve) => pending.push(resolve)); },
+    document: { createElement: (tag: string) => new ElementFixture(tag), getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "", setAttribute() {} })); return nodes.get(id); } },
+  }) as { state: { paused: boolean }; scheduleRecordSuggestions: () => void; loadRecordSuggestions: () => Promise<void> };
+  ui.state.paused = false;
+  const input = nodes.get("record-session") ?? Object.assign(new ElementFixture("input"), { value: "first", setAttribute() {} }); nodes.set("record-session", input);
+  Object.assign(input, { value: "first" }); ui.scheduleRecordSuggestions();
+  Object.assign(input, { value: "second" }); ui.scheduleRecordSuggestions();
+  expect(delays).toEqual([500, 500]); expect(timers.size).toBe(1); expect(calls).toEqual([]);
+  const old = ui.loadRecordSuggestions(); Object.assign(input, { value: "third" }); const fresh = ui.loadRecordSuggestions();
+  pending[1]?.({ items: [{ source: "codex", id: "correct", title: "Third title" }] }); await fresh;
+  pending[0]?.({ items: [{ source: "codex", id: "stale", title: "Old title" }] }); await old;
+  const text = flatten(nodes.get("record-suggestions") ?? new ElementFixture("div")).map((item) => item.textContent).join(" ");
+  expect(text).toContain("Third title"); expect(text).not.toContain("Old title");
+});
+
+test("record filtering uses selected source identity instead of a typed title and supports keyboard choice", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, recordFilterParams, recordSuggestionKeydown })', {
+    URLSearchParams, document: { getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "" })); return nodes.get(id); } },
+  }) as {
+    state: { paused: boolean; recordChoice: { id: string; title: string; source: string } | null; recordSuggestions: { id: string; title: string; source: string }[] };
+    recordFilterParams: () => URLSearchParams;
+    recordSuggestionKeydown: (event: { key: string; preventDefault: () => void }) => void;
+  };
+  const input = Object.assign(new ElementFixture("input"), { value: "Typed title" }); nodes.set("record-session", input);
+  expect(ui.recordFilterParams().get("sessionId")).toBe("");
+  ui.state.paused = true; ui.state.recordSuggestions = [{ id: "shared", source: "codex", title: "Same title" }, { id: "shared", source: "dsh", title: "Same title" }];
+  const list = new ElementFixture("div"); list.append(new ElementFixture("button"), new ElementFixture("button")); nodes.set("record-suggestions", list);
+  ui.recordSuggestionKeydown({ key: "ArrowUp", preventDefault() {} });
+  expect(input.attributes.get("aria-activedescendant")).toBe("record-option-1");
+  ui.recordSuggestionKeydown({ key: "Enter", preventDefault() {} });
+  expect(ui.recordFilterParams().get("source")).toBe("dsh"); expect(ui.recordFilterParams().get("sessionId")).toBe("shared");
+  expect(input.value).toBe("Same title"); expect(list.hidden).toBe(true);
+});
+
+test("successful record refresh removes invalidated rows but preserves the older loaded window", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  let items: { id: string; createdAt: number; state: string }[] = []; let cursor: string | null = "next";
+  const ui = runInNewContext(script.slice(0, end) + '\napi = read; ({ state, loadRecords, recordFilterParams })', {
+    URLSearchParams, read: async (path: string) => path.startsWith("/api/logs") ? { items: [] } : { items, cursor },
+    document: { createElement: (tag: string) => new ElementFixture(tag), getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: id === "record-state" ? "queued" : "" })); return nodes.get(id); } },
+  }) as { state: { paused: boolean; records: { id: string; createdAt: number; state: string }[]; recordFilterKey: string; recordCursor: string | null }; loadRecords: (more: boolean) => Promise<void>; recordFilterParams: () => URLSearchParams };
+  ui.state.paused = false; ui.state.recordFilterKey = ui.recordFilterParams().toString(); ui.state.recordCursor = "older-page";
+  ui.state.records = [{ id: "invalidated", createdAt: 3, state: "queued" }, { id: "kept", createdAt: 2, state: "queued" }, { id: "older", createdAt: 1, state: "queued" }];
+  items = [{ id: "kept", createdAt: 2, state: "queued" }]; await ui.loadRecords(false);
+  expect(ui.state.records.map((item) => item.id)).toEqual(["kept", "older"]); expect(ui.state.recordCursor).toBe("older-page");
+  items = []; cursor = null; await ui.loadRecords(false);
+  expect(ui.state.records).toEqual([]); expect(ui.state.recordCursor).toBeNull();
+});
+
+test("record pagination adjusts its offset when latest matching rows disappear", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  let matching = Array.from({ length: 65 }, (_, i) => ({ id: `record-${i + 1}`, createdAt: 65 - i, state: "queued" }));
+  const ui = runInNewContext(script.slice(0, end) + '\napi = read; ({ state, loadRecords })', {
+    URLSearchParams,
+    read: async (path: string) => { if (path.startsWith("/api/logs")) return { items: [] }; const offset = Number(new URLSearchParams(path.split("?")[1]).get("cursor") ?? 0); return { items: matching.slice(offset, offset + 30), cursor: offset + 30 < matching.length ? String(offset + 30) : null }; },
+    document: { createElement: (tag: string) => new ElementFixture(tag), getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: id === "record-state" ? "queued" : "" })); return nodes.get(id); } },
+  }) as { state: { paused: boolean; records: { id: string }[]; recordCursor: string | null }; loadRecords: (more: boolean) => Promise<void> };
+  ui.state.paused = false; await ui.loadRecords(false); await ui.loadRecords(true);
+  expect(ui.state.recordCursor).toBe("60"); matching = matching.slice(1); await ui.loadRecords(false);
+  expect(ui.state.recordCursor).toBe("59"); await ui.loadRecords(true);
+  expect(ui.state.records.map((item) => item.id)).toEqual(matching.map((item) => item.id));
+  expect(ui.state.recordCursor).toBeNull();
 });

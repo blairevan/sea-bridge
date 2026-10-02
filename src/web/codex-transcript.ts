@@ -28,7 +28,7 @@ function visibleMessage(line: string, offset: number): WebMessage | null {
 }
 
 /** Read bounded 256 KiB windows from a confined file, skipping nonvisible records. */
-export async function readCodexTranscript(path: string, roots: readonly string[], cursor: string | null, limit: number): Promise<WebHistory> {
+export async function readCodexTranscript(path: string, roots: readonly string[], cursor: string | null, limit: number, observe?: (line: string, offset: number) => void): Promise<WebHistory> {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("history_cursor_invalid");
   if (cursor !== null && !/^\d+$/.test(cursor)) throw new Error("history_cursor_invalid");
   const actual = await realpath(path).catch(() => { throw new Error("history_unavailable"); });
@@ -78,12 +78,14 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
           // A fully-written JSON record need not end with a newline. Only the current EOF window
           // may safely attempt to parse such a tail; invalid/partially-written JSON stays hidden.
           if (readEnd === opened.size) {
-            const message = visibleMessage(bytes.subarray(offset).toString("utf8"), start + offset);
+            const line = bytes.subarray(offset).toString("utf8"); observe?.(line, start + offset);
+            const message = visibleMessage(line, start + offset);
             if (message) page.push({ offset: start + offset, message });
           }
           break;
         }
-        const message = visibleMessage(bytes.subarray(offset, newline).toString("utf8"), start + offset);
+        const line = bytes.subarray(offset, newline).toString("utf8"); observe?.(line, start + offset);
+        const message = visibleMessage(line, start + offset);
         if (message) page.push({ offset: start + offset, message });
         offset = newline + 1;
       }
@@ -94,4 +96,25 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
     const before = messages.length > limit ? selected[0]?.offset ?? alignedStart : alignedStart;
     return { messages: selected.map((item) => item.message), cursor: before > 0 ? String(before) : null, completeUserHistory: false };
   } finally { await handle.close(); }
+}
+
+/** Narrow lifecycle metadata; no prompt, tool or assistant text is returned. */
+export interface CodexActivity { state: "active" | "idle"; turnId: string; observedAt: number; }
+
+/** Reuse the confined bounded reader and select the newest complete lifecycle record by file offset. */
+export async function readCodexActivity(path: string, roots: readonly string[]): Promise<CodexActivity | null> {
+  let latest: CodexActivity | null = null; let latestOffset = -1;
+  await readCodexTranscript(path, roots, null, 100, (line, offset) => {
+    if (offset <= latestOffset) return;
+    let record: unknown; try { record = JSON.parse(line); } catch { return; }
+    if (!record || typeof record !== "object") return;
+    const row = record as Record<string, unknown>;
+    if (row.type !== "event_msg" || !row.payload || typeof row.payload !== "object" || typeof row.timestamp !== "string") return;
+    const payload = row.payload as Record<string, unknown>; const observedAt = Date.parse(row.timestamp);
+    if (!Number.isFinite(observedAt) || typeof payload.turn_id !== "string" || !payload.turn_id) return;
+    if (!["task_started", "task_complete", "turn_aborted"].includes(String(payload.type))) return;
+    latestOffset = offset;
+    latest = { state: payload.type === "task_started" ? "active" : "idle", turnId: payload.turn_id, observedAt };
+  });
+  return latest;
 }

@@ -351,3 +351,89 @@
 - 回归先证明旧实现清空消息，再验证保留消息和标题、禁用发送、清空日志。
 - bun run typecheck、bun test（246 pass / 0 fail，1096 assertions）、bun run build、git diff --check 通过。
 - 已部署 web-message13-20261002-223623；Tailnet 首页/JS/CSS 200 且哈希匹配 dist。手机实际断线保留待设备验收；未 commit/push。
+
+
+## message14 消息定位快捷操作（2026-10-02）
+
+- 用户确认“最早”指当前已加载的最早消息；标题下方新增常驻消息定位按钮，不连续加载历史。
+- 保持首次进入默认定位最新消息；最新快捷操作联网时刷新最新页，断线时只定位保留消息；最早快捷操作取消强制跟随，保留历史分页能力。
+- 新增联网/离线最新跳转、最早零网络请求与停止跟随回归；既有首次进入和切换会话定位回归通过。
+- bun run typecheck、bun test（248 pass / 0 fail，1104 assertions）、bun run build、git diff --check 通过。
+- 已部署 web-message14-20261002-224704；Tailnet 首页/JS/CSS 200 且哈希匹配构建。手机实际按钮体验待设备验收；未 commit/push。
+
+
+## v0.2.0 统一应用版本（2026-10-02）
+
+- package.json 升级为 0.2.0，并作为页面、资源 URL、构建版本的唯一来源；全局 settings version 仍独立。
+- 配对页和登录栏显示 v0.2.0，移除 pair3 诊断版本文案；历史 message 记录保留追溯，后续发布不再使用 message 编号。
+- 新增 docs/ai/web-console-versioning.md，记录版本递增规则与更新内容。
+- bun run typecheck、bun test（249 pass / 0 fail，1109 assertions）、bun run build、git diff --check 通过；增加版本注入与真实 HTTP 显示回归。
+- 已部署 sea-bridge-v0.2.0-20261002-224952；Tailnet 首页及资源 200、哈希匹配构建。未 commit/push。
+
+
+## v0.3.0 运行概览优化（2026-10-02）
+
+- 三项有限范围统计、脱敏状态、来源采样时间；独立展示 Codex/dsh 六项能力；Telegram 优先展示 stopped，再展示失败与成功接收记录。
+- 最近会话提供来源/时间/状态与跳转；概览请求独立于会话页搜索，避免搜索过滤影响概览统计。
+- 手机单列、桌面双列；未新增依赖或后端探测，指标不冒充全局总量和任务精确执行证据。
+- 回归覆盖缺失来源、独立能力、Telegram 停止、分页与部分来源统计。bun run typecheck、bun test（250 pass / 0 fail，1115 assertions）、bun run build、git diff --check 通过。
+- 已部署 sea-bridge-v0.3.0-20261002-225617；Tailnet 首页/JS/CSS 200 且匹配构建哈希。真实手机布局验收待用户；未 commit/push。
+
+
+## v0.3.1 投递后状态修复（2026-10-02）
+
+- 运行库 observed_sessions 无记录，Web Codex 操作 queued 且无 turnId；rollout 已有 task_started/task_complete，原执行投影却只读 Hook，导致持续确认。
+- 使用既有 confined/bounded JSONL reader 读取允许的生命周期元数据，Hook 缺失时补充会话证据；早于 operation.createdAt 的事件不使用。
+- 没有 operation-turn 关联时 exact=false，不把会话结束当作当前投递成功；历史状态 queued 仍表示原始入队回执。
+- 回归覆盖生命周期顺序、无换行、路径限制、无 Hook fallback、早于投递时间和 exact 匹配。bun run typecheck、bun test（252 pass / 0 fail，1122 assertions）、bun run build、git diff --check 通过。
+- 已部署 sea-bridge-v0.3.1-20261002-230118；Tailnet 资源 200 且哈希一致；本机真实 rollout 读取到 active 元数据。未进行额外真实写入，未 commit/push。
+
+
+## v0.3.2 概览断线保留（2026-10-02）
+
+- 原断线复用 clearSensitive(true) 仍清空 status-cards/统计，现将概览清空移动到完整失效分支。
+- 普通断线和后台保留概览统计、来源卡片与最近会话；明确显示上次数据提示，刷新成功才移除。
+- 回归验证断线统计值不变、卡片不清空、旧数据提示显示；完整清空仍移除来源卡片和最近会话。
+- bun run typecheck、bun test（252 pass / 0 fail，1130 assertions）、bun run build、git diff --check 通过。
+- 已部署 sea-bridge-v0.3.2-20261002-230618，Tailnet 首页/JS/CSS 200 且哈希匹配；手机真实断线待设备验收。未 commit/push。
+
+
+## v0.3.3 全页面保留审查（2026-10-02）
+
+- 已核查所有 replaceChildren、空字符串赋值、消息/列表重置、弹窗 close 与清理调用；详见 2026-10-02-web-console-retention-audit.md。
+- 将普通断线和后台行为从 clearSensitive 彻底拆分为 retainLoadedViews；记录/日志/设备/目录全部保留，弹窗不强关；项目模型请求成功后才替换。
+- 旧消息节点复用、原草稿条件清空、操作旧页和分页边界保留，动态设备撤销按钮在断线时禁用。
+- 完整认证/脱敏失效分支继续清理服务器来源内容；无持久化消息缓存，无自动重发。
+- bun run typecheck、bun test（256 pass / 0 fail，1158 assertions）、bun run build、git diff --check 通过。
+- 已部署 sea-bridge-v0.3.3-20261002-231741；Tailnet 首页/JS/CSS 200，哈希一致。手机真实断网/后台/图片验收待设备验证；未 commit/push。
+
+## v0.4.0：运行概览交互
+
+- 统计入口：全部 / 运行中 / 等待审批，对应明确筛选的会话列表；筛选在分页前完成，非法状态返回 400。
+- 来源入口：会话与历史/发送能力进入对应来源列表；项目/模型打开只读目录；新建打开预选来源表单，点击概览不自动发送。
+- 其他入口：Telegram 进入操作与日志，脱敏状态进入设置，最近会话进入对话并移除不相关筛选。
+- 手机布局：44px 触控目标、可见箭头与按下反馈；不可用能力不提供虚假跳转。
+- 断线：保留概览和目录；缓存会话可以筛选，已加载当前对话可以打开，其他对话给出说明；目录弹窗有连接重试，写入仍禁用。登录失效/撤销/策略版本变化清理目录缓存。
+- 回归：动作映射、来源/状态筛选、分页前筛选、断线不请求、不发送、不清空消息，以及页面控件完整性。
+- 验证：`bun run typecheck`、`bun test`（259 passed / 0 failed，1181 assertions）、`bun run build`、`git diff --check`。无独立 lint/format script。iPhone 真实触控布局仍待用户实机验收。
+
+部署记录：v0.4.0 已于 2026-10-02 23:30 部署至 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.4.0-20261002-233018`。`launchctl print gui/$(id -u)/com.aitools.sea-bridge` 确认 running，`lsof -nP -iTCP:7310 -sTCP:LISTEN` 确认仅监听 127.0.0.1。使用 Python urllib 逐一请求本机与 Tailscale IP 的 `/`、`/app.js?v=0.4.0`、`/app.css?v=0.4.0`，均为 HTTP 200 且字节内容与 dist/web 一致。本轮未 commit / push。
+
+## v0.5.0：操作记录布局与标题提示
+
+- 复现依据：手机截图与源代码中的 flex-wrap / 固有日期控件宽度；以 minmax(0,1fr) 网格、min-width:0、日期 appearance、44px 统一高度修正。
+- 标题输入停顿 500ms 后查询 `/api/sessions`，选择后使用原 ID 和来源筛选记录；请求序号阻止旧响应覆盖新结果，未选择的文本不当成 ID，支持上下键/Enter/Escape。
+- 操作响应以来源内 ID 查找标题，读取失败不影响记录分页；普通断线保留列表和选择，全局策略变化/认证失效清理建议缓存及标题选择。
+- 验证命令：`bun run typecheck`、`bun test`（262 passed / 0 failed，1199 assertions）、`bun run build`、`git diff --check`；项目无独立 lint/format script。
+- 浏览器隔离验收：使用构建产物和模拟 API / SSE，未创建真实设备或发送任务。390px 下五个筛选字段均高 44px，左右边界分别为 18–189 与 201–372；320px 下单列宽 284px；两者 document.scrollWidth 均未超过 viewport。标题建议出现、点击选择后来源变为 Codex 且只显示该会话的记录，控制台无 error。此验证不替代 iPhone 真机或真实来源接口验收。截图 `/tmp/sea-bridge-record-preview-v0.5.0.png`。
+
+运行验证：v0.5.0 部署到 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.5.0-20261002-234226`；本机和 Tailscale IP 的 HTML/JS/CSS 均为 200，字节内容与构建一致。沿用原设备数据库和入口配置，本轮未 commit/push。
+
+## 2026-10-03 提交前审查：v0.5.1
+
+- 用户明确授权提交与 push，分支 feature/web-console；身份与上一提交一致；无冲突/分支漂移。
+- Agent 只读审查发现状态筛选下陈旧记录被 previous 合并保留。修复成功最新页的覆盖范围，并保留边界之外的较早分页；完整空结果明确更新为空。普通网络失败仍不改数据。补充红/绿回归，修正分页 fixture 的真实时间顺序。
+- `bun run typecheck`、`bun test`（264 passed / 0 failed，1207 assertions）、`bun run build`、`git diff --check` 均通过。无额外依赖，无单独 lint/format 脚本；沿用项目现有格式。敏感签名扫描未发现新增密钥或凭据。
+- 本轮仅构建并提交源码；v0.5.1 审查修复尚未部署，运行服务仍为此前 v0.5.0。
+
+- 第二轮复核补充真实 30 条分页回归：65 条匹配记录加载到 offset60，首条退出筛选后刷新到 offset59，再加载更多不漏第61条；同步处理最新窗口新增记录的 offset 增量。
