@@ -35,3 +35,9 @@
 - 新增事务迁移、设置 CAS、设备/CSRF 摘要、操作原子认领及状态转换、早期会话 ID、重启派发隔离、双重保留期限清理。
 - 安装级 0600 HMAC key 不入库；重启摘要一致，已有操作时缺失/损坏 key 拒绝启动。
 - 聚焦 8 pass，全套 189 pass；`bun run typecheck`、`bun run build` 通过。运行数据库尚未迁移。
+
+## Task 4：配对与鉴权核心
+
+- 内存 MAC 配对码、过期/一次性/进程重启失效、每来源/每码/全局限速、高熵会话与 CSRF 摘要、Cookie 及 Host/Origin 校验。
+- 私有 socket 只允许单次有界 pair.create；活跃 socket 不替换，非 socket 与 symlink 拒绝，owner-private stale socket 可恢复。
+- `web:pair` CLI 已添加，尚未接入运行服务，未生成真实配对码。聚焦测试通过，完整测试 195 pass（随后新增 stale 测试单独通过）；类型检查、构建和 diff 检查通过。
