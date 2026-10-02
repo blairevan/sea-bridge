@@ -116,7 +116,12 @@ test("latest polling preserves loaded older pages and their continuation boundar
   harness.state.paused = false; harness.state.selected = { id: "session", source: "codex" };
   await harness.loadHistory(false);
   expect(harness.state.historyCursor).toBe("200");
+  const messages = nodes.get("messages");
+  if (!messages) throw new Error("messages fixture missing");
+  Object.defineProperty(messages, "scrollHeight", { get: () => 1000 + messages.children.length * 100 });
+  messages.scrollTop = 40;
   await harness.loadHistory(true);
+  expect(messages.scrollTop).toBe(240);
   expect(harness.state.historyCursor).toBe("100");
   await harness.loadHistory(false);
   expect(harness.state.messages.map((message) => message.id)).toEqual(["m1", "m2", "m3", "m4", "m5"]);
@@ -181,4 +186,33 @@ test("mobile selection reveals the detail before positioning the latest history"
   if (!button?.onclick) throw new Error("selection callback missing");
   await button.onclick();
   expect(position).toBe(1000);
+});
+
+test("composer grows to three lines and shrinks after clearing without following older history", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const prompt = { style: { height: "" }, scrollHeight: 44 };
+  const ui = runInNewContext(script.slice(0, end) + "\n({ resizeComposer })", {
+    document: { getElementById: () => prompt },
+    getComputedStyle: () => ({ lineHeight: "24px", paddingTop: "9px", paddingBottom: "9px", borderTopWidth: "1px", borderBottomWidth: "1px" }),
+  }) as { resizeComposer: () => void };
+  ui.resizeComposer(); expect(prompt.style.height).toBe("46px");
+  prompt.scrollHeight = 200; ui.resizeComposer(); expect(prompt.style.height).toBe("92px");
+  prompt.scrollHeight = 42; ui.resizeComposer(); expect(prompt.style.height).toBe("44px");
+});
+
+test("mobile visual viewport bounds the shell and reveals keyboard mode only for the composer", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const properties = new Map<string, string>(); let keyboard = false;
+  const prompt = {};
+  const document = { activeElement: prompt, getElementById: () => prompt, documentElement: {
+    style: { setProperty: (key: string, value: string) => properties.set(key, value) },
+    classList: { toggle: (_name: string, value: boolean) => { keyboard = value; } },
+  } };
+  const window = { innerWidth: 390, innerHeight: 844, visualViewport: { height: 500, offsetTop: 16, scale: 1 } };
+  const ui = runInNewContext(script.slice(0, end) + "\n({ syncViewport })", { window, document }) as { syncViewport: () => void };
+  ui.syncViewport(); expect(properties.get("--app-height")).toBe("500px"); expect(properties.get("--app-top")).toBe("16px"); expect(keyboard).toBe(true);
+  window.visualViewport.height = 844; ui.syncViewport(); expect(keyboard).toBe(false);
+  window.visualViewport.height = 500; document.activeElement = {}; ui.syncViewport(); expect(keyboard).toBe(false);
 });

@@ -19,14 +19,70 @@ test("an in-flight sensitive response cannot repopulate the page after SSE disco
   await expect(response).rejects.toThrow("连接尚未重新确认设置");
 });
 
-test("empty proxy responses surface HTTP evidence instead of a browser JSON exception", async () => {
+test("empty proxy responses surface a generic service-unavailable state", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ api })", {
     document: { cookie: "" }, fetch: async () => new Response("", { status: 503 }), URLSearchParams,
   }) as { api: (path: string, method: string, body: unknown) => Promise<unknown> };
-  await expect(harness.api("/api/auth/pair", "POST", { code: "fixture" })).rejects.toThrow("HTTP 503");
+  await expect(harness.api("/api/auth/pair", "POST", { code: "fixture" })).rejects.toThrow("服务暂不可达");
+});
+
+test("request timeout is bounded and does not diagnose a specific tunnel or plugin", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
+  if (boundary < 0) throw new Error("UI fixture boundary missing");
+  const harness = runInNewContext(script.slice(0, boundary) + "\n({ requestApi })", {
+    document: { cookie: "" }, URLSearchParams, AbortController,
+    setTimeout: (fn: () => void) => { fn(); return 1; }, clearTimeout() {},
+    fetch: async (_path: string, options: { signal?: AbortSignal }) => {
+      if (options.signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      throw new Error("unexpected");
+    },
+  }) as { requestApi: (path: string) => Promise<unknown> };
+  try { await harness.requestApi("/api/auth/session"); throw new Error("expected timeout"); }
+  catch (error: unknown) { if (!error || typeof error !== "object" || !("code" in error) || !("message" in error)) throw error; expect(error.code).toBe("network_timeout"); expect(error.message).toBe("服务响应超时"); expect(error.message).not.toContain("Shadowrocket"); }
+});
+
+test("disconnect hides sensitive content, shows retry state, and preserves ambiguous writes for reconciliation", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
+  if (boundary < 0) throw new Error("UI fixture boundary missing");
+  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; replaceChildren: () => void; close: () => void }>(); const delays: number[] = [];
+  const node = (id: string) => {
+    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, replaceChildren() {}, close() { this.open = false; } });
+    const result = nodes.get(id); if (!result) throw new Error("fixture missing"); return result;
+  };
+  const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected })", {
+    document: { hidden: false, cookie: "", getElementById: node },
+    setTimeout: (_fn: () => void, delay: number) => { delays.push(delay); return 17; }, clearTimeout() {},
+  }) as { state: { paused: boolean; pending: unknown; stream: { close: () => void } | null }; enterDisconnected: () => void };
+  let closed = 0; harness.state.stream = { close: () => { closed++; } }; harness.state.pending = { operationId: "op" };
+  harness.enterDisconnected();
+  expect(harness.state.paused).toBe(true); expect(closed).toBe(1);
+  expect(node("connection-panel").hidden).toBe(false);
+  expect(node("connection-detail").textContent).toContain("不会自动重发");
+  expect(node("operation-status").textContent).toContain("结果待确认");
+  expect(delays).toEqual([1000]);
+});
+
+test("successful recovery reconciles an ambiguous operation instead of replaying its write", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
+  if (boundary < 0) throw new Error("UI fixture boundary missing");
+  const calls = { reconcile: 0, refresh: 0 }; const nodes = new Map<string, { hidden: boolean; textContent: string }>();
+  const harness = runInNewContext(script.slice(0, boundary) + `
+validateConnection = async () => {};
+reconcilePending = async () => { calls.reconcile++; };
+refresh = async () => { calls.refresh++; };
+({ state, finishRecovery })`, {
+    EventSource: { OPEN: 1 }, calls, document: { cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "" }); return nodes.get(id); } },
+  }) as { state: { pending: unknown; paused: boolean; stream: { readyState: number } }; finishRecovery: () => Promise<void> };
+  harness.state.pending = { operationId: "op" }; harness.state.stream = { readyState: 1 };
+  await harness.finishRecovery();
+  expect(calls).toEqual({ reconcile: 1, refresh: 0 });
+  expect(harness.state.paused).toBe(false);
 });
 
 test("mobile pairing explicitly validates digits and always releases its button", async () => {
@@ -41,4 +97,38 @@ test("mobile pairing explicitly validates digits and always releases its button"
   nodes["pair-code"]!.value = " 12345678 ";
   await expect(pair()).rejects.toThrow("fixture transport failure");
   expect(calls).toBe(1); expect(notices).toContain("正在配对…"); expect(nodes["pair-submit"]!.disabled).toBe(false);
+});
+
+test("request timeout remains active while reading the response body", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let expired = () => {}; let canceled = false;
+  const ui = runInNewContext(script.slice(0, end) + "\n({ requestApi })", {
+    document: { cookie: "" }, AbortController,
+    setTimeout: (callback: () => void) => { expired = callback; return 1; },
+    clearTimeout: () => { canceled = true; },
+    fetch: async (_path: string, options: { signal: AbortSignal }) => ({ status: 200, json: async () => {
+      if (canceled) throw new Error("timer canceled before body read");
+      expired();
+      if (options.signal.aborted) throw Object.assign(new Error("body aborted"), { name: "AbortError" });
+      return {};
+    } }),
+  }) as { requestApi: (path: string) => Promise<unknown> };
+  await expect(ui.requestApi("/api/auth/session")).rejects.toThrow("服务响应超时");
+  expect(canceled).toBe(true);
+});
+
+test("a recovery response cannot unpause content after its SSE connection is lost", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let complete = () => {};
+  const validation = new Promise<void>((resolve) => { complete = resolve; });
+  const ui = runInNewContext(script.slice(0, end) + '\nvalidateConnection = () => validation; refresh = async () => {}; ({ state, finishRecovery })', {
+    validation, EventSource: { OPEN: 1 }, document: { getElementById: () => ({ hidden: false, textContent: "" }) },
+  }) as { state: { paused: boolean; stream: { readyState: number } | null }; finishRecovery: () => Promise<void> };
+  ui.state.stream = { readyState: 1 };
+  const recovery = ui.finishRecovery();
+  ui.state.stream = null; ui.state.paused = true;
+  complete(); await recovery;
+  expect(ui.state.paused).toBe(true);
 });

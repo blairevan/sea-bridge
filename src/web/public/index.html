@@ -4,11 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sea-Bridge 控制台</title>
-  <link rel="stylesheet" href="/app.css?v=20261002-message6">
-  <script src="/app.js?v=20261002-message6" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20261002-message8">
+  <script src="/app.js?v=20261002-message8" defer></script>
 </head>
 <body>
   <div id="notice" role="status" aria-live="polite"></div>
+  <section id="connection-panel" class="connection-panel" role="alertdialog" aria-live="assertive" aria-labelledby="connection-title" hidden>
+    <div class="connection-card">
+      <div class="eyebrow">SEA-BRIDGE</div>
+      <h1 id="connection-title">服务暂不可达</h1>
+      <p id="connection-detail">连接已中断，敏感内容已隐藏。</p>
+      <p id="connection-retry-state" class="muted"></p>
+      <button id="connection-retry" type="button">立即重试</button>
+    </div>
+  </section>
   <main id="pairing" class="pairing">
     <form id="pair-form" class="card" novalidate>
       <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
@@ -31,9 +40,8 @@
             <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>
           </aside>
           <article id="session-detail" class="session-detail"><div class="section-heading"><button id="back-to-list" class="quiet mobile-only">← 会话</button><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span></div>
-            <p id="history-limit" class="muted">只展示来源已提供的消息；不保证完整历史。</p>
-            <button id="more-history" class="quiet" hidden>加载较早消息</button><div id="messages" aria-live="polite"></div>
-            <form id="send-form" class="composer"><label for="prompt">发送消息</label><textarea id="prompt" rows="3" maxlength="32000" placeholder="输入要继续执行的任务" required></textarea><div class="composer-footer"><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button><button id="send-button" type="submit" disabled>发送消息</button></div></form>
+            <div id="messages" aria-live="polite"><div id="history-tools" class="history-tools"><button id="more-history" class="quiet" hidden>加载较早消息</button><details id="history-limit" class="muted"><summary>历史说明</summary><p>只展示来源已提供的消息；不保证完整历史。</p></details></div></div>
+            <form id="send-form" class="composer"><label for="prompt" class="visually-hidden">发送消息</label><div class="composer-row"><textarea id="prompt" rows="1" maxlength="32000" placeholder="输入消息…" required></textarea><button id="send-button" type="submit" disabled>发送</button></div><div class="composer-footer"><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button></div></form>
           </article>
         </section>
         <section id="records" class="page" hidden><h1>操作记录</h1><p class="muted">桥接提交结果与诊断记录；不代表完整聊天历史。</p>
