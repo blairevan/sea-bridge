@@ -16,7 +16,7 @@
 
 ## Global Constraints
 
-- Create implementation work on a dedicated feature branch/worktree; do not implement on the documentation branch.
+- Create implementation work on a dedicated feature branch (user explicitly declined worktree on 2026-10-02); do not implement on the documentation branch.
 - Preserve all existing Telegram routing semantics and dsh gates.
 - `executionSource` is only `codex | dsh`; `transport` is `web | telegram`. Never model Telegram as an execution source.
 - Never reuse `telegram_update_id`, `telegram_chat_id`, Telegram callback tables, or Telegram default-model state for Web idempotency or Web user state.
@@ -142,7 +142,7 @@ Every HTML/dynamic API response uses `Cache-Control: no-store`.
 
 **Purpose:** Start from a reproducible clean baseline and prevent the Web feature from masking existing failures.
 
-- [ ] **Step 1: Verify the documentation branch is clean except for the approved spec/plan.**
+- [x] **Step 1: Verify the documentation branch is clean except for the approved spec/plan.**
 
 Record:
 - current commit;
@@ -152,13 +152,13 @@ Record:
 
 Expected: any pre-existing failure is recorded before implementation and is not attributed to Web work.
 
-- [ ] **Step 2: Create an isolated implementation branch/worktree.**
+- [x] **Step 2: Create an isolated implementation branch/worktree.**
 
-Recommended branch: `feature/web-console`.
+Selected branch: `feature/web-console` in the existing checkout; user explicitly declined worktree on 2026-10-02.
 
 The documentation commit(s) containing the approved spec/plan must be in the implementation branch base.
 
-- [ ] **Step 3: Capture target-host runtime facts read-only.**
+- [x] **Step 3: Capture target-host runtime facts read-only.**
 
 Record without secrets:
 - Bun version;
@@ -172,11 +172,11 @@ Record without secrets:
 
 Do not change Serve/Funnel in this task.
 
-- [ ] **Step 4: Create the acceptance evidence document.**
+- [x] **Step 4: Create the acceptance evidence document.**
 
 Write only sanitized facts and mark all not-yet-tested runtime gates pending.
 
-- [ ] **Step 5: Run baseline checks.**
+- [x] **Step 5: Run baseline checks.**
 
 ```bash
 bun test
@@ -200,25 +200,25 @@ Expected: baseline status is known before code changes.
 
 **Goal:** Make `CodexAppServerClient.startThreadAndTurn()` send exactly the supplied text while preserving Telegram's current external behavior at the Telegram-specific manager layer.
 
-- [ ] **Step 1: Add a failing client test proving exact first-turn text.**
+- [x] **Step 1: Add a failing client test proving exact first-turn text.**
 
 Given prompt `hello`, the JSON-RPC `turn/start.input[0].text` must be exactly `hello`.
 
 Expected before fix: test observes `[Telegram init]\nhello` and fails.
 
-- [ ] **Step 2: Add a failing Telegram-manager regression test.**
+- [x] **Step 2: Add a failing Telegram-manager regression test.**
 
 Calling `NewThreadManager.startThread(..., "hello")` must still pass `[Telegram init]\nhello` to the transport-neutral App Server primitive.
 
 This protects existing Telegram-generated thread semantics.
 
-- [ ] **Step 3: Remove the prefix from `CodexAppServerClient`.**
+- [x] **Step 3: Remove the prefix from `CodexAppServerClient`.**
 
 The low-level method becomes transport-neutral. Put the prefix in `NewThreadManager` only.
 
 Do not change handshake, permissions, turn lifetime, unsubscribe, or approval handler behavior.
 
-- [ ] **Step 4: Expose safe first-turn ownership/release state.**
+- [x] **Step 4: Expose safe first-turn ownership/release state.**
 
 Web needs to know whether a newly created thread is still held by Sea-Bridge's App Server session. Implement a narrow callback/result hook or owner registry contract, for example:
 
@@ -229,7 +229,7 @@ onOwnershipReleased?: (threadId: string, turnId: string) => void;
 
 The callback fires only when the session has reached its release boundary (completed/unsubscribe/final process cleanup). Avoid making the whole App Server session public.
 
-- [ ] **Step 5: Add race/regression tests.**
+- [x] **Step 5: Add race/regression tests.**
 
 Cover:
 - thread ID callback occurs before first-turn result;
@@ -238,7 +238,7 @@ Cover:
 - failure after thread creation allows the Web layer to retain the thread ID;
 - Telegram behavior remains unchanged.
 
-- [ ] **Step 6: Run focused and full checks.**
+- [x] **Step 6: Run focused and full checks.**
 
 ```bash
 bun test tests/codex-app-server-client.test.ts tests/new-thread-manager.test.ts tests/telegram-project-new-thread.test.ts

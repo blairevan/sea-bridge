@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { CodexAppServerClient } from "../src/desktop/codex-app-server-client.ts";
 
 class MockProcess extends EventEmitter {
@@ -39,6 +40,68 @@ class MockProcess extends EventEmitter {
 }
 
 describe("CodexAppServerClient", () => {
+  test("releases ownership once after completion and concurrent shutdown", async () => {
+    let proc: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") proc.send({ id: message.id, result: { thread: { id: "owned" } } });
+      if (message.method === "turn/start") proc.send({ id: message.id, result: { turn: { id: "turn" } } });
+      if (message.method === "thread/unsubscribe") proc.send({ id: message.id, result: { status: "unsubscribed" } });
+    });
+    const events: string[] = [];
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+    });
+    await client.startThreadAndTurn({
+      projectId: "project", cwd: "/repo", prompt: "hello",
+      onThreadStarted: (id) => events.push("start:" + id),
+      onOwnershipReleased: (id, turn) => events.push("release:" + id + ":" + turn),
+    });
+    expect(events).toEqual(["start:owned"]);
+    proc.send({ method: "turn/completed", params: { threadId: "owned", turn: { id: "turn" } } });
+    await Promise.all([client.close(), client.close()]);
+    await Bun.sleep(5);
+    expect(events).toEqual(["start:owned", "release:owned:turn"]);
+  });
+
+  test("retains the created id and releases after first-turn admission failure", async () => {
+    let proc: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") proc.send({ id: message.id, result: { thread: { id: "partial" } } });
+      if (message.method === "turn/start") proc.send({ id: message.id, error: { code: -1, message: "rejected" } });
+    });
+    const events: string[] = [];
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+    });
+    await expect(client.startThreadAndTurn({
+      projectId: "project", cwd: "/repo", prompt: "hello",
+      onThreadStarted: (id) => events.push(id),
+      onOwnershipReleased: (id, turn) => events.push(id + ":" + turn),
+    })).rejects.toThrow("rejected");
+    expect(events).toEqual(["partial", "partial:null"]);
+    expect(proc.stdinEnded).toBe(true);
+  });
+
+  test("does not announce an owner when thread creation fails", async () => {
+    let proc: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") proc.send({ id: message.id, error: { code: -1, message: "rejected" } });
+    });
+    const events: string[] = [];
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+    });
+    await expect(client.startThreadAndTurn({
+      projectId: "project", cwd: "/repo", prompt: "hello",
+      onThreadStarted: (id) => events.push(id),
+      onOwnershipReleased: (id) => events.push(id),
+    })).rejects.toThrow("rejected");
+    expect(events).toEqual([]);
+  });
+
   test("listProjects initializes first, paginates, filters rootless projects, and preserves order", async () => {
     let proc!: MockProcess;
     proc = new MockProcess((message) => {
@@ -140,7 +203,7 @@ describe("CodexAppServerClient", () => {
         expect(registeredThread).toBe("thread-1");
         expect(message.params).toEqual({
           threadId: "thread-1",
-          input: [{ type: "text", text: "[Telegram init]\nreview this", textElements: [] }],
+          input: [{ type: "text", text: "review this", textElements: [] }],
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
@@ -196,7 +259,7 @@ describe("CodexAppServerClient", () => {
       if (message.method === "turn/start") {
         expect(message.params).toEqual({
           threadId: "thread-auto",
-          input: [{ type: "text", text: "[Telegram init]\ncheck something", textElements: [] }],
+          input: [{ type: "text", text: "check something", textElements: [] }],
           approvalPolicy: "on-request",
           approvalsReviewer: "user",
           sandboxPolicy: {
