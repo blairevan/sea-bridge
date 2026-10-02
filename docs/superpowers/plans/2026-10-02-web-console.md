@@ -1268,7 +1268,7 @@ Commit boundary recommendation: `feat: wire web console runtime`.
 
 **Gate:** Test on localhost first. Do not configure Tailscale Serve until local auth/security/source behavior passes.
 
-- [ ] **Step 1: Inspect deployment files before editing.**
+- [x] **Step 1: Inspect deployment files before editing.**
 
 Record:
 - env file path/mode;
@@ -1279,7 +1279,7 @@ Record:
 
 Do not print token values.
 
-- [ ] **Step 2: Enable Web locally only.**
+- [x] **Step 2: Enable Web locally only.**
 
 Set:
 - `SEA_BRIDGE_WEB_ENABLED=true`;
@@ -1288,7 +1288,7 @@ Set:
 
 Restart Sea-Bridge using its existing service mechanism.
 
-- [ ] **Step 3: Prove listener scope.**
+- [x] **Step 3: Prove listener scope.**
 
 Use read-only socket inspection. Expected:
 - listener exists only on `127.0.0.1:<port>` (and only IPv6 loopback if intentionally implemented; do not expose wildcard);

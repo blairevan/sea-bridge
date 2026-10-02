@@ -87,3 +87,14 @@
 - HTTP/control/SSE/retention 生命周期、派发恢复、构建资源路径集成；关闭 Web 在 core clients 和数据库之前执行。
 - 全套 211 pass；类型、构建、diff 检查通过。
 - 目标服务当前运行旧 release `cfdee7c`，尚未部署本功能。实际 launch agent 使用 releases 下的启动脚本，中央 env 为 0600、尚无 Web 配置。
+
+## Task 12：本机部署与待验收边界
+
+- 在当前 checkout 的 `feature/web-console` 分支实施；按用户指令不使用 worktree。
+- 实际服务为 `com.aitools.sea-bridge`，plist 位于 `~/Library/LaunchAgents/com.aitools.sea-bridge.plist`，中央 env 为 `~/.config/sea-bridge/env`（0600）。原配置已保存在 owner-private backups 目录。
+- 已部署独立 release 并启用 Web；远程 origin 保持未设置。实际监听仅 `127.0.0.1:7310`，首页 HTTP 200，未鉴权 API HTTP 401。dsh、hook 和 Telegram polling 启动事件正常。
+- 首次 launchd reload 遇到异步移除造成 bootstrap 失败；已恢复原配置并确认旧服务启动，再通过有界重试完成部署。
+- 复查补上设备名称永久过滤、创建操作手动核查入口、断线期间在途敏感响应拒绝；断线回归先失败后通过。数据库升级 fixture 验证 Telegram/desktop/dsh 既有记录保留。
+- 当前全套 212 pass / 0 fail；类型检查、构建、diff 检查通过。没有 lint/format script，未新增依赖。
+- 临时浏览器配对和全局隐私设置切换等待用户当场确认；真实 Codex/dsh 创建/续发、跨设备同步和撤销尚未验收。
+- Tailscale 只做只读预检：服务 Running，现有 TCP 13080 转发保留，未发现启用 Funnel；未配置新的 Serve 路由。Task 13 必须等本机验收通过。手机及第二台电脑结果尚未取得。

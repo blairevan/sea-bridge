@@ -15,11 +15,17 @@ describe("Web isolated persistence", () => {
       const path = join(root, "state.db");
       const state = new StateDb(path);
       state.db.run("INSERT INTO capabilities(name,status,updated_at) VALUES ('legacy','verified',1)");
+      state.db.run("INSERT INTO telegram_updates(update_id,received_at,payload_hash,status) VALUES (1,1,'fixture','processed')");
+      state.db.run("INSERT INTO desktop_message_links VALUES('fixture',1,'thread',NULL,'completed','fixture',1)");
+      state.db.run("INSERT INTO dsh_observer_state VALUES('session',1,'fixture',NULL,1)");
       state.close();
       const db = new Database(path);
       migrateWeb(db);
       migrateWeb(db);
       expect(db.query("SELECT status FROM capabilities WHERE name='legacy'").get()).toEqual({ status: "verified" });
+      expect(db.query("SELECT status FROM telegram_updates WHERE update_id=1").get()).toEqual({ status: "processed" });
+      expect(db.query("SELECT thread_id FROM desktop_message_links").get()).toEqual({ thread_id: "thread" });
+      expect(db.query("SELECT cursor FROM dsh_observer_state").get()).toEqual({ cursor: 1 });
       expect(new WebStore(db).getSettings()).toEqual({ redactionEnabled: true, version: 1 });
       expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 1 });
       db.close();

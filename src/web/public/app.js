@@ -25,6 +25,7 @@ async function requestApi(path, method = "GET", body) {
   if (version < state.version) throw new Error("设置已变化，正在刷新");
   if (version > state.version) { clearSensitive(); state.version = version; }
   if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw new Error("设备登录已失效，请重新配对"); }
+  if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw new Error("连接尚未重新确认设置");
   if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
@@ -153,7 +154,7 @@ async function loadCatalogs() {
   el("create-hint").textContent = allowed ? "新会话的审批继续通过 Telegram 处理（如来源需要）。" : "此来源当前不支持新建会话。";
 }
 /** Show a write outcome without treating submission acceptance as task completion. */
-function showOperation(operation) { el("operation-status").textContent = `${labels[operation.state] ?? operation.state}${operation.errorCode ? " · " + operation.errorCode : ""}`; el("reconcile").hidden = !state.pending; notice(labels[operation.state] ?? operation.state); }
+function showOperation(operation) { el("operation-status").textContent = `${labels[operation.state] ?? operation.state}${operation.errorCode ? " · " + operation.errorCode : ""}`; el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending; if (el("create-dialog").open) el("create-hint").textContent = labels[operation.state] ?? operation.state; notice(labels[operation.state] ?? operation.state); }
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
 async function submitWrite(create) {
   const session = state.selected; if (!create && !session) return;
@@ -169,7 +170,23 @@ async function submitWrite(create) {
       if (create) { el("create-dialog").close(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; await showPage("sessions"); el("sessions").classList.add("detail-open"); }
     }
     showOperation(operation); await refresh();
-  } catch { notice("提交结果待确认，请刷新核查；不会自动重发。"); el("reconcile").hidden = false; }
+  } catch { notice("提交结果待确认，请刷新核查；不会自动重发。"); el("reconcile").hidden = false; el("create-reconcile").hidden = false; }
+  finally { if (create && !state.pending) el("create-submit").disabled = !state.caps[source]?.createEnabled; }
+}
+/** Reconcile only the recorded operation; no branch resubmits its source write. */
+async function reconcilePending() {
+  if (!state.pending) return;
+  try {
+    const operation = await api("/api/operations/" + state.pending.operationId);
+    if (!["dispatching", "delivery_unknown", "received"].includes(operation.state)) state.pending = null;
+    showOperation(operation);
+  } catch (error) {
+    if (error.code !== "operation_not_received") throw error;
+    state.pending = null; el("reconcile").hidden = true; el("create-reconcile").hidden = true;
+    notice("未找到提交记录。请核对任务后再手动提交。");
+  }
+  if (el("create-dialog").open && !state.pending) el("create-submit").disabled = !state.caps[el("create-source").value]?.createEnabled;
+  await refresh();
 }
 
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
@@ -190,7 +207,8 @@ el("send-form").onsubmit = (event) => { event.preventDefault(); run("write", () 
 el("record-filter").onsubmit = (event) => { event.preventDefault(); run("records", () => loadRecords(false)); };
 el("more-records").onclick = () => run("records", () => loadRecords(true));
 el("redaction-form").onsubmit = (event) => { event.preventDefault(); run("settings", async () => { const enabled = el("redaction-enabled").checked; await api("/api/settings/redaction", "PUT", { enabled, expectedVersion: state.settings.version }); await loadSettings(); }); };
-el("reconcile").onclick = () => run("reconcile", async () => { if (!state.pending) return; const operation = await api("/api/operations/" + state.pending.operationId); if (!["dispatching", "delivery_unknown", "received"].includes(operation.state)) state.pending = null; showOperation(operation); await refresh(); });
+el("reconcile").onclick = () => run("reconcile", reconcilePending);
+el("create-reconcile").onclick = () => run("reconcile", reconcilePending);
 document.addEventListener("visibilitychange", () => { if (document.hidden) { state.paused = true; clearSensitive(); } else run("resume", async () => { await bootstrap(); state.paused = false; await refresh(); }); });
 window.addEventListener("pageshow", () => run("resume", async () => { await bootstrap(); if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; await refresh(); } }));
 setInterval(() => run("poll", refresh), 3000);
