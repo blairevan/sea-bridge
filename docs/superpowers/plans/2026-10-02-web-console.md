@@ -428,7 +428,7 @@ Keep the allowlist fixed. V1 needs one command:
 
 Response contains the one-time code and expiry only. No generic RPC dispatch.
 
-- [ ] **Step 1: Write pair-code generation tests.**
+- [x] **Step 1: Write pair-code generation tests.**
 
 Prove:
 - exactly 8 numeric digits;
@@ -441,7 +441,7 @@ Prove:
 
 Store only an in-memory MAC of the code using a process-random key plus expiry/failure counters.
 
-- [ ] **Step 2: Write brute-force/rate-limit tests.**
+- [x] **Step 2: Write brute-force/rate-limit tests.**
 
 Cover:
 - max 5 failures/minute per trusted source bucket;
@@ -452,7 +452,7 @@ Cover:
 
 Use injected clock/RNG for deterministic tests.
 
-- [ ] **Step 3: Write control-socket permission/lifecycle tests.**
+- [x] **Step 3: Write control-socket permission/lifecycle tests.**
 
 Prove:
 - parent dir is private;
@@ -462,7 +462,7 @@ Prove:
 - malformed/oversized/multiple requests are rejected;
 - stop removes the owned socket.
 
-- [ ] **Step 4: Implement `web:pair` CLI.**
+- [x] **Step 4: Implement `web:pair` CLI.**
 
 Suggested package command:
 
@@ -472,7 +472,7 @@ Suggested package command:
 
 The CLI prints the code and expiration to the local terminal only. It never logs the control response through the application logger.
 
-- [ ] **Step 5: Implement device session issuance.**
+- [x] **Step 5: Implement device session issuance.**
 
 On successful browser pairing:
 - generate >=256 bits random session token;
@@ -488,7 +488,7 @@ Cookie policy:
 - add `Secure` for the configured remote HTTPS host;
 - local HTTP cookie remains separate because it is host-only.
 
-- [ ] **Step 6: Implement trusted request context classification.**
+- [x] **Step 6: Implement trusted request context classification.**
 
 Allow only exact hosts/origins:
 - `http://127.0.0.1:<port>`;
@@ -504,7 +504,7 @@ Identity headers are audit/rate-limit hints only; they never replace Sea-Bridge 
 
 Ignore arbitrary `X-Forwarded-*` for authorization.
 
-- [ ] **Step 7: Implement CSRF verification.**
+- [x] **Step 7: Implement CSRF verification.**
 
 For authenticated writes require:
 - valid session cookie;
@@ -516,11 +516,11 @@ For authenticated writes require:
 
 SSE uses only the HttpOnly session cookie and never puts a token in the URL.
 
-- [ ] **Step 8: Add logout/revocation primitives.**
+- [x] **Step 8: Add logout/revocation primitives.**
 
 Store supports current-device logout and arbitrary device revocation. HTTP/SSE wiring comes later.
 
-- [ ] **Step 9: Run focused and full checks.**
+- [x] **Step 9: Run focused and full checks.**
 
 ```bash
 bun test tests/web-auth.test.ts tests/web-control-server.test.ts

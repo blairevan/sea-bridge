@@ -7,6 +7,7 @@
     "start": "bun run src/main.ts",
     "dev": "bun --watch run src/main.ts",
     "test": "bun test",
+    "web:pair": "bun run scripts/web-control.ts pair",
     "typecheck": "bunx tsc --noEmit",
     "build": "bun build src/main.ts --target=bun --outdir dist",
     "dsh-connector:check": "./scripts/install-dsh-connector.sh check",
