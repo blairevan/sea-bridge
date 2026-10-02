@@ -1153,14 +1153,14 @@ Commit boundary recommendation: `feat: add web console ui`.
 
 **Goal:** Development and built deployments both serve the Web assets without relying on the repository's `src/web/public` directory at runtime.
 
-- [ ] **Step 1: Write build-output test first.**
+- [x] **Step 1: Write build-output test first.**
 
 Build to a temporary output directory and assert:
 - compiled server entry exists;
 - copied `web/index.html`, `web/app.js`, `web/app.css` exist;
 - no source tree is needed to locate them.
 
-- [ ] **Step 2: Replace package build command with a deterministic build script.**
+- [x] **Step 2: Replace package build command with a deterministic build script.**
 
 Use Bun/fs built-ins only:
 1. clean/create output dir safely;
@@ -1170,13 +1170,13 @@ Use Bun/fs built-ins only:
 
 Do not delete arbitrary directories based on unchecked environment input.
 
-- [ ] **Step 3: Test source-mode and dist-mode static resolution.**
+- [x] **Step 3: Test source-mode and dist-mode static resolution.**
 
 Inject/resolve static root so tests can prove both:
 - `bun run src/main.ts` style;
 - built `dist` layout.
 
-- [ ] **Step 4: Add a dist Web-server smoke test.**
+- [x] **Step 4: Add a dist Web-server smoke test.**
 
 Start the Web server component from built code with temporary config/dependencies, not the Telegram long-polling main loop. Request:
 - `/`;
@@ -1186,7 +1186,7 @@ Start the Web server component from built code with temporary config/dependencie
 
 Expected: no hidden `src/` dependency and no 404.
 
-- [ ] **Step 5: Run full checks.**
+- [x] **Step 5: Run full checks.**
 
 ```bash
 bun test tests/web-build.test.ts
