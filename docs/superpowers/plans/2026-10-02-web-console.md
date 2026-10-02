@@ -546,17 +546,17 @@ Commit boundary recommendation: `feat: add web console pairing and auth`.
 1. **Permanent storage/response secret filter** — always active.
 2. **Optional privacy display filter** — controlled by the Web global setting.
 
-- [ ] **Step 1: Preserve current security tests.**
+- [x] **Step 1: Preserve current security tests.**
 
 Any existing `redact()` contract used by Telegram/logging must stay compatible unless a stricter behavior is demonstrably safe.
 
-- [ ] **Step 2: Add tests for explicit known secret values.**
+- [x] **Step 2: Add tests for explicit known secret values.**
 
 Build the Web secret filter from currently loaded secret config values such as Telegram token and other explicitly secret values available to Sea-Bridge. Replace exact occurrences in nested objects, strings, URLs, multi-line text, and error messages.
 
 Do not expose the list of known secrets in diagnostics.
 
-- [ ] **Step 3: Add permanent pattern tests.**
+- [x] **Step 3: Add permanent pattern tests.**
 
 Cover:
 - Bearer auth;
@@ -566,7 +566,7 @@ Cover:
 - common URL query secret forms;
 - multiline values.
 
-- [ ] **Step 4: Add optional privacy-display tests.**
+- [x] **Step 4: Add optional privacy-display tests.**
 
 When Web redaction is enabled additionally mask:
 - email;
@@ -576,15 +576,15 @@ When Web redaction is enabled additionally mask:
 
 When disabled, these ordinary privacy fields may remain, but permanent secrets remain filtered.
 
-- [ ] **Step 5: Add operation/message-storage tests.**
+- [x] **Step 5: Add operation/message-storage tests.**
 
 The source receives the original raw prompt. The Web message snapshot receives only permanently secret-filtered text. This distinction is mandatory.
 
-- [ ] **Step 6: Implement version-aware response wrapper.**
+- [x] **Step 6: Implement version-aware response wrapper.**
 
 Every dynamic response is filtered according to a single settings-version snapshot. Do not fetch the setting separately for every nested field.
 
-- [ ] **Step 7: Run focused/full tests.**
+- [x] **Step 7: Run focused/full tests.**
 
 ```bash
 bun test tests/security.test.ts tests/web-redaction.test.ts
