@@ -722,7 +722,7 @@ Commit boundary recommendation: `feat: add codex web source adapter`.
 
 **Goal:** Reuse only already-proven dsh Host calls. No connector change is required merely to make the Web UI look complete.
 
-- [ ] **Step 1: Add capability tests.**
+- [x] **Step 1: Add capability tests.**
 
 When dsh read-only is disabled:
 - sessions/projects/models/history are unavailable.
@@ -734,7 +734,7 @@ When reads enabled and writes disabled:
 When writes enabled:
 - create/send become available subject to Host result.
 
-- [ ] **Step 2: Add session-list tests.**
+- [x] **Step 2: Add session-list tests.**
 
 Expose verified:
 - session ID;
@@ -744,19 +744,19 @@ Expose verified:
 
 Do not claim project for an old session if Host does not supply it.
 
-- [ ] **Step 3: Add history tests.**
+- [x] **Step 3: Add history tests.**
 
 Use metadata/history + exact-turn summary only. Existing dsh user prompts are unavailable and shown as such.
 
 For a Web-origin prompt, merge the matching `web_message_snapshots` user text into the display timeline using the Web operation ID/session ID, without claiming completeness.
 
-- [ ] **Step 4: Add project/model cache tests.**
+- [x] **Step 4: Add project/model cache tests.**
 
 Cache Host project/model catalog for a short TTL and coalesce concurrent refreshes.
 
 A stale selected model from a prior request is never stored as a Web/global default.
 
-- [ ] **Step 5: Add send tests.**
+- [x] **Step 5: Add send tests.**
 
 Derive a dsh request ID in a Web-specific namespace from the Web operation ID.
 
@@ -768,7 +768,7 @@ Map:
 
 Busy/writer-held is not queued and not retried automatically.
 
-- [ ] **Step 6: Add create tests.**
+- [x] **Step 6: Add create tests.**
 
 Use a deterministic Web-specific session ID derived from the Web operation ID, then:
 1. validate project;
@@ -779,7 +779,7 @@ Use a deterministic Web-specific session ID derived from the Web operation ID, t
 
 Any transport loss after a dispatch boundary maps to `delivery_unknown`; do not “test by retrying”.
 
-- [ ] **Step 7: Prove Telegram state isolation.**
+- [x] **Step 7: Prove Telegram state isolation.**
 
 Creating/sending from Web does not read/write:
 - Telegram dsh default model;
@@ -787,7 +787,7 @@ Creating/sending from Web does not read/write:
 - Telegram update ID;
 - Telegram message mapping.
 
-- [ ] **Step 8: Run focused/full checks.**
+- [x] **Step 8: Run focused/full checks.**
 
 ```bash
 bun test tests/web-dsh-source.test.ts
