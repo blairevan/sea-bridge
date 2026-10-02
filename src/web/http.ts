@@ -4,7 +4,7 @@ import type { WebRedaction } from "./redaction.ts";
 import type { WebEvents } from "./events.ts";
 import { createStatusService, type TelegramStatus } from "./status.ts";
 import { dispatchWebOperation } from "./operations.ts";
-import { operationRecords } from "./records.ts";
+import { operationRecords, withSessionTitles } from "./records.ts";
 import type { WebSource, ExecutionEvidence } from "./sources/types.ts";
 
 export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
@@ -133,8 +133,10 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       if (path === "/api/sessions" && method === "GET") {
         const { limit, offset } = pagination(url); const query = url.searchParams.get("q") ?? "";
         if (query.length > 200) throw new HttpError(400, "query_too_long");
+        const activity = url.searchParams.get("activity");
+        if (activity && !["running", "waiting_external_approval", "unknown"].includes(activity)) throw new HttpError(400, "invalid_activity");
         const results = await Promise.allSettled(Object.entries(deps.sources).filter(([name]) => !selected || name === selected).map(async ([, source]) => source?.sessions() ?? []));
-        const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase())).sort((a, b) => b.updatedAt - a.updatedAt);
+        const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!activity || item.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
         return json({ items: items.slice(offset, offset + limit), cursor: items.length > offset + limit ? String(offset + limit) : null, partial: results.some((result) => result.status === "rejected"), capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
       const history = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/history$/);
@@ -152,7 +154,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         if (state && !["received", "dispatching", "queued", "accepted", "failed", "delivery_unknown"].includes(state)) throw new HttpError(400, "invalid_state");
         const from = url.searchParams.get("from"); const to = url.searchParams.get("to");
         if ((from && !/^\d{1,16}$/.test(from)) || (to && !/^\d{1,16}$/.test(to))) throw new HttpError(400, "invalid_date");
-        return json(operationRecords(deps.store, { source: selected, session, state, from: from ? Number(from) : 0, to: to ? Number(to) : Number.MAX_SAFE_INTEGER, limit, offset }));
+        return json(await withSessionTitles(operationRecords(deps.store, { source: selected, session, state, from: from ? Number(from) : 0, to: to ? Number(to) : Number.MAX_SAFE_INTEGER, limit, offset }), deps.sources));
       }
       if (path === "/api/logs" && method === "GET") {
         const { limit, offset } = pagination(url);
@@ -166,7 +168,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         if (operation.sessionId && ["queued", "accepted", "delivery_unknown"].includes(operation.state)) {
           const source = deps.sources[operation.source];
           if (source?.execution) {
-            try { execution = await source.execution(operation.sessionId, operation.turnId); }
+            try { execution = await source.execution(operation.sessionId, operation.turnId, operation.createdAt); }
             catch { execution = { state: "unknown", exact: false }; }
           }
         }

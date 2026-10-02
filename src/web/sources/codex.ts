@@ -1,7 +1,7 @@
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
-import { readCodexTranscript } from "../codex-transcript.ts";
+import { readCodexTranscript, readCodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
 import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
@@ -59,12 +59,17 @@ export class CodexWebSource implements WebSource {
   }
 
   /** Report only observed runtime evidence; idle/absent evidence never proves completion. */
-  async execution(id: string, turnId: string | null): Promise<ExecutionEvidence> {
+  async execution(id: string, turnId: string | null, submittedAt = 0): Promise<ExecutionEvidence> {
     if (this.deps.pendingApproval(id)) return { state: "waiting_external_approval", exact: false };
     if (this.owners.has(id)) return { state: "running", exact: false };
     const activity = this.deps.activity?.(id) ?? null;
-    if (activity?.state !== "active") return { state: "unknown", exact: false };
-    return { state: "running", exact: Boolean(turnId && activity.turnId === turnId) };
+    if (activity?.state === "active") return { state: "running", exact: Boolean(turnId && activity.turnId === turnId) };
+    try {
+      const thread = this.deps.threads.getThread?.(id);
+      const observed = thread?.rolloutPath ? await readCodexActivity(thread.rolloutPath, this.deps.sessionRoots) : null;
+      if (!observed || observed.observedAt < submittedAt) return { state: "unknown", exact: false };
+      return { state: observed.state === "active" ? "running" : "session_ended", exact: Boolean(turnId && observed.turnId === turnId) };
+    } catch { return { state: "unknown", exact: false }; }
   }
 
   /** Discover cached live projects, leaving missing-path entries unavailable. */

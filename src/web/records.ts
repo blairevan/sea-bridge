@@ -1,3 +1,4 @@
+import type { WebSource } from "./sources/types.ts";
 import type { WebStore } from "./store.ts";
 
 /** Shared read-only operation shape for Web and historical Telegram bridge deliveries. */
@@ -67,4 +68,16 @@ export function operationRecords(store: WebStore, input: {
 
   records.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   return { items: records.slice(input.offset, input.offset + input.limit), cursor: records.length > input.offset + input.limit ? String(input.offset + input.limit) : null };
+}
+
+/** Resolve source-owned titles without making diagnostic records depend on source availability. */
+export async function withSessionTitles(page: { items: RecordItem[]; cursor: string | null }, sources: Partial<Record<"codex" | "dsh", Pick<WebSource, "sessions">>>): Promise<{ items: Array<RecordItem & { sessionTitle: string | null }>; cursor: string | null }> {
+  const names = [...new Set(page.items.filter((item) => item.sessionId).map((item) => item.source))].filter((name): name is "codex" | "dsh" => name === "codex" || name === "dsh");
+  const results = await Promise.allSettled(names.map(async (name) => ({ name, sessions: await sources[name]?.sessions() ?? [] })));
+  const titles = new Map<string, string>();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const session of result.value.sessions) titles.set(JSON.stringify([result.value.name, session.id]), session.title);
+  }
+  return { ...page, items: page.items.map((item) => ({ ...item, sessionTitle: titles.get(JSON.stringify([item.source, item.sessionId])) ?? null })) };
 }

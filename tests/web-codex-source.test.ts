@@ -86,3 +86,23 @@ test("Codex catalog failure before thread start is a definite failure", async ()
     .toMatchObject({ state: "failed", sessionId: null, errorCode: "projects_unavailable" });
   expect(starts).toBe(0);
 });
+
+test("Codex operation uses rollout lifecycle without hooks and rejects evidence predating submission", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = mkdtempSync(join(tmpdir(), "web-execution-")); const file = join(root, "fixture.jsonl");
+  const observedAt = Date.parse("2026-10-02T14:00:00Z");
+  const source = new CodexWebSource({
+    threads: { listActive: () => [], getThread: () => ({ id: "thread", title: "fixture", updatedAtMs: observedAt, rolloutPath: file }) },
+    appServer: { async listProjects() { return []; }, async listModels() { return []; }, async startThreadAndTurn() { throw new Error("must not dispatch"); } },
+    queue: { async queue() { throw new Error("must not queue"); } }, sessionRoots: [root], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+  try {
+    writeFileSync(file, JSON.stringify({ type: "event_msg", timestamp: "2026-10-02T14:00:00Z", payload: { type: "task_started", turn_id: "turn" } }));
+    expect(await source.execution("thread", null, observedAt - 1)).toEqual({ state: "running", exact: false });
+    expect(await source.execution("thread", null, observedAt + 1)).toEqual({ state: "unknown", exact: false });
+    writeFileSync(file, JSON.stringify({ type: "event_msg", timestamp: "2026-10-02T14:00:00Z", payload: { type: "task_complete", turn_id: "turn" } }));
+    expect(await source.execution("thread", null, observedAt - 1)).toEqual({ state: "session_ended", exact: false });
+    expect(await source.execution("thread", "turn", observedAt - 1)).toEqual({ state: "session_ended", exact: true });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

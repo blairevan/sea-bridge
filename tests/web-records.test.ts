@@ -37,3 +37,17 @@ test("Telegram delivered states map to provider-specific Web states before filte
   expect(operationRecords(store, { source: "codex", session: null, state: "accepted", from: 0, to: 100, limit: 10, offset: 0 }).items).toEqual([]);
   state.close();
 });
+
+test("record titles are source-scoped and title lookup failure preserves records", async () => {
+  const { withSessionTitles } = await import("../src/web/records.ts");
+  const page = { items: [
+    { id: "a", source: "codex", transport: "web", kind: "send", state: "queued", sessionId: "shared", errorCode: null, createdAt: 2 },
+    { id: "b", source: "dsh", transport: "web", kind: "send", state: "accepted", sessionId: "shared", errorCode: null, createdAt: 1 },
+  ], cursor: "next" };
+  const result = await withSessionTitles(page, {
+    codex: { async sessions() { return [{ id: "shared", source: "codex", title: "Codex title", state: "unknown", updatedAt: 1, projectId: null, sendEnabled: true }]; } },
+    dsh: { async sessions() { throw new Error("source unavailable"); } },
+  });
+  expect(result.items.map((item) => item.sessionTitle)).toEqual(["Codex title", null]);
+  expect(result.items.map((item) => item.id)).toEqual(["a", "b"]); expect(result.cursor).toBe("next");
+});

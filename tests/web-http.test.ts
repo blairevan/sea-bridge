@@ -15,7 +15,10 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   let writes = 0; let raw = "";
   const source: WebSource = {
     capabilities: () => ({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: true, sendEnabled: true, approvalTransport: null }),
-    async sessions() { return []; }, async projects() { return []; }, async models() { return []; },
+    async sessions() { return [
+      { source: "codex", id: "idle", title: "idle", updatedAt: 3, projectId: null, state: "unknown", sendEnabled: true },
+      { source: "codex", id: "active", title: "active", updatedAt: 2, projectId: null, state: "running", sendEnabled: true },
+    ]; }, async projects() { return []; }, async models() { return []; },
     async history() { return { messages: [], cursor: null, completeUserHistory: false }; },
     async execution() { return { state: "running", exact: true }; },
     async create(input) {
@@ -35,6 +38,10 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
     const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
+    const filtered = await request("/api/sessions?source=codex&activity=running&limit=1", "GET", undefined, cookie);
+    expect(filtered.status).toBe(200);
+    expect((await filtered.json()).data.items.map((item: { id: string }) => item.id)).toEqual(["active"]);
+    expect((await request("/api/sessions?activity=invalid", "GET", undefined, cookie)).status).toBe(400);
     const payload = { operationId: randomUUID(), source: "codex", projectId: "project", modelId: null, prompt: "hello fixture-secret" };
     expect((await request("/api/sessions", "POST", payload, cookie)).status).toBe(403);
     expect((await request("/api/sessions", "POST", payload, cookie, paired.csrfToken)).status).toBe(200);

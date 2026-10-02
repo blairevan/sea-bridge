@@ -1,3 +1,4 @@
+import { APP_VERSION, renderVersionedShell } from "../src/web/version.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,13 +7,15 @@ import { WebServer } from "../src/web/server.ts";
 import { loadWebConfig } from "../src/config.ts";
 
 test("static shell has local assets and no unsafe rendering or persistent body cache", async () => {
-  const html = await Bun.file("src/web/public/index.html").text();
+  const html = renderVersionedShell(await Bun.file("src/web/public/index.html").text());
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
-  expect(html).toContain('src="/app.js?v=20261002-message13"'); expect(html).toContain('href="/app.css?v=20261002-message13"');
+  expect(html).toContain(`src="/app.js?v=${APP_VERSION}"`); expect(html).toContain(`href="/app.css?v=${APP_VERSION}"`);
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
   expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-retry"'); expect(html).toContain('id="notice-close"');
+  for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog"]) expect(html).toContain(`id="${id}"`);
+  expect(html).toContain('role="combobox"'); expect(html).toContain('aria-controls="record-suggestions"'); expect(html).toContain('会话标题'); expect(html).not.toContain('<label>会话 ID');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|localStorage|indexedDB|serviceWorker/);
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
@@ -38,6 +41,7 @@ test("real loopback server sends strict static headers, allows no traversal, and
   try {
     await server.start();
     const response = await fetch(`http://127.0.0.1:${port}/`);
+    expect(await response.text()).toContain(`v${APP_VERSION}`);
     expect(response.status).toBe(200); expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("Cache-Control")).toBe("no-store"); expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect((await fetch(`http://127.0.0.1:${port}/config.ts`)).status).toBe(404);
