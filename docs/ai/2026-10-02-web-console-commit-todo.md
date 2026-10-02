@@ -9,9 +9,11 @@
 2. [x] 检查依赖与敏感信息，截图为无凭据验收样例。
 3. [x] 质量检查：bun run typecheck；bun test（236 pass）；bun run build；git diff --check。项目无 lint/format 脚本，未新增工具依赖。
 4. [x] 只读代码审查及发现项复核：Cursor CLI 未返回结果，终止后按 skill 保底执行内置语义审查；HTTP logout Secure 修复已通过回归。
-5. [ ] 精确暂存、核对文件清单、Conventional Commit。
-6. [ ] Push feature/web-console 并核对远端提交与本地工作区。
+5. [x] 精确暂存、核对文件清单、Conventional Commit。
+6. [x] Push feature/web-console 并核对远端提交与本地工作区。
 
 拟提交：fix(web-console): harden dispatch and mobile message history
 
 审查结论：未发现阻断项。保持既有有界历史读取和来源历史限制；真实 iPhone 滚动验收不能由 fixture 替代。
+
+代码提交：8b42663；已 push origin/feature/web-console，upstream 已建立。流程完成。
