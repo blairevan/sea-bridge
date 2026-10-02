@@ -34,6 +34,8 @@ class ElementFixture {
   scrollHeight = 1000;
   clientHeight = 400;
   scrollIntoViewCalls = 0;
+  hidden = false;
+  className = "";
   /** Capture the emitted tag without interpreting HTML. */
   constructor(readonly tag: string) {}
   get lastElementChild(): ElementFixture | null { return this.children.at(-1) ?? null; }
@@ -65,6 +67,57 @@ test("Markdown renders structure without HTML execution and loads images only on
   if (!load?.onclick) throw new Error("image loader missing");
   load.onclick();
   expect(flatten(root).find((node) => node.tag === "img")?.src).toBe("https://example.test/image.png");
+});
+
+test("inline notice clamps after two lines, expands without auto-hide, and can be closed", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  get("console").hidden = false; get("notice-bar").hidden = true;
+  get("notice-text").scrollHeight = 80; get("notice-text").clientHeight = 40;
+  const delays: number[] = []; const cleared: number[] = [];
+  const harness = runInNewContext(script.slice(0, end) + "\n({ state, notice, toggleNoticeExpanded, clearNotice })", {
+    document: { getElementById: get },
+    requestAnimationFrame: (fn: () => void) => { fn(); return 1; },
+    setTimeout: (_fn: () => void, delay: number) => { delays.push(delay); return delays.length; },
+    clearTimeout: (id: number) => { cleared.push(id); },
+  }) as {
+    state: { noticeState: { expanded: boolean } };
+    notice: (text: string, options?: { sticky?: boolean; kind?: string }) => void;
+    toggleNoticeExpanded: () => void;
+    clearNotice: () => void;
+  };
+
+  harness.notice("这是一条超过两行的较长提示，需要支持展开查看完整内容。");
+  expect(get("notice-bar").hidden).toBe(false);
+  expect(get("notice-toggle").hidden).toBe(false);
+  expect(get("notice-toggle").textContent).toBe("展开");
+  expect(delays.at(-1)).toBe(10000);
+
+  harness.toggleNoticeExpanded();
+  expect(harness.state.noticeState.expanded).toBe(true);
+  expect(get("notice-bar").className).toContain("expanded");
+  expect(get("notice-toggle").textContent).toBe("收起");
+  expect(cleared.length).toBeGreaterThan(0);
+
+  harness.toggleNoticeExpanded();
+  expect(harness.state.noticeState.expanded).toBe(false);
+  expect(get("notice-toggle").textContent).toBe("展开");
+  expect(delays.at(-1)).toBe(10000);
+
+  get("notice-text").scrollHeight = 30; get("notice-text").clientHeight = 40;
+  harness.notice("短提示");
+  expect(get("notice-toggle").hidden).toBe(true);
+  expect(delays.at(-1)).toBe(6000);
+
+  const timerCount = delays.length;
+  get("notice-text").scrollHeight = 80;
+  harness.notice("需要人工处理的错误信息", { sticky: true, kind: "error" });
+  expect(get("notice-bar").className).toContain("notice-error");
+  expect(delays.length).toBe(timerCount);
+  harness.clearNotice();
+  expect(get("notice-bar").hidden).toBe(true);
 });
 
 test("opening a session positions the first history page at the newest message", async () => {
@@ -128,6 +181,36 @@ test("latest polling preserves loaded older pages and their continuation boundar
   expect(harness.state.historyCursor).toBe("100");
 });
 
+test("operation polling distinguishes exact execution from session-level activity", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  let execution = { state: "running", exact: true };
+  const harness = runInNewContext(script.slice(0, end) + "\n({ state, refreshExecutionStatus })", {
+    URL, URLSearchParams,
+    fetch: async () => Response.json({ data: {
+      id: "op", kind: "send", source: "codex", state: "queued", sessionId: "session", turnId: null, errorCode: null,
+      execution,
+    } }),
+    document: {
+      cookie: "",
+      hidden: false,
+      getElementById: (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as { state: { paused: boolean; executionWatch: { operationId: string } | null }; refreshExecutionStatus: () => Promise<void> };
+  harness.state.paused = false; harness.state.executionWatch = { operationId: "op" };
+  await harness.refreshExecutionStatus();
+  expect(nodes.get("operation-status")?.textContent).toBe("正在执行");
+  execution = { state: "running", exact: false };
+  await harness.refreshExecutionStatus();
+  expect(nodes.get("operation-status")?.textContent).toBe("检测到会话正在执行");
+  execution = { state: "waiting_external_approval", exact: false };
+  await harness.refreshExecutionStatus();
+  expect(nodes.get("operation-status")?.textContent).toBe("等待 Telegram 审批");
+});
+
 test("history follows a sent message and identifies a new final reply without replaying writes", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -147,7 +230,7 @@ test("history follows a sent message and identifies a new final reply without re
   await harness.loadHistory(false);
   expect(nodes.get("messages")?.scrollTop).toBe(1000);
   expect(harness.state.awaitingReply).toBeNull();
-  expect(nodes.get("operation-status")?.textContent).toBe("发现新的最终回复");
+  expect(nodes.get("operation-status")?.textContent).toBe("会话收到新的最终回复");
 });
 
 test("mobile selection reveals the detail before positioning the latest history", async () => {

@@ -17,6 +17,7 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     capabilities: () => ({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: true, sendEnabled: true, approvalTransport: null }),
     async sessions() { return []; }, async projects() { return []; }, async models() { return []; },
     async history() { return { messages: [], cursor: null, completeUserHistory: false }; },
+    async execution() { return { state: "running", exact: true }; },
     async create(input) {
       expect(store.getOperation(input.operationId)?.state).toBe("dispatching");
       writes++; raw = input.prompt; input.onSessionKnown("session-example");
@@ -37,6 +38,9 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     const payload = { operationId: randomUUID(), source: "codex", projectId: "project", modelId: null, prompt: "hello fixture-secret" };
     expect((await request("/api/sessions", "POST", payload, cookie)).status).toBe(403);
     expect((await request("/api/sessions", "POST", payload, cookie, paired.csrfToken)).status).toBe(200);
+    const operationResponse = await request("/api/operations/" + payload.operationId, "GET", undefined, cookie);
+    expect(operationResponse.status).toBe(200);
+    expect((await operationResponse.json()).data.execution).toEqual({ state: "running", exact: true });
     expect((await request("/api/sessions", "POST", payload, cookie, paired.csrfToken)).status).toBe(200);
     expect(writes).toBe(1); expect(raw).toBe(payload.prompt);
     expect(JSON.stringify(db.query("SELECT * FROM web_message_snapshots").all())).not.toContain("fixture-secret");

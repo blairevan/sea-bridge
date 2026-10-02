@@ -270,3 +270,47 @@
 - 恢复校验前后绑定同一 OPEN SSE，连接中途丢失或被替换时旧恢复结果不能解除 paused。新增两条失败回归后修复。
 - 去掉新增测试 any，补充恢复辅助函数说明；`bun run typecheck`、`bun test`（243 pass / 0 fail）、`bun run build`、`git diff --check` 通过。
 - 这些提交前补丁未重新部署，运行态仍为 web-message8-20261002-204738。
+## message9 投递后执行状态查询（2026-10-02）
+
+- 保留 web_operations 的投递状态语义不变，不把 Codex queue exit 0 误写成“执行中”；新增独立的动态 execution 证据。
+- Codex 复用现有 hook SessionStateStore：active 且仍在 activeSessionTtlMs 内时报告 running；有 pending approval 时报告 waiting_external_approval。Web 新建首轮在 App Server owner 持有期间可用已知 turnId 给出 exact running 证据。
+- dsh 复用 Host sessions.list 的 running 字段；由于 Host 未暴露本次 Web operation 对应的精确 turnId，只报告 session-level running，不冒充精确任务状态。
+- GET /api/operations/:id 现在附带 execution={state,exact}；source 不支持或查询失败时安全降级为 unknown，不影响原 operation 审计记录。
+- 前端投递后保留 executionWatch 并随 3 秒刷新查询原 operation；精确证据显示“正在执行”，仅 session 级证据显示“检测到会话正在执行”，审批显示“等待 Telegram 审批”，无证据显示“已入队，正在确认是否执行”。不会因为查询而自动重发。
+- 发现新的最终 assistant 回复后停止 executionWatch，并显示“执行完成，已收到最终回复”。Codex 会话列表/详情头部也会基于 hook active 证据显示“执行中”。
+- 前端静态资源版本提升为 20261002-message9。新增 HTTP、Codex、dsh、UI 回归，覆盖 exact/session-level/approval 三种状态。
+- 全量验证：244 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。当前环境无 launchctl，message9 尚未切换宿主 LaunchAgent；Tailscale 配置未修改。
+
+
+## message9 部署验收（2026-10-02 21:09）
+
+- 已部署当前已授权源码快照 `/opt/app/aitools/sea-bridge-releases/web-message9-20261002-210921`，launchd 已运行此 release。
+- `bun run typecheck`、`bun test`（244 pass / 0 fail）、`bun run build`、`git diff --check` 通过。
+- Tailscale IP 首页、message9 JS/CSS 均返回 200；未授权 status 返回 401；部署产物 SHA-256 与当前 dist 匹配。
+- 未修改 Tailscale Serve/Funnel，未提交或 push message9 改动。未执行额外真实消息派发；手机新投递的执行状态展示仍需设备侧验收。
+## message10 登录栏下消息区与长消息展开（2026-10-02）
+
+- 将原先覆盖页面的 fixed toast 改为登录栏下方、主导航上方的布局内消息区；消息区占用正常布局高度，不再遮住品牌栏、导航或会话内容。
+- 默认最多显示两行；浏览器实际测量完整高度后，仅当内容确实超过两行时显示“展开”。为兼容 iPhone Safari，检测时临时测量 expanded 状态真实高度，不依赖 line-clamp 下单一 scrollHeight 行为。
+- 展开后显示完整内容，最大高度 min(45dvh, 320px)，再长则消息区内部滚动；展开期间暂停自动隐藏。点击“收起”后重新开始完整阅读时长；支持 × 手动关闭。
+- 短普通信息/成功提示默认 6 秒自动隐藏；超过两行的普通提示默认 10 秒。等待审批、失败、投递结果待确认等需要人工处理的通知为 sticky，不自动隐藏。
+- 顶部短暂通知与输入框下方的 operation-status 保持分离；执行状态轮询不会重复弹通知，最终回复到达时顶部给出 success 提示，底部持久状态仍保留。
+- 未登录配对阶段使用表单内 pairing-notice，不复用登录后的消息条；消息区域使用独立 live region，展开/关闭按钮不放入 role=status。
+- 桌面和手机 #console 统一为纵向 flex 容器，workspace 使用剩余高度，确保消息区展开时自然压缩内容区而不是造成 viewport 溢出。
+- 前端静态资源版本提升为 20261002-message10。新增 UI 回归覆盖两行检测、10 秒长消息、展开暂停、收起重启计时、短消息 6 秒、sticky 错误与手动关闭。
+- 全量验证：245 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。message10 尚未部署；Tailscale 配置未修改。
+
+
+## message10 部署验收（2026-10-02 21:33）
+
+- 已部署当前授权源码快照 `/opt/app/aitools/sea-bridge-releases/web-message10-20261002-213245`，launchd 已运行此 release。
+- `bun run typecheck`、`bun test`（245 pass / 0 fail，1072 assertions）、`bun run build`、`git diff --check` 通过。
+- Tailscale IP 首页、message10 JS/CSS 均返回 200；未授权 status 返回 401；部署产物 SHA-256 与当前 dist 匹配。
+- 未修改 Tailscale Serve/Funnel，未提交或 push 当前改动。iPhone 通知展开/收起/定时隐藏的实际交互仍需设备侧验收。
+
+
+### 提交前状态证据复核
+
+- 首轮 owner 只证明会话运行，不将任意 operation turnId 认定为精确执行证据；增加不匹配 turn 回归断言。
+- 新最终回复提示改为“会话收到新的最终回复”，避免缺少 operation/turn 关联时误报当前任务完成。
+- 此两处提交前修正尚未部署。

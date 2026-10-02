@@ -200,6 +200,11 @@ async function main(): Promise<void> {
           sessionRoots: [join(config.codexHome, "sessions"), join(config.codexHome, "archived_sessions")], pathExists: existsSync,
           queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),
           pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
+          activity: (id) => {
+            const observed = sessions.getById(id);
+            if (!observed || Date.now() - observed.lastSeenAt > config.activeSessionTtlMs) return null;
+            return { state: observed.activityState, turnId: observed.turnId };
+          },
         }),
         ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled,
           (id) => webStore.listAcceptedMessageSnapshots("dsh", id)) } : {}),

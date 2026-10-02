@@ -4,10 +4,10 @@ import type { DshWebHostClient } from "../src/dsh/web-host-client.ts";
 import type { DshWriteResult } from "../src/dsh/types.ts";
 
 test("dsh Web gates, history limitations, request-local model and unknown writes", async () => {
-  const calls: string[] = []; let transportLost = false; let result: DshWriteResult = { status: "accepted" }; let summaryCalls = 0;
+  const calls: string[] = []; let transportLost = false; let running = false; let result: DshWriteResult = { status: "accepted" }; let summaryCalls = 0;
   const host: Pick<DshWebHostClient, "health" | "listSessions" | "listProjects" | "listModels" | "followSnapshot" | "pageHistory" | "getTurnSummary" | "createSession" | "selectModel" | "submitPrompt"> = {
     async health() { return { status: "mounted", protocol: 1, connectorVersion: "0.4.0" }; },
-    async listSessions() { return [{ sessionId: "session-example", title: "fixture", running: false, blank: false, updatedAt: 1 }]; },
+    async listSessions() { return [{ sessionId: "session-example", title: "fixture", running, blank: false, updatedAt: 1 }]; },
     async listProjects() { return [{ id: "project", title: "fixture", sessionCount: 1 }]; },
     async listModels() { return { default: { provider: "provider", model: "model" }, failureCount: 0, groups: [{ id: "provider", name: "fixture", models: [{ id: "model", name: "fixture" }] }] }; },
     async followSnapshot() { return { cursor: 3, hasMore: false, truncated: false, events: [] }; },
@@ -25,6 +25,9 @@ test("dsh Web gates, history limitations, request-local model and unknown writes
   const disabled = new DshWebSource(host, false, false);
   await expect(disabled.sessions()).rejects.toThrow("source_disabled");
   const source = new DshWebSource(host, true, true, () => [{ id: "web-op", role: "user", text: "Web fixture prompt" }]);
+  running = true;
+  expect(await source.execution("session-example", null)).toEqual({ state: "running", exact: false });
+  running = false;
   expect((await source.history("session-example", null, 20)).messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   expect((await source.history("session-example", null, 20)).messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   expect(summaryCalls).toBe(2); // one call came from the separate readonly adapter above

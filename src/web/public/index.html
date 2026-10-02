@@ -4,11 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sea-Bridge 控制台</title>
-  <link rel="stylesheet" href="/app.css?v=20261002-message8">
-  <script src="/app.js?v=20261002-message8" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20261002-message10">
+  <script src="/app.js?v=20261002-message10" defer></script>
 </head>
 <body>
-  <div id="notice" role="status" aria-live="polite"></div>
   <section id="connection-panel" class="connection-panel" role="alertdialog" aria-live="assertive" aria-labelledby="connection-title" hidden>
     <div class="connection-card">
       <div class="eyebrow">SEA-BRIDGE</div>
@@ -22,6 +21,7 @@
     <form id="pair-form" class="card" novalidate>
       <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
       <p>在本机运行配对命令，输入一次性配对码。</p><p id="client-version" class="muted">加载配对诊断版本…</p>
+      <p id="pairing-notice" class="pairing-notice" role="status" aria-live="polite"></p>
       <label for="pair-code">配对码</label><input id="pair-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
       <label for="device-name">设备名称（可选）</label><input id="device-name" maxlength="80" autocomplete="off" placeholder="例如：手机">
       <button id="pair-submit" type="button">配对设备</button><p class="muted">配对码有效期 5 分钟，仅可使用一次。</p>
@@ -29,6 +29,13 @@
   </main>
   <div id="console" hidden>
     <header><strong>SEA-BRIDGE</strong><span class="muted">会话桥接控制台</span><button id="logout" class="quiet">退出登录</button></header>
+    <section id="notice-bar" class="notice-bar notice-info" role="region" aria-label="消息通知" hidden>
+      <div id="notice-text" class="notice-text" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="notice-actions">
+        <button id="notice-toggle" type="button" class="quiet" hidden>展开</button>
+        <button id="notice-close" type="button" class="quiet notice-close" aria-label="关闭消息">×</button>
+      </div>
+    </section>
     <div class="workspace">
       <nav aria-label="主导航"><button data-page="overview">概览</button><button data-page="sessions">会话</button><button data-page="records">操作记录</button><button data-page="settings">设置</button></nav>
       <main class="content">

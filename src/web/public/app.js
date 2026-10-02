@@ -1,9 +1,9 @@
 "use strict";
-const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, lastConnectedAt: null, paused: true, busy: new Set(), pending: null, awaitingReply: null, followLatest: false };
+const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info" } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
-const labels = { queued: "已入队，尚未确认执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
+const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
 const reads = new Map();
 let historyTools;
 
@@ -92,8 +92,62 @@ function renderMarkdown(text) {
 function el(id) { return document.getElementById(id); }
 /** Create text-only nodes for source-derived content. */
 function node(tag, text, className = "") { const value = document.createElement(tag); value.textContent = text; value.className = className; return value; }
-/** Show a transient human-readable status. */
-function notice(text) { el("notice").textContent = text; }
+/** Cancel the active notification auto-hide timer. */
+function cancelNoticeTimer() {
+  if (state.noticeState.timer !== null && typeof clearTimeout === "function") clearTimeout(state.noticeState.timer);
+  state.noticeState.timer = null;
+}
+/** Clear both authenticated and pairing notices without touching persistent operation state. */
+function clearNotice() {
+  cancelNoticeTimer(); state.noticeState.seq++; state.noticeState.expanded = false;
+  const bar = el("notice-bar"); if (bar) { bar.hidden = true; bar.className = "notice-bar notice-info"; }
+  const content = el("notice-text"); if (content) content.textContent = "";
+  const toggle = el("notice-toggle"); if (toggle) { toggle.hidden = true; toggle.textContent = "展开"; }
+  const pairing = el("pairing-notice"); if (pairing) pairing.textContent = "";
+}
+/** Start a fresh full-duration timer after rendering or collapsing a transient notice. */
+function scheduleNoticeHide(durationMs) {
+  cancelNoticeTimer();
+  if (state.noticeState.sticky || state.noticeState.expanded || typeof setTimeout !== "function") return;
+  state.noticeState.timer = setTimeout(() => clearNotice(), durationMs);
+}
+/** Detect real two-line clipping after layout; long transient notices get a longer reading window. */
+function refreshNoticeLayout(seq, explicitDuration) {
+  const bar = el("notice-bar");
+  if (seq !== state.noticeState.seq || bar.hidden) return;
+  const content = el("notice-text"); const toggle = el("notice-toggle");
+  const collapsedHeight = content.clientHeight; const collapsedClass = bar.className;
+  bar.className = collapsedClass.replace(/\s+expanded\b/g, "") + " expanded";
+  const fullHeight = content.scrollHeight;
+  bar.className = collapsedClass;
+  const overflow = fullHeight > collapsedHeight + 1;
+  toggle.hidden = !overflow; toggle.textContent = state.noticeState.expanded ? "收起" : "展开";
+  const duration = explicitDuration ?? (overflow ? 10000 : 6000);
+  state.noticeState.durationMs = duration;
+  scheduleNoticeHide(duration);
+}
+/** Show an inline authenticated notice, or an inline pairing status before login. */
+function notice(text, options = {}) {
+  if (!text) { clearNotice(); return; }
+  if (el("console").hidden) { el("pairing-notice").textContent = text; return; }
+  el("pairing-notice").textContent = "";
+  cancelNoticeTimer();
+  const seq = ++state.noticeState.seq;
+  state.noticeState.sticky = Boolean(options.sticky); state.noticeState.expanded = false;
+  state.noticeState.kind = ["success", "warning", "error"].includes(options.kind) ? options.kind : "info";
+  const bar = el("notice-bar"); bar.hidden = false; bar.className = `notice-bar notice-${state.noticeState.kind}`;
+  el("notice-text").textContent = text; el("notice-toggle").hidden = true; el("notice-toggle").textContent = "展开";
+  const apply = () => refreshNoticeLayout(seq, Number.isFinite(options.durationMs) ? Number(options.durationMs) : null);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply); else apply();
+}
+/** Expand long notices without an auto-hide race; collapsing restarts the full reading window. */
+function toggleNoticeExpanded() {
+  const bar = el("notice-bar"); if (bar.hidden || el("notice-toggle").hidden) return;
+  state.noticeState.expanded = !state.noticeState.expanded; cancelNoticeTimer();
+  bar.className = `notice-bar notice-${state.noticeState.kind}${state.noticeState.expanded ? " expanded" : ""}`;
+  el("notice-toggle").textContent = state.noticeState.expanded ? "收起" : "展开";
+  if (!state.noticeState.expanded) scheduleNoticeHide(state.noticeState.durationMs);
+}
 /** Create a typed client error without exposing lower-level transport details. */
 function clientError(code, message) { const error = new Error(message); error.code = code; return error; }
 /** Classify only failures that require connection recovery. */
@@ -163,13 +217,13 @@ async function run(key, work) {
   try { await work(); }
   catch (error) {
     if (isTransportError(error)) enterDisconnected();
-    else if (error?.code !== "auth_required") notice(error?.message || "操作失败");
+    else if (error?.code !== "auth_required") notice(error?.message || "操作失败", { sticky: true, kind: "error" });
   } finally { state.busy.delete(key); }
 }
 /** Stop retry machinery and return to the explicit pairing boundary. */
 function showPairing() {
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false;
-  state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); hideConnectionPanel();
+  state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); hideConnectionPanel(); clearNotice();
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close();
 }
 /** Validate both session and current display policy before restoring sensitive content. */
@@ -261,6 +315,7 @@ async function showPage(page) {
 /** Refresh the active page only after authenticated settings validation. */
 async function refresh() {
   if (state.paused || document.hidden) return;
+  if (state.executionWatch) await refreshExecutionStatus();
   if (state.page === "overview") { await loadStatus(); await loadSessions(false); }
   if (state.page === "sessions") { await loadSessions(false); if (state.selected) await loadHistory(false); }
   if (state.page === "records") await loadRecords(false);
@@ -332,7 +387,7 @@ async function loadHistory(older) {
   if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
     const latest = [...state.messages].reverse().find((message) => message.role === "assistant");
     if (latest && latest.id !== state.awaitingReply.baseline) {
-      state.awaitingReply = null; el("operation-status").textContent = "发现新的最终回复"; notice("发现新的最终回复");
+      state.awaitingReply = null; state.executionWatch = null; el("operation-status").textContent = "会话收到新的最终回复"; notice("会话收到新的最终回复", { kind: "success" });
     }
   }
 }
@@ -369,23 +424,41 @@ async function loadCatalogs() {
   el("create-submit").disabled = !allowed || !projects.items.length;
   el("create-hint").textContent = allowed ? "新会话的审批继续通过 Telegram 处理（如来源需要）。" : "此来源当前不支持新建会话。";
 }
-/** Show a write outcome without treating submission acceptance as task completion. */
-function showOperation(operation) {
+/** Show delivery and runtime evidence separately; never infer execution from queue admission alone. */
+function showOperation(operation, announce = true) {
   const knownSession = operation.kind === "create" && operation.sessionId ? ` · 已创建会话 ${operation.sessionId}` : "";
-  const detail = `${labels[operation.state] ?? operation.state}${operation.errorCode ? " · " + operation.errorCode : ""}${knownSession}`;
+  let status = labels[operation.state] ?? operation.state;
+  if (operation.execution?.state === "waiting_external_approval") status = "等待 Telegram 审批";
+  if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行" : "检测到会话正在执行";
+  if (operation.state === "delivery_unknown" && operation.execution?.state === "running") status += " · 投递回执待确认";
+  const detail = `${status}${operation.errorCode && operation.execution?.state !== "running" ? " · " + operation.errorCode : ""}${knownSession}`;
   el("operation-status").textContent = detail; el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending;
-  if (el("create-dialog").open) el("create-hint").textContent = detail; notice(detail);
+  if (el("create-dialog").open) el("create-hint").textContent = detail;
+  if (announce) {
+    const needsAction = operation.execution?.state === "waiting_external_approval" || ["failed", "delivery_unknown"].includes(operation.state);
+    const kind = operation.state === "failed" ? "error" : needsAction ? "warning" : "info";
+    notice(detail, { sticky: needsAction, kind });
+  }
+}
+/** Poll only the original operation record and source runtime evidence; this never resubmits a write. */
+async function refreshExecutionStatus() {
+  const watch = state.executionWatch; if (!watch) return;
+  const operation = await api("/api/operations/" + watch.operationId);
+  if (state.executionWatch?.operationId !== watch.operationId) return;
+  if (!["queued", "accepted", "delivery_unknown", "dispatching", "received"].includes(operation.state)) state.executionWatch = null;
+  showOperation(operation, false);
 }
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
 async function submitWrite(create) {
   const session = state.selected; if (!create && !session) return;
-  if (state.pending) { notice("已有提交待确认，请先刷新核查"); return; }
+  if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
   const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
   const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
     if (operation.state !== "delivery_unknown" && operation.state !== "dispatching") state.pending = null;
+    if (["accepted", "queued", "delivery_unknown"].includes(operation.state) && operation.sessionId) state.executionWatch = { operationId };
     if (["accepted", "queued"].includes(operation.state)) {
       state.followLatest = true;
       state.awaitingReply = { sessionId: operation.sessionId ?? session?.id, source, baseline: [...state.messages].reverse().find((message) => message.role === "assistant")?.id ?? null };
@@ -396,12 +469,12 @@ async function submitWrite(create) {
   } catch (error) {
     const definite = new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"]);
     if (definite.has(error.code)) {
-      state.pending = null; notice(error.message || "提交失败"); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
+      state.pending = null; notice(error.message || "提交失败", { sticky: true, kind: "error" }); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
     } else {
       el("operation-status").textContent = "结果待确认；不会自动重发";
       el("reconcile").hidden = false; el("create-reconcile").hidden = false;
       if (isTransportError(error)) enterDisconnected();
-      else notice("提交结果待确认，请刷新核查；不会自动重发。");
+      else notice("提交结果待确认，请刷新核查；不会自动重发。", { sticky: true, kind: "warning" });
     }
   }
   finally { if (create && !state.pending) el("create-submit").disabled = !state.caps[source]?.createEnabled; }
@@ -412,11 +485,12 @@ async function reconcilePending() {
   try {
     const operation = await api("/api/operations/" + state.pending.operationId);
     if (!["dispatching", "delivery_unknown", "received"].includes(operation.state)) state.pending = null;
+    if (operation.sessionId && ["queued", "accepted", "delivery_unknown"].includes(operation.state)) state.executionWatch = { operationId: operation.id };
     showOperation(operation);
   } catch (error) {
     if (error.code !== "operation_not_received") throw error;
     state.pending = null; el("reconcile").hidden = true; el("create-reconcile").hidden = true;
-    notice("未找到提交记录。请核对任务后再手动提交。");
+    notice("未找到提交记录。请核对任务后再手动提交。", { sticky: true, kind: "warning" });
   }
   if (el("create-dialog").open && !state.pending) el("create-submit").disabled = !state.caps[el("create-source").value]?.createEnabled;
   await refresh();
@@ -448,6 +522,8 @@ function syncViewport() {
 
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
 historyTools = el("history-tools");
+el("notice-toggle").onclick = toggleNoticeExpanded;
+el("notice-close").onclick = clearNotice;
 el("prompt").oninput = resizeComposer;
 el("prompt").addEventListener("focus", syncViewport);
 el("prompt").addEventListener("blur", syncViewport);

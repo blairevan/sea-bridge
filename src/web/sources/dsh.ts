@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { DshWebHostClient } from "../../dsh/web-host-client.ts";
 import type { DshModelCatalog, DshModelSelection, DshProject, DshWriteResult } from "../../dsh/types.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSession, WebHistory, WebMessage, CatalogItem, CreateRequest, SourceResult } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSession, WebHistory, WebMessage, CatalogItem, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 type Host = Pick<DshWebHostClient, "health" | "listSessions" | "listProjects" | "listModels" | "followSnapshot" | "pageHistory" | "getTurnSummary" | "createSession" | "selectModel" | "submitPrompt">;
 
@@ -63,6 +63,19 @@ export class DshWebSource implements WebSource {
         projectId: null, state: session.running ? "running" : "unknown", sendEnabled: this.writes && !session.running,
       }));
     } catch { this.transportHealthy = false; this.sessionsReadable = false; throw new Error("source_unavailable"); }
+  }
+
+  /** dsh exposes session-level running evidence but not an exact Web operation turn id. */
+  async execution(id: string, _turnId: string | null): Promise<ExecutionEvidence> {
+    this.requireRead();
+    try {
+      const sessions = await this.host.listSessions(); this.transportHealthy = true; this.sessionsReadable = true;
+      const session = sessions.find((item) => item.sessionId === id);
+      return { state: session?.running ? "running" : "unknown", exact: false };
+    } catch {
+      this.transportHealthy = false; this.sessionsReadable = false;
+      return { state: "unknown", exact: false };
+    }
   }
 
   /** Reuse short-lived, coalesced verified project discovery. */

@@ -9,8 +9,9 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const html = await Bun.file("src/web/public/index.html").text();
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
-  expect(html).toContain('src="/app.js?v=20261002-message8"'); expect(html).toContain('href="/app.css?v=20261002-message8"');
+  expect(html).toContain('src="/app.js?v=20261002-message10"'); expect(html).toContain('href="/app.css?v=20261002-message10"');
   expect(html).toContain('id="connection-panel"'); expect(html).toContain('id="connection-retry"');
+  expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-close"');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|localStorage|indexedDB|serviceWorker/);
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
@@ -19,7 +20,11 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(script).toContain('const settings = await requestApi("/api/settings")');
   expect(script).toContain("state.stream?.readyState === EventSource.OPEN");
   expect(script).toContain('new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"])');
-  expect(css).toContain(".workspace{display:flex;height:calc(100dvh - 64px);min-height:0;overflow:hidden}");
+  expect(css).toContain("#console{height:100dvh;display:flex;flex-direction:column;overflow:hidden}");
+  expect(css).toContain(".workspace{display:flex;flex:1;min-height:0;overflow:hidden}");
+  expect(css).toContain(".notice-text{flex:1;min-width:0;line-height:1.55");
+  expect(css).toContain("-webkit-line-clamp:2");
+  expect(css).toContain(".notice-bar.expanded .notice-text");
   expect(css).toContain("#sessions{padding:0;display:flex;height:100%;min-height:0;overflow:hidden}");
   expect(css).toContain("#messages{flex:1;min-height:0;overflow:auto");
 });
