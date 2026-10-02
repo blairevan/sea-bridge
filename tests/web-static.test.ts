@@ -9,9 +9,10 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const html = await Bun.file("src/web/public/index.html").text();
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
-  expect(html).toContain('src="/app.js?v=20261002-message10"'); expect(html).toContain('href="/app.css?v=20261002-message10"');
-  expect(html).toContain('id="connection-panel"'); expect(html).toContain('id="connection-retry"');
-  expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-close"');
+  expect(html).toContain('src="/app.js?v=20261002-message13"'); expect(html).toContain('href="/app.css?v=20261002-message13"');
+  expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
+  expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
+  expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-retry"'); expect(html).toContain('id="notice-close"');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|localStorage|indexedDB|serviceWorker/);
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
@@ -25,6 +26,7 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(css).toContain(".notice-text{flex:1;min-width:0;line-height:1.55");
   expect(css).toContain("-webkit-line-clamp:2");
   expect(css).toContain(".notice-bar.expanded .notice-text");
+  expect(css).toContain(".notice-bar.notice-connection");
   expect(css).toContain("#sessions{padding:0;display:flex;height:100%;min-height:0;overflow:hidden}");
   expect(css).toContain("#messages{flex:1;min-height:0;overflow:auto");
 });

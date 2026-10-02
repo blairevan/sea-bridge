@@ -45,24 +45,35 @@ test("request timeout is bounded and does not diagnose a specific tunnel or plug
   catch (error: unknown) { if (!error || typeof error !== "object" || !("code" in error) || !("message" in error)) throw error; expect(error.code).toBe("network_timeout"); expect(error.message).toBe("服务响应超时"); expect(error.message).not.toContain("Shadowrocket"); }
 });
 
-test("disconnect hides sensitive content, shows retry state, and preserves ambiguous writes for reconciliation", async () => {
+test("disconnect retains the loaded conversation read-only and preserves ambiguous writes", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
-  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; replaceChildren: () => void; close: () => void }>(); const delays: number[] = [];
+  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
   const node = (id: string) => {
-    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, replaceChildren() {}, close() { this.open = false; } });
+    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
     const result = nodes.get(id); if (!result) throw new Error("fixture missing"); return result;
   };
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected })", {
     document: { hidden: false, cookie: "", getElementById: node },
     setTimeout: (_fn: () => void, delay: number) => { delays.push(delay); return 17; }, clearTimeout() {},
-  }) as { state: { paused: boolean; pending: unknown; stream: { close: () => void } | null }; enterDisconnected: () => void };
+  }) as { state: { messages: unknown[]; sessions: unknown[]; selected: { title: string; sendEnabled: boolean } | null; paused: boolean; pending: unknown; stream: { close: () => void } | null }; enterDisconnected: () => void };
+  node("console").hidden = false;
   let closed = 0; harness.state.stream = { close: () => { closed++; } }; harness.state.pending = { operationId: "op" };
+  harness.state.messages = [{ id: "loaded" }]; harness.state.sessions = [{ id: "session" }];
+  harness.state.selected = { title: "Loaded conversation", sendEnabled: true };
   harness.enterDisconnected();
+  expect(harness.state.messages).toHaveLength(1); expect(harness.state.sessions).toHaveLength(1);
+  expect(harness.state.selected?.title).toBe("Loaded conversation");
+  expect(harness.state.selected?.sendEnabled).toBe(false);
+  expect(cleared).not.toContain("messages"); expect(cleared).not.toContain("session-items"); expect(cleared).toContain("log-items");
   expect(harness.state.paused).toBe(true); expect(closed).toBe(1);
-  expect(node("connection-panel").hidden).toBe(false);
-  expect(node("connection-detail").textContent).toContain("不会自动重发");
+  expect(node("notice-bar").hidden).toBe(false);
+  expect(node("notice-bar").className).toContain("notice-connection");
+  expect(node("notice-text").textContent).toContain("不会自动重发");
+  expect(node("notice-retry").hidden).toBe(false);
+  expect(node("notice-close").hidden).toBe(true);
+  expect(node("send-button").disabled).toBe(true);
   expect(node("operation-status").textContent).toContain("结果待确认");
   expect(delays).toEqual([1000]);
 });
@@ -131,4 +142,34 @@ test("a recovery response cannot unpause content after its SSE connection is los
   ui.state.stream = null; ui.state.paused = true;
   complete(); await recovery;
   expect(ui.state.paused).toBe(true);
+});
+
+test("backgrounding an unfinished SSE recovery releases its guard and resumes retry", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const start = script.indexOf('document.addEventListener("visibilitychange", () => {');
+  const end = script.indexOf('\nwindow.addEventListener("pageshow"', start);
+  let listener: () => void = () => { throw new Error("listener missing"); };
+  const nodes = new Map<string, { hidden: boolean; textContent: string; disabled: boolean; className: string; replaceChildren: () => void }>();
+  const document = { hidden: true, getElementById(id: string) {
+    if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: "", disabled: false, className: "", replaceChildren() {} });
+    return nodes.get(id);
+  }, addEventListener(_name: string, fn: () => void) { listener = fn; } };
+  const delays: number[] = [];
+  const ui = runInNewContext(script.slice(0, boundary) + '\n' + script.slice(start, end) + '\n({ state, recoverConnection })', {
+    document, setTimeout: (_fn: () => void, delay: number) => { delays.push(delay); return delays.length; }, clearTimeout() {},
+  }) as { state: { recovering: boolean; paused: boolean; stream: { close: () => void } | null }; recoverConnection: () => Promise<void> };
+  const consoleNode = document.getElementById("console"); if (!consoleNode) throw new Error("console fixture missing"); consoleNode.hidden = false;
+  let closed = 0;
+  ui.state.recovering = true; ui.state.stream = { close: () => { closed++; } };
+  listener();
+  expect(ui.state.recovering).toBe(false); expect(closed).toBe(1);
+  expect(nodes.get("notice-bar")?.hidden).toBe(false);
+  expect(nodes.get("notice-close")?.hidden).toBe(true);
+  document.hidden = false; listener();
+  expect(delays).toEqual([0]);
+  for (let attempt = 0; attempt < 10; attempt++) await ui.recoverConnection();
+  expect(delays.slice(-3)).toEqual([30000, 30000, 30000]);
+  expect(nodes.get("notice-bar")?.hidden).toBe(false);
+  expect(nodes.get("notice-bar")?.className).toContain("notice-connection");
 });

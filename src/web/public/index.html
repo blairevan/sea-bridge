@@ -4,19 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sea-Bridge 控制台</title>
-  <link rel="stylesheet" href="/app.css?v=20261002-message10">
-  <script src="/app.js?v=20261002-message10" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20261002-message13">
+  <script src="/app.js?v=20261002-message13" defer></script>
 </head>
 <body>
-  <section id="connection-panel" class="connection-panel" role="alertdialog" aria-live="assertive" aria-labelledby="connection-title" hidden>
-    <div class="connection-card">
-      <div class="eyebrow">SEA-BRIDGE</div>
-      <h1 id="connection-title">服务暂不可达</h1>
-      <p id="connection-detail">连接已中断，敏感内容已隐藏。</p>
-      <p id="connection-retry-state" class="muted"></p>
-      <button id="connection-retry" type="button">立即重试</button>
-    </div>
-  </section>
   <main id="pairing" class="pairing">
     <form id="pair-form" class="card" novalidate>
       <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
@@ -33,6 +24,7 @@
       <div id="notice-text" class="notice-text" role="status" aria-live="polite" aria-atomic="true"></div>
       <div class="notice-actions">
         <button id="notice-toggle" type="button" class="quiet" hidden>展开</button>
+        <button id="notice-retry" type="button" class="quiet" hidden>立即重试</button>
         <button id="notice-close" type="button" class="quiet notice-close" aria-label="关闭消息">×</button>
       </div>
     </section>
