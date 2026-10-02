@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { randomToken, safeEqual, tokenHash } from "./crypto.ts";
 import { WebStore, type WebDevice } from "./store.ts";
 
@@ -21,7 +21,14 @@ export function classifyRequest(
     .find((candidate) => new URL(candidate).host === host);
   if (!origin || (write && request.headers.get("origin") !== origin)) return null;
   const remote = origin === options.remoteOrigin;
-  return { remote, origin, bucket: remote ? "serve" : "loopback" };
+  // Tailscale Serve strips spoofed identity headers before adding its own. We only consult the
+  // login after the configured remote Host and loopback backend gates above have passed, and use
+  // a digest solely to keep pairing-failure buckets independent without retaining user identity.
+  const tailscaleLogin = remote && origin.startsWith("https://") ? request.headers.get("Tailscale-User-Login")?.trim() : null;
+  const bucket = remote
+    ? tailscaleLogin ? `serve:${createHash("sha256").update(tailscaleLogin).digest("hex").slice(0, 24)}` : "serve:anonymous"
+    : "loopback";
+  return { remote, origin, bucket };
 }
 
 /** Memory-only pairing plus durable device authentication and CSRF verification. */
@@ -82,8 +89,8 @@ export class WebAuth {
   }
 
   /** Emit host-only cookies; remote HTTPS always adds Secure. */
-  cookies(paired: PairedDevice, remote: boolean): string[] {
-    const flags = `SameSite=Strict; Path=/; Max-Age=2592000${remote ? "; Secure" : ""}`;
+  cookies(paired: PairedDevice, secure: boolean): string[] {
+    const flags = `SameSite=Strict; Path=/; Max-Age=2592000${secure ? "; Secure" : ""}`;
     return [ `sea_session=${paired.sessionToken}; HttpOnly; ${flags}`, `sea_csrf=${paired.csrfToken}; ${flags}` ];
   }
 

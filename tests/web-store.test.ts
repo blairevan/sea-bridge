@@ -116,6 +116,20 @@ describe("Web isolated persistence", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("history snapshots expose only explicitly accepted source writes", () => {
+    const db = new Database(":memory:"); migrateWeb(db);
+    const store = new WebStore(db);
+    for (const [id, state] of [["accepted-op", "accepted"], ["failed-op", "failed"], ["unknown-op", "delivery_unknown"]] as const) {
+      store.claimOperation({ id, digest: id, kind: "send", source: "dsh", deviceId: "device", targetId: "session",
+        projectId: null, modelId: null, createdAt: 1 });
+      db.query("INSERT INTO web_message_snapshots(operation_id,source,session_id,text,created_at) VALUES(?,?,?,?,?)").run(id, "dsh", "session", id, 1);
+      store.transitionOperation(id, "received", "dispatching", 2);
+      store.transitionOperation(id, "dispatching", state, 3);
+    }
+    expect(store.listAcceptedMessageSnapshots("dsh", "session")).toEqual([{ id: "accepted-op", role: "user", text: "accepted-op", createdAt: 1 }]);
+    db.close();
+  });
+
   test("bounded retention removes old records and caps count", () => {
     const db = new Database(":memory:"); migrateWeb(db);
     const store = new WebStore(db);

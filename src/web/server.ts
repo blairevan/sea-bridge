@@ -2,6 +2,7 @@ import type { Logger } from "../logger.ts";
 import type { WebConfig, WebService } from "./types.ts";
 import { join } from "node:path";
 import { classifyRequest } from "./auth.ts";
+import { WEB_MAX_REQUEST_BYTES } from "./http.ts";
 
 /** Resolve development assets or their self-contained packaged siblings. */
 export async function resolveWebStaticRoot(): Promise<string> {
@@ -58,7 +59,7 @@ export class WebServer implements WebService {
       if (!(await asset.exists()) || asset.size > 1024 * 1024) throw new Error("web_asset_missing");
       assets.set(path, { bytes: await asset.arrayBuffer(), type });
     }
-    this.server = Bun.serve({ hostname: "127.0.0.1", port: config.port, maxRequestBodySize: 65536, idleTimeout: 30,
+    this.server = Bun.serve({ hostname: "127.0.0.1", port: config.port, maxRequestBodySize: WEB_MAX_REQUEST_BYTES, idleTimeout: 30,
       fetch: async (request, server) => {
         const peer = server.requestIP(request)?.address ?? "unknown";
         const url = new URL(request.url);
@@ -67,7 +68,7 @@ export class WebServer implements WebService {
           if (!classifyRequest(request, { port: config.port, remoteOrigin: config.remoteOrigin, peer }, false)) return new Response("Forbidden", { status: 403 });
           return new Response(asset.bytes, { headers: {
             "Content-Type": asset.type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           } });
         }
         return handler(request, peer);

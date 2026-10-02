@@ -83,9 +83,19 @@ describe("request trust", () => {
   test("exact host/origin and loopback peer are required, forwarded headers grant nothing", () => {
     const options = { port: 7310, remoteOrigin: "https://machine.example.test", peer: "127.0.0.1" };
     expect(classifyRequest(new Request("http://127.0.0.1:7310/", { headers: { Origin: "http://127.0.0.1:7310" } }), options, true)?.remote).toBe(false);
-    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test" } }), options, true)?.remote).toBe(true);
-    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://evil.test", "X-Forwarded-Host": "machine.example.test" } }), options, true)).toBeNull();
+    const alice = classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test", "Tailscale-User-Login": "alice@example.test" } }), options, true);
+    const bob = classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test", "Tailscale-User-Login": "bob@example.test" } }), options, true);
+    expect(alice?.remote).toBe(true); expect(alice?.bucket).toMatch(/^serve:[0-9a-f]{24}$/);
+    expect(bob?.bucket).toMatch(/^serve:[0-9a-f]{24}$/); expect(bob?.bucket).not.toBe(alice?.bucket);
+    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test" } }), options, true)?.bucket).toBe("serve:anonymous");
+    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://evil.test", "X-Forwarded-Host": "machine.example.test", "Tailscale-User-Login": "alice@example.test" } }), options, true)).toBeNull();
     expect(classifyRequest(new Request("http://evil.test/", { headers: { "X-Forwarded-Host": "machine.example.test" } }), options, false)).toBeNull();
     expect(classifyRequest(new Request("https://machine.example.test/"), { ...options, peer: "100.1.2.3" }, false)).toBeNull();
   });
+});
+
+test("TCP Serve IP requests never trust client-supplied identity buckets", () => {
+  const origin = "http://100.112.22.85:7310";
+  const context = classifyRequest(new Request(origin, { headers: { Origin: origin, "Tailscale-User-Login": "spoof@example.test" } }), { port: 7310, remoteOrigin: origin, peer: "127.0.0.1" }, true);
+  expect(context?.bucket).toBe("serve:anonymous");
 });

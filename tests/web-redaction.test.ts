@@ -7,7 +7,7 @@ describe("Web permanent and optional redaction", () => {
     const result = filter.storage({ nested: ["text fixture-credential-value\nmore"], url: "https://example.test/?key=fixture-credential-value", password: "fixture password" });
     expect(JSON.stringify(result)).not.toContain("fixture-credential-value");
     expect(JSON.stringify(result)).not.toContain("fixture password");
-    expect(filter.storage("Bearer fixture-value\nCookie: session=fixture\napi_key=fixture\n-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----")).not.toContain("fixture");
+    expect(filter.storage("Bearer fixture-value\nCookie: session=fixture\nCookie=session-equals-fixture\nSet-Cookie=session=fixture\napi_key=fixture\n-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----")).not.toContain("fixture");
   });
 
   test("ordinary privacy is switchable but secrets are permanently filtered", () => {

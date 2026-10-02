@@ -10,13 +10,61 @@ interface RecordItem {
 export function operationRecords(store: WebStore, input: {
   source: string | null; session: string | null; state: string | null; from: number; to: number; limit: number; offset: number;
 }): { items: RecordItem[]; cursor: string | null } {
-  const count = Math.min(10100, input.offset + input.limit + 1);
-  const records = store.db.query("SELECT id,source,'web' AS transport,kind,state,session_id AS sessionId,error_code AS errorCode,created_at AS createdAt FROM web_operations ORDER BY created_at DESC LIMIT ?").all(count) as RecordItem[];
-  for (const [table, source, target] of [["telegram_thread_deliveries", "codex", "thread_id"], ["dsh_deliveries", "dsh", "session_id"]] as const) {
-    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) continue;
-    const rows = store.db.query(`SELECT telegram_update_id AS id,status AS state,${target} AS sessionId,error_code AS errorCode,created_at AS createdAt FROM ${table} ORDER BY created_at DESC LIMIT ?`).all(count) as Array<{ id: number; state: string; sessionId: string; errorCode: string | null; createdAt: number }>;
-    records.push(...rows.map((row) => ({ ...row, id: `telegram-${source}-${row.id}`, source, transport: "telegram", kind: "send", state: row.state === "delivered" ? source === "codex" ? "queued" : "accepted" : row.state })));
+  const count = Math.min(10101, input.offset + input.limit + 1);
+  const records: RecordItem[] = [];
+
+  // Push filters into each provider-scoped query before applying the per-table bound. Filtering
+  // after LIMIT can otherwise hide an older matching row behind unrelated newer operations.
+  {
+    const where = ["created_at>=?", "created_at<=?"];
+    const params: Array<string | number> = [input.from, input.to];
+    if (input.source) { where.push("source=?"); params.push(input.source); }
+    if (input.session) { where.push("session_id=?"); params.push(input.session); }
+    if (input.state) { where.push("state=?"); params.push(input.state); }
+    const sql = `SELECT id,source,'web' AS transport,kind,state,session_id AS sessionId,error_code AS errorCode,created_at AS createdAt
+      FROM web_operations WHERE ${where.join(" AND ")} ORDER BY created_at DESC,id ASC LIMIT ?`;
+    records.push(...store.db.query(sql).all(...params, count) as RecordItem[]);
   }
-  const filtered = records.filter((row) => (!input.source || row.source === input.source) && (!input.session || row.sessionId === input.session) && (!input.state || row.state === input.state) && row.createdAt >= input.from && row.createdAt <= input.to).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  return { items: filtered.slice(input.offset, input.offset + input.limit), cursor: filtered.length > input.offset + input.limit ? String(input.offset + input.limit) : null };
+
+  for (const [table, source, target] of [["telegram_thread_deliveries", "codex", "thread_id"], ["dsh_deliveries", "dsh", "session_id"]] as const) {
+    if (input.source && input.source !== source) continue;
+    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) continue;
+    let storedState: string | null = input.state;
+    if (input.state === "queued") storedState = source === "codex" ? "delivered" : "__no_match__";
+    else if (input.state === "accepted") storedState = source === "dsh" ? "delivered" : "__no_match__";
+    if (storedState === "__no_match__") continue;
+    const where = ["created_at>=?", "created_at<=?"];
+    const params: Array<string | number> = [input.from, input.to];
+    if (input.session) { where.push(`${target}=?`); params.push(input.session); }
+    if (storedState) { where.push("status=?"); params.push(storedState); }
+    const sql = `SELECT telegram_update_id AS id,status AS state,${target} AS sessionId,error_code AS errorCode,created_at AS createdAt
+      FROM ${table} WHERE ${where.join(" AND ")} ORDER BY created_at DESC,telegram_update_id ASC LIMIT ?`;
+    const rows = store.db.query(sql).all(...params, count) as Array<{ id: number; state: string; sessionId: string; errorCode: string | null; createdAt: number }>;
+    records.push(...rows.map((row) => ({ ...row, id: `telegram-${source}-${row.id}`, source, transport: "telegram", kind: "send",
+      state: row.state === "delivered" ? source === "codex" ? "queued" : "accepted" : row.state })));
+  }
+
+  // dsh creation requests have durable provider-scoped state; expose them without inferring any
+  // equivalent historical Codex creation record that the current schema does not persist.
+  if ((!input.source || input.source === "dsh") &&
+      store.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dsh_creation_requests'").get()) {
+    const where = ["created_at>=?", "created_at<=?"];
+    const params: Array<string | number> = [input.from, input.to];
+    if (input.session) { where.push("session_id=?"); params.push(input.session); }
+    if (input.state === "queued") {
+      where.push("0");
+    } else if (input.state === "accepted") {
+      where.push("status IN ('accepted','acknowledged')");
+    } else if (input.state) {
+      where.push("status=?"); params.push(input.state);
+    }
+    const rows = store.db.query(`SELECT telegram_update_id AS id,status AS state,session_id AS sessionId,error_code AS errorCode,created_at AS createdAt
+      FROM dsh_creation_requests WHERE ${where.join(" AND ")} ORDER BY created_at DESC,telegram_update_id ASC LIMIT ?`)
+      .all(...params, count) as Array<{ id: number; state: string; sessionId: string | null; errorCode: string | null; createdAt: number }>;
+    records.push(...rows.map((row) => ({ ...row, id: `telegram-dsh-create-${row.id}`, source: "dsh", transport: "telegram", kind: "create",
+      state: row.state === "acknowledged" ? "accepted" : row.state })));
+  }
+
+  records.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  return { items: records.slice(input.offset, input.offset + input.limit), cursor: records.length > input.offset + input.limit ? String(input.offset + input.limit) : null };
 }

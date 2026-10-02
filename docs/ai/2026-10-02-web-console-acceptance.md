@@ -98,3 +98,138 @@
 - 当前全套 212 pass / 0 fail；类型检查、构建、diff 检查通过。没有 lint/format script，未新增依赖。
 - 临时浏览器配对和全局隐私设置切换等待用户当场确认；真实 Codex/dsh 创建/续发、跨设备同步和撤销尚未验收。
 - Tailscale 只做只读预检：服务 Running，现有 TCP 13080 转发保留，未发现启用 Funnel；未配置新的 Serve 路由。Task 13 必须等本机验收通过。手机及第二台电脑结果尚未取得。
+
+## 2026-10-02 代码复审修订
+
+本轮按设计与实施计划重新审查 Web 鉴权、操作状态机、Codex/dsh source adapter、历史合并、操作记录、SSE 恢复和 Tailscale Serve 信任边界，并直接修复以下问题：
+
+- Web 操作的消息快照改为在来源派发边界之前落盘；若本地快照持久化失败，操作明确进入 `failed/local_persistence_failed`，不会误报为来源可能已执行。
+- 明确失败的 Web 写操作不再留下可用于会话历史的用户快照；dsh 历史只合并 `accepted` 操作，避免 busy、validation failed、delivery unknown 被伪造成真实用户消息。
+- dsh 写入在 Host 调用前执行 8192 字符上限和 session ID 校验；项目/模型发现失败属于明确的前置失败，不再误标为 `delivery_unknown`。模型选择明确拒绝与首条 prompt 明确拒绝也保持 definite failure。
+- Codex 项目/模型发现失败发生在 `thread/start` 前时返回明确失败；只有进入 App Server 创建边界后的异常才保留 unknown。
+- Codex 与 dsh 的 sessions/projects/models/history 能力证据拆分，不再因一个读取接口成功就把其它接口标成可用。
+- dsh exact-turn summary 增加有界内存缓存，避免前台 3 秒刷新对同一 durable turn 重复串行读取。
+- 操作记录把筛选条件下推到各 provider SQL 后再做有界读取，修复“先 LIMIT、后过滤”遗漏较旧匹配记录；同时纳入已有持久状态可可靠重建的 Telegram dsh 新建会话记录。Codex 历史 Telegram 新建没有同等结果表，不做推断。
+- Tailscale Serve 配对限速桶在已满足精确远程 Host + loopback backend 条件后，使用 `Tailscale-User-Login` 的截断 SHA-256 摘要区分用户；不保存完整身份字符串，tagged/no-identity 流量落入匿名远程桶，身份头仍不参与 Sea-Bridge 授权。
+- 永久凭证过滤补齐 `Cookie=` / `Set-Cookie=` 等等号形式。
+- 页面从后台恢复时，只有 SSE 已重新进入 `OPEN` 才解除敏感展示暂停；否则继续清空敏感内容。已收到明确 4xx 前置错误的提交不再误提示“结果待确认”，只有网络/服务端不确定结果保留人工核查。
+- 部分创建失败/unknown 且已知 session ID 时，页面明确显示“已创建会话 <id>”，避免用户重复创建。
+
+复审后验证：
+- Web 专项：45 pass / 0 fail。
+- 全量：221 pass / 0 fail。
+- `bun run typecheck`：通过。
+- `bun run build`：通过。
+- `git diff --check`：通过。
+- 未执行真实浏览器配对、全局脱敏切换、设备撤销；未修改 Tailscale Serve/Funnel。上述仍属于运行态验收。
+
+## 本轮限定运行验收（2026-10-02）
+
+- 用户授权范围：仅配对一个临时设备、全局脱敏关闭一次后立即恢复开启、撤销该设备；不含 Tailscale 配置修改或真实 Codex/dsh 写入。
+- 复审代码重新执行 `bun test`（221 pass / 0 fail）、`bun run typecheck`、`bun run build`、`git diff --check`，全部通过。
+- 将当前未提交源码及新构建产物快照部署到 `sea-bridge-releases/web-review-20261002-155317`；release 启动脚本执行 `dist/main.js`。原 env 与 Tailscale 配置未修改，未提交、未 push。
+- 浏览器成功配对唯一临时设备 `临时验收-20261002`；设置页面初始开启，关闭并保存一次，确认关闭后立即开启并保存。
+- 随后撤销当前临时设备，页面显示“设备已被撤销，请重新配对”；直接读取实际进程持有的数据库确认脱敏开启、设置版本 3，临时设备仅一条且已撤销。
+- `lsof -nP -iTCP:7310 -sTCP:LISTEN` 确认仅监听 `127.0.0.1:7310`；未鉴权 `/api/status` 返回 401。
+- 截图：`docs/ai/2026-10-02-web-device-revoked.png`。未记录配对码、Cookie 或会话凭证。
+- 验收边界：未验证第二设备同步、真实来源写入或手机/Tailnet 访问；Task 12/13 不标为全部完成。
+
+## Tailscale Serve 接入（2026-10-02）
+
+- 用户单独确认接入；新增 HTTPS 443 → http://127.0.0.1:7310，精确 remote origin 为 https://macbookprom5nvy.tail349ac9.ts.net。原 TCP 13080 → 127.0.0.1:3080 保留，无 AllowFunnel。
+- env/Serve 原配置备份：~/.config/sea-bridge/backups/tailscale-serve-20261002-161537；移除本次路由命令 `tailscale serve --https=443 off`，并恢复该备份 env 后重启服务。
+- M2 (100.96.125.89) 上真实 HTTPS 请求：使用 curl --noproxy '*' --resolve macbookprom5nvy.tail349ac9.ts.net:443:100.112.22.85，首页 200，未鉴权 API 401，证书校验正常。
+- 普通 DNS 请求仍失败：M2 将域名解析到 198.18.0.226，属于代理假 IP 地址范围；尚未修改 M2 DNS/代理配置。普通浏览器、手机和远程配对未验收。
+
+## 用户改用 IP 隧道（2026-10-02）
+
+- 按用户最新要求撤掉新增 HTTPS 443 Serve、移除 remote origin 并重启；原 TCP 13080 保留。未修改 M2 DNS，未开启 accept-dns。
+- 通过 Tailscale IP 100.96.125.89 建立 SSH reverse loopback forwarding：M2 127.0.0.1:7310 → M5 127.0.0.1:7310。仅运行态隧道，未设置开机自启。
+- M2 实际请求 http://127.0.0.1:7310/ 返回 200；未鉴权 /api/status 返回 401。配对码仍需在 M5 生成。隧道依赖 M5 上 SSH 进程，重启后需重建。
+
+## 原生 Tailscale IP 入口（2026-10-02）
+
+- 按用户最新要求，替换 SSH forwarding 为 Tailscale Serve TCP 7310 → 127.0.0.1:7310；旧 SSH 进程已停止，原 TCP 13080 保留，未启用 Funnel。
+- 入口 http://100.112.22.85:7310/；应用继续仅监听 loopback，精确配置该 Tailnet HTTP origin。HTTP 仅放行 canonical 100.64.0.0/10 IPv4 origin，Cookie 保留 HttpOnly/SameSite/CSRF；HTTPS 仍保留 Secure。Tailnet TCP 不信任客户端身份头，限速使用共享匿名远程桶。传输加密由 Tailscale 提供。
+- 部署 web-tailnet-ip-20261002-163031；224 测试通过，typecheck/build/diff 检查通过。M2 直接 IP 首页 200、未登录 API 401；手机真实访问尚待用户验证。
+- 回滚：tailscale serve --tcp=7310 off，恢复 backups/web-tailnet-ip-20261002-163031 下 env/agent.plist 后 reload。代码未提交、未 push。
+
+## M2 系统代理 503 修复（2026-10-02）
+
+- 复现：直连首页 200，显式经 127.0.0.1:1082 HTTP 代理返回 503；此前 --noproxy 验证不能证明浏览器路径正常。
+- Shadowrocket 源配置包含 Tailnet 网段绕过，但加载缓存缺失。备份 rule.db 和 iCloud 源 lazy_group.db 到 M2 ~/.config/sea-bridge-proxy-backup，向 skip-proxy 添加精确 100.112.22.85，重新连接 Shadowrocket。
+- 验证 Shadowrocket Connected、系统 HTTP/HTTPS 代理仍启用、scutil --proxy 的 ExceptionsList 包含 100.112.22.85。M2 Python urllib 的 macOS proxy_bypass=True，遵循系统代理的首页请求 200，未鉴权 API 401。
+- M2 浏览器实际页面和 iPhone 尚待用户验证；未宣称已完成。
+
+## 消息显示与 HTTP 发送兼容（2026-10-02）
+
+- 用户反馈 iPhone HTTP IP 页面 crypto.randomUUID 不可用。增加 crypto.getRandomValues UUID v4 fallback，无 Math.random；保留原幂等操作 ID。fixture 在 randomUUID 缺失时验证标准 version/variant 位。未执行额外真实来源写入。
+- 无依赖 Markdown 子集：标题、强调、列表、引用、代码围栏、表格、链接。纯 DOM/textContent，不解析源 HTML；URL 禁止 javascript/data/file 与 userinfo。HTTPS 或同源图片链接需点击加载，no-referrer，不代理本机文件，不支持上传。
+- 消息顶部增加来源时间：Codex rollout timestamp、dsh turn/end time、accepted Web snapshot created_at；缺失显示“时间未知”，不伪造历史时间。
+- 全套 229 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。390×844 浏览器预览验证标题/列表/表格/代码/时间，以及点击图片加载；截图 2026-10-02-message-mobile-preview.png 为合成 fixture，不含真实会话内容。
+- 部署 release web-message-ui-20261002-182204；IP 首页和 JS/CSS 返回 200，新资产版本 message1，HTTP 源站监听不变。未提交、未 push。真实 iPhone 发送和历史显示结果待用户反馈。
+
+## 发送后历史刷新修复（2026-10-02）
+
+- 用户截图停留在 18:23:10 回复和“已入队”。核对 Codex 队列当前无该项，rollout 有 18:25:44 用户消息与 18:25:49 最终回复；旧 reader 实际返回空 messages。
+- 根因：只扫描尾部 256 KiB，工具/图片大段记录会挤出可见消息。改为最多 16 个 256 KiB 窗口（总扫描不超过 4 MiB），持续跳过不可见记录，保留 no-follow/confinement/64 MiB 文件上限与 byte cursor。新增 700 KiB trailing tool gap 回归测试。真实 rollout 修复后读到该最终回复，只输出角色与时间元数据。
+- 发送后跟随最新消息；用户浏览较早历史时不强制跳底。按最后 assistant ID 检测新最终回复，文案“发现新的最终回复”不声称与提交操作存在可靠关联。绝不重发原消息。
+- 全套 231 pass / 0 fail；bun run typecheck、bun run build、git diff --check 通过。部署 web-history-refresh-20261002-183222，前端资产 message2；IP 首页/JS 200。手机刷新显示尚待用户确认，未提交、未 push。
+## 发送后历史刷新代码复审（2026-10-02）
+
+- 复审发现历史分页状态仍有缺陷：用户加载更早页面后，3 秒最新轮询会覆盖已加载旧消息并把 `historyCursor` 重置到最新页边界，后续“加载更早”会重复取页。已改为最新轮询合并新消息且保留最早 continuation cursor；仅首次加载或显式向前翻页时更新 cursor。
+- Codex rollout reader 的窗口边界处理补强：窗口起点若刚好位于 JSONL 行边界，不再误跳首条完整记录；文件末尾完整 JSON 尚未写入换行时也可读取最终回复，部分/非法 JSON 仍忽略。
+- 尾部扫描上限由 4 MiB 提升为 16 MiB，仍采用 256 KiB 随机访问窗口；新增 5 MiB 工具/图片尾部回归。此前 64 MiB 的“整个 rollout 文件大小”硬拒绝已移除，因为读取本身已严格有界；改为只要求普通文件和安全整数大小，并用 65 MiB 稀疏文件验证长会话仍可读取。
+- HTTP 层原先允许 32,000 字符 Codex prompt，但请求体仅 64 KiB，合法中文长消息会在字段校验前被拒绝。总请求体上限改为 256 KiB，pair 等小接口仍保留各自更小的 `readJson` 上限；新增 32,000 个中文字符通过 HTTP 边界的回归。
+- 前端资源版本提升为 `20261002-message3`，用于后续部署时强制区分本轮修订。
+- 复审后全量验证：234 pass / 0 fail；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
+- 本轮只修改当前 `feature/web-console` 工作区源码与测试，未在此复审步骤重新部署运行服务；线上是否仍为 `web-history-refresh-20261002-183222` 无法从当前 DevSpace 容器直接核实。
+
+
+## message3 部署验收（2026-10-02 19:01）
+
+- 已部署独立 release：`/opt/app/aitools/sea-bridge-releases/web-message3-20261002-190107`，launchd 实际运行 PID 5188。
+- 同步静态测试的版本断言：message2 → message3；重新执行 `bun test`：234 pass / 0 fail。
+- `bun run typecheck`、`bun run build`、`git diff --check` 通过。
+- 经 Tailscale IP 请求首页、message3 JS/CSS 均为 HTTP 200；未授权 `/api/status` 为 401。部署构建与当前 dist 的 SHA-256 一致。
+- 服务仅监听 127.0.0.1:7310；原有 Tailscale TCP Serve 7310/13080 配置保持，未启用 Funnel。
+- 本轮没有提交或 push；未执行新的真实消息写入，iPhone 刷新后的交互仍需设备侧确认。
+
+
+## message4 部署验收（2026-10-02 19:22）
+
+- 已部署 release：`/opt/app/aitools/sea-bridge-releases/web-message4-20261002-192245`；launchd 已加载该 release。
+- `bun test`：235 pass / 0 fail；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
+- Tailscale IP 首页及 message4 JS/CSS 返回 200，未授权 status 返回 401；部署构建 SHA-256 与当前 dist 一致。
+- 未提交或 push；手机首次进入会话的滚动行为仍需设备侧确认。
+
+
+## message5 手机会话定位修复（2026-10-02 19:31）
+
+- 原始 rollout 与 reader 可读到 19:23 最终回复；手机点击会话时在 detail-open 前设置 scrollTop，隐藏面板无法保留定位。
+- 将显示面板移至加载消息前，新建会话同路径同步修复；回归模拟隐藏面板的 scrollTop 归零，修复前失败、修复后通过。
+- `bun test` 236 pass / 0 fail；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
+- 部署 `/opt/app/aitools/sea-bridge-releases/web-message5-20261002-193103`；IP 首页/JS/CSS 200，未授权 status 401；运行 release 与构建哈希已验证。
+## message6 会话最新消息定位修复（2026-10-02 19:50）
+
+- 手机仍停在最早消息的根因确认在布局：`#messages` 虽有 `overflow:auto`，但祖先只有 `min-height`、没有 viewport 高度约束，内容会把消息区整体撑高，真实滚动发生在页面而非 `#messages`；因此给 `#messages.scrollTop` 赋值在 Safari 中视觉上无效。
+- 会话工作区改为 viewport 内受约束的 flex 布局：workspace 固定可视高度并隐藏外溢，content/session-detail 使用 `min-height:0`，session list 与 messages 成为明确滚动容器；移动端按 56px header 重新计算高度。
+- 最新定位增加 `lastElementChild.scrollIntoView({ block: 'end' })` 作为 Safari 双保险；用户主动加载旧历史时仍保持阅读位置。
+- 新增静态 CSS 契约及浏览器 helper 回归，前端资源版本升级为 `20261002-message6`。
+- 全量验证：236 pass / 0 fail；`bun run typecheck`、`bun run build`、`git diff --check` 通过。当前复审步骤未重新部署 message6。
+- 手机实际交互待用户确认；未提交或 push。
+
+
+## message6 部署验收（2026-10-02 19:57）
+
+- 已部署 `/opt/app/aitools/sea-bridge-releases/web-message6-20261002-195715`，launchd 已运行此 release。
+- `bun test`：236 pass / 0 fail；`bun run typecheck`、`bun run build`、`git diff --check` 通过。
+- Tailscale IP 首页、message6 JS/CSS 均返回 200；未授权 status 返回 401；部署产物 SHA-256 与当前 dist 匹配。
+- 本轮部署未修改 Tailscale 配置，未提交或 push；iPhone 内部滚动容器效果仍需设备侧确认。
+
+
+## 提交前复核（2026-10-02）
+
+- 修复 Tailnet HTTP 退出响应误加 Secure：Cookie 删除与签发均按 origin 的 HTTPS 协议判断。HTTP/HTTPS 回归修复前失败，修复后通过。服务端仍先撤销登录凭据。
+- `bun run typecheck`、`bun test`（236 pass / 0 fail，1011 assertions）、`bun run build`、`git diff --check` 通过。
+- 此退出 Cookie 清理补丁尚未重新部署；运行服务仍为此前 message6 release。
