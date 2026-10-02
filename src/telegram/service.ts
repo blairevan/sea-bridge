@@ -78,6 +78,11 @@ export class TelegramService {
     private readonly dshObserverStatus?: DshObserverStatusSource,
   ) {}
 
+  /** Project existing receive-poll health without probing Telegram or exposing payloads. */
+  getStatus(): { stopped: boolean; lastPollSuccessAt: number | null; pollFailed: boolean } {
+    return { stopped: this.stopped, lastPollSuccessAt: this.lastPollSuccessAt, pollFailed: this.pollFailed };
+  }
+
   async run(): Promise<void> {
     this.stopped = false;
     if ((this.newThreads || this.dshStore) && !this.cleanupTimer) {

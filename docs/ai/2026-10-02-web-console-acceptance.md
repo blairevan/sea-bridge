@@ -60,3 +60,10 @@
 - 读写门控、未知旧会话项目、exact-turn 最终回复、有界 cursor、注入式 Web 快照合并、合并并发目录缓存。
 - Web 独立 request/session 命名空间、按请求模型、创建早期 ID、busy 不排队、派发丢失为 unknown；无 Telegram store/manager 引用。
 - 全套 204 pass；`bun run typecheck`、`git diff --check` 通过。真实 Host Web 操作验收仍待生命周期集成后执行。
+
+## Task 8：API/SSE 集成进度
+
+- API 鉴权/CSRF、有界 JSON 读取、设置 CAS、设备撤销、control-only SSE、目录/会话/历史/操作/日志查询、原始 prompt 与过滤副本分离、派发前持久化认领。
+- 接入 Web 与 Telegram 历史投递的只读操作记录；Telegram getStatus 仅投影现有 polling 状态。
+- Loopback HTTP 服务与静态 allowlist/CSP 已实现，但静态资源尚未生成，其实测响应门槛仍未勾选。
+- 全套 207 pass；类型检查、构建、diff 检查通过。未启动真实 Web 服务。

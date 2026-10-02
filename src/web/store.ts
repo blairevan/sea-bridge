@@ -72,6 +72,11 @@ export class WebStore {
     return this.db.query(`SELECT ${DEVICE_COLUMNS} FROM web_device_sessions ORDER BY paired_at DESC LIMIT 100`).all() as WebDevice[];
   }
 
+  /** Resolve one device for stream expiry independently of the bounded management list. */
+  getDevice(id: string): WebDevice | null {
+    return this.db.query(`SELECT ${DEVICE_COLUMNS} FROM web_device_sessions WHERE id=?`).get(id) as WebDevice | null;
+  }
+
   /** Revoke persistently; event-stream closure is handled by the HTTP layer. */
   revokeDevice(id: string, now: number): boolean {
     return this.db.query("UPDATE web_device_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL").run(now, id).changes > 0;
