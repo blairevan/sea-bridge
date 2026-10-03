@@ -8,6 +8,27 @@ const reads = new Map();
 const messageViews = new Map();
 let historyTools;
 
+/** Apply a visual preference without storing account or conversation data. */
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const button = el("theme-toggle");
+  if (button) { button.textContent = dark ? "☀ 浅色" : "☾ 深色"; button.setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题"); button.setAttribute("aria-pressed", String(dark)); }
+}
+/** Restore an explicit preference, falling back to the device appearance. */
+function initializeTheme() {
+  let preference = null;
+  try { preference = localStorage.getItem("sea-theme"); } catch { /* Storage restrictions do not prevent theme switching. */ }
+  const fallback = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  applyTheme(preference === "dark" || preference === "light" ? preference : fallback);
+}
+/** Switch the entire console and keep the device preference when storage is available. */
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem("sea-theme", next); } catch { /* The current-page selection still applies. */ }
+}
+
 /** Generate an RFC 4122 UUID with secure randomness on HTTP Tailnet pages too. */
 function operationUuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -25,6 +46,32 @@ function safeMessageUrl(value, image) {
     return url.href;
   } catch { return null; }
 }
+/** Close the full-size image and discard its source on privacy invalidation. */
+function closeImagePreview() {
+  const dialog = el("image-dialog");
+  if (dialog?.open) dialog.close();
+  const image = el("image-dialog-image");
+  if (image) { image.removeAttribute("src"); image.alt = ""; }
+  const title = el("image-dialog-title"); if (title) title.textContent = "图片预览";
+}
+
+/** Open an already requested image without exposing a filesystem path or navigating away. */
+function openImagePreview(image) {
+  const href = safeMessageUrl(image.src, true); const dialog = el("image-dialog");
+  if (!href || !dialog) return;
+  const full = el("image-dialog-image"); full.alt = image.alt || "图片"; full.src = href;
+  el("image-dialog-title").textContent = image.alt || "图片预览";
+  if (!dialog.open) dialog.showModal();
+}
+
+/** Make native attachments and Markdown images operable by touch and keyboard. */
+function enableImagePreview(image) {
+  image.className = "previewable-image"; image.tabIndex = 0;
+  image.setAttribute("role", "button"); image.setAttribute("aria-label", `放大查看：${image.alt || "图片"}`);
+  image.onclick = () => openImagePreview(image);
+  image.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(image); } };
+}
+
 /** Render inline Markdown using text nodes; source HTML is never interpreted. */
 function appendInline(parent, text, depth = 0) {
   if (depth > 3) { parent.append(document.createTextNode(text)); return; }
@@ -38,9 +85,10 @@ function appendInline(parent, text, depth = 0) {
       else if (image) {
         const box = node("span", "", "markdown-image"); const button = node("button", `加载图片：${match[2] || "图片"}`, "quiet"); button.type = "button";
         button.onclick = () => {
-          const img = document.createElement("img"); img.alt = match[2]; img.referrerPolicy = "no-referrer"; img.loading = "lazy";
+          const img = document.createElement("img"); img.alt = match[2]; img.referrerPolicy = "no-referrer"; img.loading = "eager";
+          img.onload = updateLatestShortcut;
           img.onerror = () => { box.replaceChildren(node("span", "图片无法加载", "muted")); };
-          img.src = href; box.replaceChildren(img);
+          enableImagePreview(img); img.src = href; box.replaceChildren(img);
         };
         box.append(button); parent.append(box);
       } else {
@@ -55,6 +103,84 @@ function appendInline(parent, text, depth = 0) {
   }
   parent.append(document.createTextNode(text.slice(offset)));
 }
+/** Recognize the native attachment envelope without treating its paths as Markdown headings. */
+function userAttachmentEnvelope(text) {
+  const marker = "## My request:";
+  if (!text.startsWith("# Files mentioned by the user:") || !text.includes(marker)) return null;
+  const split = text.indexOf(marker); const header = text.slice(0, split);
+  const names = [...header.matchAll(/^## ([^\n]+?):[^\n]*$/gm)].map((match) => match[1]);
+  if (!names.length) return null;
+  const body = text.slice(split + marker.length).replace(/<\/?image\b[^>]*>/g, "").trim();
+  return { names, body };
+}
+
+/** Copy the displayed message body, excluding metadata and native attachment paths. */
+function messageCopyText(message) {
+  const envelope = message.role === "user" ? userAttachmentEnvelope(message.text) : null;
+  return envelope ? [envelope.body, `附件：${envelope.names.join("、")}`].filter(Boolean).join("\n\n") : message.text;
+}
+
+/** Support clipboard writes on secure pages and selection-based copying on Tailnet HTTP. */
+async function copyMessageText(text) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* Fall back to an explicit user-initiated selection. */ }
+  }
+  const field = document.createElement("textarea"); field.value = text;
+  field.style.position = "fixed"; field.style.opacity = "0"; field.style.fontSize = "16px";
+  const active = document.activeElement; const selection = document.getSelection?.(); const ranges = [];
+  if (selection) for (let index = 0; index < selection.rangeCount; index++) ranges.push(selection.getRangeAt(index).cloneRange());
+  document.body.append(field);
+  try {
+    field.select(); field.setSelectionRange(0, text.length);
+    if (!document.execCommand("copy")) throw new Error("clipboard_unavailable");
+  } finally {
+    field.remove(); active?.focus?.({ preventScroll: true });
+    if (selection) { selection.removeAllRanges(); for (const range of ranges) selection.addRange(range); }
+  }
+}
+
+/** Render a compact accessible copy action with explicit success and failure feedback. */
+function messageCopyButton(message) {
+  const button = node("button", "⧉", "message-copy quiet"); button.type = "button";
+  button.title = "复制消息"; button.setAttribute("aria-label", "复制消息");
+  button.onclick = async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try { await copyMessageText(messageCopyText(message)); notice("已复制消息", { kind: "success" }); }
+    catch { notice("无法自动复制，请长按消息选择文字复制", { kind: "warning" }); }
+    finally { button.disabled = false; }
+  };
+  return button;
+}
+
+/** Render a request with compact native attachment cards and explicit same-origin image loading. */
+function renderUserMessage(message, session) {
+  const envelope = userAttachmentEnvelope(message.text);
+  if (!envelope) return renderMarkdown(message.text);
+  const root = renderMarkdown(envelope.body);
+  const attachments = node("div", "", "message-attachments");
+  envelope.names.slice(0, 20).forEach((name, index) => {
+    const card = node("div", "", "attachment-card"); card.append(node("span", name, "attachment-name"));
+    if (session.source === "codex") {
+      const button = node("button", "查看图片", "quiet"); button.type = "button";
+      const preview = node("div", "", "attachment-preview");
+      button.onclick = () => {
+        if (button.disabled) return;
+        button.disabled = true; button.textContent = "正在加载…";
+        const image = document.createElement("img"); image.alt = name; image.loading = "eager"; image.referrerPolicy = "no-referrer";
+        image.onload = () => { button.hidden = true; updateLatestShortcut(); };
+        image.onerror = () => { image.hidden = true; button.disabled = false; button.textContent = "图片不可用，点击重试"; };
+        enableImagePreview(image);
+        image.src = `/api/sessions/codex/${encodeURIComponent(session.id)}/attachments/${encodeURIComponent(message.id)}/${index}`;
+        preview.replaceChildren(image);
+      };
+      card.append(button, preview);
+    }
+    attachments.append(card);
+  });
+  root.append(attachments); return root;
+}
+
 /** Render bounded Markdown blocks: headings, lists, quotes, tables and fenced code. */
 function renderMarkdown(text) {
   const root = node("div", "", "markdown"); const lines = String(text).split("\n");
@@ -215,6 +341,8 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
+  closeImagePreview();
+  for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
   state.viewEpoch++; reads.clear();
   for (const id of ["record-items", "log-items", "device-items", "create-project", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
   clearRecordSuggestions(); state.recordChoice = null; if (el("record-session")) el("record-session").value = "";
@@ -298,6 +426,7 @@ function showPairing() {
   setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
   state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
+  if (el("auth-loading")) el("auth-loading").hidden = true;
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
 }
 /** Validate both session and current display policy before restoring sensitive content. */
@@ -311,6 +440,7 @@ async function validateConnection() {
   if (verifiedVersion > state.version) clearSensitive();
   state.device = session.device; state.settings = settings;
   state.version = Math.max(state.version, session.settings?.version ?? 0, settings.version ?? 0);
+  if (el("auth-loading")) el("auth-loading").hidden = true;
   el("pairing").hidden = true; el("console").hidden = false;
 }
 /** Schedule bounded exponential recovery attempts without replaying writes. */
@@ -372,6 +502,23 @@ async function bootstrap() {
   await validateConnection();
   if (!state.stream) connectEvents();
 }
+/** Keep the pairing form hidden until the server explicitly rejects the existing login cookie. */
+async function checkInitialLogin() {
+  const gate = el("auth-loading"); const retry = el("auth-loading-retry");
+  if (retry) retry.hidden = true;
+  if (gate && !gate.hidden) el("auth-loading-text").textContent = "正在检查登录状态…";
+  try { await bootstrap(); }
+  catch (error) {
+    if (["auth_required", "auth_changed"].includes(error?.code)) return;
+    if (gate && !gate.hidden) {
+      el("auth-loading-text").textContent = "暂时无法确认登录状态，请重试";
+      if (retry) retry.hidden = false;
+    }
+    state.connectionDetail = "暂时无法确认登录状态";
+    scheduleReconnect();
+  }
+}
+
 /** Invalidate the old display generation and verify the newest policy through one recovery path. */
 function invalidatePolicy(version) {
   state.version = version; state.paused = true; clearSensitive(); setConnectionControls(true);
@@ -615,15 +762,26 @@ async function loadSessions(more) {
     el("send-button").disabled = !state.selected.sendEnabled || Boolean(state.pending);
   }
 }
+/** Show the floating shortcut only when the selected conversation is away from its end. */
+function updateLatestShortcut() {
+  const button = el("floating-latest"); const messages = el("messages");
+  if (!messages) return;
+  const unavailable = !state.selected || !state.messages.length;
+  if (button) button.hidden = unavailable || messages.scrollHeight - messages.clientHeight - messages.scrollTop < 100;
+  const earliest = el("floating-earliest");
+  if (earliest) earliest.hidden = unavailable || messages.scrollTop < 100;
+}
 /** Position the latest rendered message inside the actual message scroller. */
 function scrollMessagesToLatest(container) {
   container.scrollTop = container.scrollHeight;
   container.lastElementChild?.scrollIntoView?.({ block: "end", inline: "nearest" });
+  updateLatestShortcut();
 }
 /** Refresh the latest page when connected, then position the current conversation at its end. */
 async function jumpToLatest() {
   const session = state.selected; if (!session) return;
   state.followLatest = true;
+  scrollMessagesToLatest(el("messages"));
   if (!state.paused) await loadHistory(false);
   if (state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   scrollMessagesToLatest(el("messages"));
@@ -633,6 +791,7 @@ function jumpToEarliestLoaded() {
   state.followLatest = false;
   const container = el("messages"); container.scrollTop = 0;
   container.querySelector?.(".message")?.scrollIntoView?.({ block: "start", inline: "nearest" });
+  updateLatestShortcut();
 }
 /** Describe native pending input age without claiming why the source has not consumed it. */
 function queueStatusText(message, now = Date.now()) {
@@ -678,8 +837,10 @@ async function loadHistory(older) {
         const item = node("div", "", "message " + message.role);
         const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
         if (message.deliveryState) item.append(node("small", message.queueStatusText, "message-queue-status"));
-        const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · 耗时 ${formatTurnDuration(message.durationMs)}` : "";
-        item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}${duration}`, "message-meta"), renderMarkdown(message.text));
+        const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · ${formatTurnDuration(message.durationMs)}` : "";
+        const meta = node("div", "", "message-meta");
+        meta.append(node("small", `${message.role === "user" ? "用户" : "助手"} · ${time}${duration}`), messageCopyButton(message));
+        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderMarkdown(message.text));
         view = { signature, item }; messageViews.set(key, view);
       }
       items.push(view.item);
@@ -690,6 +851,7 @@ async function loadHistory(older) {
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
   if (follow) scrollMessagesToLatest(container); else container.scrollTop = older ? scroll + container.scrollHeight - previousHeight : scroll;
   state.followLatest = false;
+  updateLatestShortcut();
   if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
     const latest = [...state.messages].reverse().find((message) => message.role === "assistant");
     if (latest && latest.id !== state.awaitingReply.baseline) {
@@ -888,7 +1050,10 @@ async function submitWrite(create) {
       state.followLatest = true;
       state.awaitingReply = { sessionId: operation.sessionId ?? session?.id, source, baseline: create ? null : [...state.messages].reverse().find((message) => message.role === "assistant")?.id ?? null };
       const draft = el(create ? "create-prompt" : "prompt");
-      if (draft.value === body.prompt) draft.value = "";
+      if (draft.value === body.prompt) {
+        draft.value = "";
+        if (!create) draft.style.height = "";
+      }
       if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
@@ -1050,8 +1215,6 @@ let searchTimer;
 el("session-search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run("sessions", () => loadSessions(false)), 300); };
 el("more-sessions").onclick = () => run("sessions", () => loadSessions(true));
 el("more-history").onclick = () => run("history", () => loadHistory(true));
-el("jump-latest").onclick = () => run("history-jump", jumpToLatest);
-el("jump-earliest").onclick = jumpToEarliestLoaded;
 el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
@@ -1086,8 +1249,22 @@ window.addEventListener("pageshow", () => {
 window.addEventListener("online", () => { if (state.paused) { cancelReconnectTimer(); scheduleReconnect(true); } });
 window.addEventListener("offline", () => enterDisconnected());
 setInterval(() => run("poll", refresh), 3000);
-run("startup", async () => { await bootstrap(); });
+el("auth-loading-retry").onclick = () => run("auth-check", checkInitialLogin);
+run("startup", checkInitialLogin);
 
 el("open-desktop").onclick = () => run("open-desktop", openSelectedDesktop);
 
 setInterval(renderSessionStatus, 1000);
+
+el("close-image-dialog").onclick = closeImagePreview;
+el("image-dialog").onclick = (event) => { if (event.target === el("image-dialog")) closeImagePreview(); };
+el("image-dialog").onclose = () => { el("image-dialog-image").removeAttribute("src"); };
+
+el("floating-latest").onclick = () => run("history-jump", jumpToLatest);
+el("messages").addEventListener("scroll", updateLatestShortcut, { passive: true });
+if (typeof ResizeObserver === "function") new ResizeObserver(updateLatestShortcut).observe(el("messages"));
+
+el("floating-earliest").onclick = jumpToEarliestLoaded;
+
+initializeTheme();
+el("theme-toggle").onclick = toggleTheme;

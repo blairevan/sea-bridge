@@ -1,3 +1,4 @@
+import { readCodexAttachment } from "../codex-attachment.ts";
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
@@ -131,6 +132,14 @@ export class CodexWebSource implements WebSource {
       this.historyReadable = false;
       throw error;
     }
+  }
+
+  /** Resolve images from native user records without accepting arbitrary browser paths. */
+  async attachment(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const thread = this.deps.threads.getThread?.(id);
+    if (!thread) throw new Error("attachment_missing");
+    const history = await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, null, 100);
+    return readCodexAttachment(id, messageId, index, history);
   }
 
   /** Start a raw Web prompt with explicit request-local model selection. */

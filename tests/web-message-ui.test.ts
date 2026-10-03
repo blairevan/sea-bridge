@@ -31,10 +31,12 @@ class ElementFixture {
   /** Store accessibility attributes without interpreting markup. */
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   /** Remove a transient accessibility state. */
-  removeAttribute(name: string): void { this.attributes.delete(name); }
+  removeAttribute(name: string): void { this.attributes.delete(name); if (name === "src") this.src = ""; }
   textContent = "";
   src = "";
+  style = { height: "" };
   onclick?: () => void;
+  onkeydown?: (event: { key: string; preventDefault(): void }) => void;
   scrollTop = 0;
   scrollHeight = 1000;
   clientHeight = 400;
@@ -424,15 +426,16 @@ test("write acknowledgement does not erase a newer draft typed while waiting", a
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   let complete: (value: unknown) => void = () => { throw new Error("submission not started"); };
   const response = new Promise<unknown>((resolve) => { complete = resolve; });
-  const nodes: Record<string, { value: string; textContent: string; hidden: boolean; disabled: boolean; open: boolean }> = {};
+  const nodes: Record<string, { value: string; textContent: string; hidden: boolean; disabled: boolean; open: boolean; style: { height: string } }> = {};
   const ui = runInNewContext(script.slice(0, end) + '\noperationUuid = () => "operation"; api = () => response; refresh = async () => {}; notice = () => {}; ({ state, submitWrite })', {
-    response, document: { getElementById(id: string) { return nodes[id] ??= { value: "", textContent: "", hidden: false, disabled: false, open: false }; } },
+    response, document: { getElementById(id: string) { return nodes[id] ??= { value: "", textContent: "", hidden: false, disabled: false, open: false, style: { height: "92px" } }; } },
   }) as { state: { selected: { id: string; source: string } }; submitWrite: (create: boolean) => Promise<void> };
-  nodes.prompt = { value: "submitted draft", textContent: "", hidden: false, disabled: false, open: false };
+  nodes.prompt = { value: "submitted draft", textContent: "", hidden: false, disabled: false, open: false, style: { height: "92px" } };
   ui.state.selected = { id: "session", source: "codex" };
   const sending = ui.submitWrite(false); nodes.prompt.value = "next draft";
   complete({ state: "queued", sessionId: "session", source: "codex", kind: "send" }); await sending;
   expect(nodes.prompt.value).toBe("next draft");
+  expect(nodes.prompt.style.height).toBe("92px");
 });
 
 test("operation polling retains loaded older pages and their pagination boundary", async () => {
@@ -705,4 +708,152 @@ test("continuation card rebuilds after privacy clearing even with unchanged iden
   const session = { source: "codex", id: "fixture", title: "test", state: "idle", updatedAt: 1 };
   render(session); expect(button.childElementCount).toBe(3);
   button.replaceChildren(); render(session); expect(button.childElementCount).toBe(3);
+});
+
+test("initial login network failure retains the gate rather than showing pairing", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("async function checkInitialLogin()");
+  const end = script.indexOf("/** Invalidate the old display", start);
+  const nodes = new Map<string, { hidden: boolean; textContent: string }>([["auth-loading", { hidden: false, textContent: "" }], ["auth-loading-retry", { hidden: true, textContent: "" }], ["auth-loading-text", { hidden: false, textContent: "" }]]);
+  let code = "network_unavailable"; let retries = 0;
+  const check = runInNewContext(script.slice(start, end) + "\ncheckInitialLogin", {
+    state: {}, el: (id: string) => nodes.get(id),
+    bootstrap: async () => { throw Object.assign(new Error("fixture"), { code }); },
+    scheduleReconnect: () => { retries++; },
+  });
+  await check(); expect(nodes.get("auth-loading")?.hidden).toBe(false);
+  expect(nodes.get("auth-loading-retry")?.hidden).toBe(false); expect(retries).toBe(1);
+  code = "auth_required"; await check(); expect(retries).toBe(1);
+});
+
+test("native image questions render compact attachment cards without raw paths or headings", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const ui = runInNewContext(script.slice(0, end) + "\n({ renderUserMessage, userAttachmentEnvelope })", {
+    URL, location: { origin: "http://127.0.0.1:7310" }, document: {
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode(text: string) { const node = new ElementFixture("#text"); node.textContent = text; return node; },
+    },
+  }) as { renderUserMessage(message: { id: string; text: string }, session: { id: string; source: string }): ElementFixture; userAttachmentEnvelope(text: string): unknown };
+  const text = '# Files mentioned by the user:\n\n## 照片 1.jpg: /tmp/codex-remote-attachments/thread/image.jpg\n\n## My request:\n看看这张图。<image name=[Image #1] path="/tmp/image.jpg"></image>';
+  const root = ui.renderUserMessage({ id: "rollout-1", text }, { id: "thread", source: "codex" });
+  const nodes = flatten(root); const content = nodes.map((node) => node.textContent).join(" ");
+  expect(content).toContain("看看这张图。"); expect(content).toContain("照片 1.jpg");
+  expect(content).not.toContain("/tmp/"); expect(content).not.toContain("Files mentioned"); expect(content).not.toContain("<image");
+  expect(nodes.filter((node) => node.tag === "img")).toHaveLength(0);
+  const button = nodes.find((node) => node.tag === "button")!; button.onclick?.();
+  expect(flatten(root).find((node) => node.tag === "img")?.src).toBe("/api/sessions/codex/thread/attachments/rollout-1/0");
+  button.onclick?.(); expect(flatten(root).filter((node) => node.tag === "img")).toHaveLength(1);
+  expect(ui.userAttachmentEnvelope("ordinary message")).toBeNull();
+});
+
+test("loaded message images open an accessible preview and privacy clearing closes it", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>(); let opened = 0; let closed = 0;
+  const dialog = Object.assign(new ElementFixture("dialog"), { open: false, showModal() { this.open = true; opened++; }, close() { this.open = false; closed++; } });
+  nodes.set("image-dialog", dialog);
+  const ui = runInNewContext(script.slice(0, end) + "\n({ renderUserMessage, renderMarkdown, closeImagePreview, clearSensitive })", {
+    URL, location: { origin: "http://127.0.0.1:7310" }, document: {
+      getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode(text: string) { const node = new ElementFixture("#text"); node.textContent = text; return node; },
+    },
+  }) as { renderUserMessage(message: { id: string; text: string }, session: { id: string; source: string }): ElementFixture; renderMarkdown(text: string): ElementFixture; closeImagePreview(): void; clearSensitive(): void };
+  const text = '# Files mentioned by the user:\n\n## image.jpg: /tmp/codex-remote-attachments/thread/image.jpg\n\n## My request:\nInspect.';
+  const root = ui.renderUserMessage({ id: "rollout-1", text }, { id: "thread", source: "codex" });
+  flatten(root).find((node) => node.tag === "button")!.onclick?.();
+  const image = flatten(root).find((node) => node.tag === "img")!;
+  expect(typeof image.onclick).toBe("function"); image.onclick?.();
+  expect(opened).toBe(1); expect(nodes.get("image-dialog-image")?.src).toBe(new URL(image.src, "http://127.0.0.1:7310").href);
+  expect(image.attributes.get("role")).toBe("button");
+  ui.clearSensitive(); expect(closed).toBe(1); expect(nodes.get("image-dialog-image")?.src).toBe("");
+  const markdown = ui.renderMarkdown("![sample](https://example.test/image.jpg)");
+  flatten(markdown).find((node) => node.tag === "button")!.onclick?.();
+  flatten(markdown).find((node) => node.tag === "img")!.onclick?.(); expect(opened).toBe(2);
+  ui.closeImagePreview(); let prevented = false;
+  image.onkeydown?.({ key: "Enter", preventDefault() { prevented = true; } });
+  expect(prevented).toBe(true); expect(opened).toBe(3);
+});
+
+test("accepted and queued submissions reset cleared composer height while preserving newer drafts", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  for (const delivery of ["accepted", "queued", "failed", "delivery_unknown"]) {
+    const nodes = new Map<string, ElementFixture & { value: string; style: { height: string } }>();
+    /** Return a sized draft and ordinary controls for the submission fixture. */
+    const get = (id: string) => {
+      if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "", style: { height: "92px" } }));
+      return nodes.get(id)!;
+    };
+    const ui = runInNewContext(script.slice(0, end) + '\noperationUuid = () => "operation"; api = async () => ({ state: delivery, sessionId: "session", source: "codex", kind: "send" }); refresh = async () => {}; notice = () => {}; ({ state, submitWrite })', {
+      delivery, document: { getElementById: get },
+    }) as { state: { selected: { id: string; source: string } }; submitWrite(create: boolean): Promise<void> };
+    get("prompt").value = "multiline\ndraft"; ui.state.selected = { id: "session", source: "codex" };
+    await ui.submitWrite(false);
+    const cleared = delivery === "accepted" || delivery === "queued";
+    expect(get("prompt").value).toBe(cleared ? "" : "multiline\ndraft");
+    expect(get("prompt").style.height).toBe(cleared ? "" : "92px");
+  }
+});
+
+test("floating latest shortcut follows scroll distance and jumps within the selected conversation", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const messages = new ElementFixture("div"); const button = new ElementFixture("button"); const earliest = new ElementFixture("button");
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, updateLatestShortcut, jumpToLatest, jumpToEarliestLoaded })", {
+    document: { getElementById: (id: string) => id === "messages" ? messages : id === "floating-earliest" ? earliest : button },
+  }) as { state: { selected: { id: string; source: string } | null; messages: unknown[]; paused: boolean }; updateLatestShortcut(): void; jumpToLatest(): Promise<void>; jumpToEarliestLoaded(): void };
+  ui.state.selected = { id: "thread", source: "codex" }; ui.state.messages = [{ id: "one" }];
+  messages.scrollTop = 600; ui.updateLatestShortcut(); expect(button.hidden).toBe(true); expect(earliest.hidden).toBe(false);
+  messages.scrollTop = 100; ui.updateLatestShortcut(); expect(button.hidden).toBe(false);
+  await ui.jumpToLatest(); expect(button.hidden).toBe(true); expect(messages.scrollTop).toBe(1000);
+  ui.jumpToEarliestLoaded(); expect(button.hidden).toBe(false); expect(earliest.hidden).toBe(true);
+  messages.scrollTop = 550; ui.updateLatestShortcut(); expect(button.hidden).toBe(true);
+  ui.state.messages = []; ui.updateLatestShortcut(); expect(button.hidden).toBe(true); expect(earliest.hidden).toBe(true);
+  ui.state.messages = [{}]; ui.state.selected = null; ui.updateLatestShortcut(); expect(button.hidden).toBe(true);
+});
+
+test("message copying preserves content and supports HTTP selection fallback with cleanup", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let copied = ""; let removed = false; let focused = false; let allowed = true;
+  const field = { value: "", style: {}, select() {}, setSelectionRange() {}, remove() { removed = true; } };
+  const ui = runInNewContext(script.slice(0, end) + "\n({ copyMessageText, messageCopyText })", {
+    document: { body: { append() {} }, activeElement: { focus() { focused = true; } }, createElement: () => field, execCommand(command: string) { expect(command).toBe("copy"); copied = field.value; return allowed; } },
+  }) as { copyMessageText(text: string): Promise<void>; messageCopyText(message: { role: string; text: string }): string };
+  await ui.copyMessageText("**bold**\ncode"); expect(copied).toBe("**bold**\ncode"); expect(removed).toBe(true); expect(focused).toBe(true);
+  allowed = false; removed = false; await expect(ui.copyMessageText("retry")).rejects.toThrow("clipboard_unavailable"); expect(removed).toBe(true);
+  const native = '# Files mentioned by the user:\n\n## image.jpg: /tmp/codex-remote-attachments/thread/image.jpg\n\n## My request:\nQuestion<image path="/tmp/image.jpg">';
+  expect(ui.messageCopyText({ role: "user", text: native })).toBe("Question\n\n附件：image.jpg");
+  expect(ui.messageCopyText({ role: "assistant", text: "# Answer\ntext" })).toBe("# Answer\ntext");
+  const secure = runInNewContext(script.slice(0, end) + "\ncopyMessageText", { navigator: { clipboard: { async writeText(value: string) { copied = value; } } } }) as (text: string) => Promise<void>;
+  await secure("secure message"); expect(copied).toBe("secure message");
+});
+
+test("copy icon reports actual clipboard success and leaves failures actionable", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let fail = false; let copied = ""; const notices: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + '\nnotice = (text) => notices.push(text); copyMessageText = async (text) => { if (shouldFail()) throw new Error("denied"); save(text); }; ({ messageCopyButton })', {
+    notices, shouldFail: () => fail, save: (text: string) => { copied = text; }, document: { createElement: (tag: string) => new ElementFixture(tag) },
+  }) as { messageCopyButton(message: { role: string; text: string }): ElementFixture & { disabled: boolean; onclick(): Promise<void> } };
+  const button = ui.messageCopyButton({ role: "assistant", text: "answer\ncode" });
+  expect(button.attributes.get("aria-label")).toBe("复制消息");
+  await button.onclick(); expect(copied).toBe("answer\ncode"); expect(notices.at(-1)).toBe("已复制消息"); expect(button.disabled).toBe(false);
+  fail = true; await button.onclick(); expect(notices.at(-1)).toContain("无法自动复制"); expect(button.disabled).toBe(false);
+});
+
+test("theme restores valid preferences and remains usable when storage is restricted", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let stored: string | null = "dark"; let denied = false; const dataset = { theme: "" }; const button = new ElementFixture("button");
+  const ui = runInNewContext(script.slice(0, end) + "\n({ initializeTheme, toggleTheme })", {
+    document: { documentElement: { dataset }, getElementById: () => button }, matchMedia: () => ({ matches: false }),
+    localStorage: { getItem(key: string) { expect(key).toBe("sea-theme"); if (denied) throw new Error("blocked"); return stored; }, setItem(key: string, value: string) { expect(key).toBe("sea-theme"); if (denied) throw new Error("blocked"); stored = value; } },
+  }) as { initializeTheme(): void; toggleTheme(): void };
+  ui.initializeTheme(); expect(dataset.theme).toBe("dark"); expect(button.textContent).toContain("浅色");
+  ui.toggleTheme(); expect(dataset.theme).toBe("light"); expect(stored).toBe("light"); expect(button.attributes.get("aria-pressed")).toBe("false");
+  stored = "invalid"; ui.initializeTheme(); expect(dataset.theme).toBe("light");
+  denied = true; ui.toggleTheme(); expect(dataset.theme).toBe("dark"); ui.initializeTheme(); expect(dataset.theme).toBe("light");
 });

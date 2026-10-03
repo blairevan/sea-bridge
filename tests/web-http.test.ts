@@ -15,6 +15,7 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   let writes = 0; let raw = ""; let opens = 0;
   const source: WebSource = {
     async openDesktop() { opens++; },
+    async attachment() { return { bytes: new Uint8Array([255, 216, 255]), contentType: "image/jpeg" }; },
     capabilities: () => ({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: true, sendEnabled: true, approvalTransport: null }),
     async sessions() { return [
       { source: "codex", id: "idle", title: "idle", updatedAt: 3, projectId: null, state: "unknown", sendEnabled: true },
@@ -39,6 +40,12 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
     const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
+    const imagePath = "/api/sessions/codex/thread/attachments/rollout-1/0";
+    expect((await request(imagePath)).status).toBe(401);
+    const image = await request(imagePath, "GET", undefined, cookie);
+    expect(image.status).toBe(200); expect(image.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(image.headers.get("Cache-Control")).toBe("no-store");
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(new Uint8Array([255, 216, 255]));
     const openPath = "/api/sessions/codex/11111111-1111-4111-8111-111111111111/open-desktop";
     expect((await request(openPath, "POST")).status).toBe(401);
     expect((await request(openPath, "POST", undefined, cookie)).status).toBe(403);

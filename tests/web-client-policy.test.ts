@@ -7,9 +7,9 @@ test("an in-flight sensitive response cannot repopulate the page after SSE disco
   if (boundary < 0) throw new Error("UI fixture boundary missing");
   let resolveFetch: (response: Response) => void = () => { throw new Error("request not started"); };
   const pending = new Promise<Response>((resolve) => { resolveFetch = resolve; });
-  const nodes = new Map<string, { textContent: string; replaceChildren: () => void }>();
+  const nodes = new Map<string, { textContent: string; removeAttribute: (name: string) => void; replaceChildren: () => void }>();
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, api, clearSensitive })", {
-    document: { cookie: "", getElementById(id: string) { let value = nodes.get(id); if (!value) { value = { textContent: "", replaceChildren() {} }; nodes.set(id, value); } return value; } },
+    document: { cookie: "", getElementById(id: string) { let value = nodes.get(id); if (!value) { value = { textContent: "", removeAttribute(_name: string) {}, replaceChildren() {} }; nodes.set(id, value); } return value; } },
     fetch: () => pending, URLSearchParams,
   }) as { state: { version: number; paused: boolean }; api: (path: string) => Promise<unknown>; clearSensitive: () => void };
   harness.state.version = 1; harness.state.paused = false;
@@ -49,9 +49,9 @@ test("disconnect retains the loaded conversation read-only and preserves ambiguo
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
-  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; value: string; scrollTop: number; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
+  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; value: string; scrollTop: number; removeAttribute: (name: string) => void; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
   const node = (id: string) => {
-    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", value: "", scrollTop: 0, replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
+    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", value: "", scrollTop: 0, removeAttribute(_name: string) {}, replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
     const result = nodes.get(id); if (!result) throw new Error("fixture missing"); return result;
   };
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected, clearSensitive })", {

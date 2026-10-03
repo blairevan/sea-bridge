@@ -32,6 +32,7 @@ export interface CreateRequest {
 }
 /** Web adapter boundary independent of Telegram IDs and preferences. */
 export interface WebSource {
+  attachment?(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }>;
   openDesktop?(id: string): Promise<void>;
   capabilities(): WebSourceCapabilities;
   sessions(): Promise<WebSession[]>;
