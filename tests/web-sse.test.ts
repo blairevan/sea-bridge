@@ -5,6 +5,20 @@ import { WebStore } from "../src/web/store.ts";
 import { WebAuth } from "../src/web/auth.ts";
 import { WebEvents } from "../src/web/events.ts";
 
+test("heartbeat buffering closes a slow client within the same event bound", async () => {
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const auth = new WebAuth(store);
+  const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
+  let tick: (() => void) | undefined;
+  const events = new WebEvents(store, (callback) => { tick = callback; return setInterval(() => {}, 15000); });
+  try {
+    const reader = events.open(paired.device.id, new AbortController().signal).getReader();
+    for (let index = 0; index < 100; index++) tick?.();
+    events.close(); let chunks = 0;
+    while (!(await reader.read()).done) chunks++;
+    expect(chunks).toBeLessThanOrEqual(18);
+  } finally { events.close(); db.close(); }
+});
+
 test("SSE sends version-only controls and revocation closes the device stream", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const auth = new WebAuth(store);
   const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");

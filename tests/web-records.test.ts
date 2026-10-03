@@ -5,6 +5,25 @@ import { migrateWeb } from "../src/web/migrations.ts";
 import { WebStore } from "../src/web/store.ts";
 import { operationRecords } from "../src/web/records.ts";
 
+test("equal timestamp pagination has one consistent ordering across providers", () => {
+  const state = new StateDb(":memory:"); migrateWeb(state.db); const store = new WebStore(state.db);
+  try {
+    for (let id = 1; id <= 40; id++) {
+      state.db.query("INSERT INTO telegram_thread_deliveries(telegram_update_id,reply_to_message_id,thread_id,text_hash,status,created_at) VALUES(?,1,'thread','x','delivered',10)").run(id);
+      state.db.query("INSERT INTO dsh_creation_requests(telegram_update_id,project_id,prompt_hash,status,created_at,updated_at) VALUES(?,'project','x','accepted',10,10)").run(id);
+      store.claimOperation({ id: `web-${id}`, digest: `${id}`, kind: "send", source: "dsh", deviceId: "device", targetId: "session", projectId: null, modelId: null, createdAt: 10 });
+    }
+    const ids: string[] = []; let offset = 0;
+    do {
+      const page = operationRecords(store, { source: null, session: null, state: null, from: 0, to: 100, limit: 10, offset });
+      ids.push(...page.items.map((item) => item.id));
+      if (!page.cursor) break; offset = Number(page.cursor);
+    } while (offset < 150);
+    expect(ids).toHaveLength(120); expect(new Set(ids).size).toBe(120);
+    expect(ids).toEqual([...ids].sort());
+  } finally { state.close(); }
+});
+
 test("operation filters are applied before bounded provider queries", () => {
   const db = new Database(":memory:"); migrateWeb(db);
   const store = new WebStore(db);

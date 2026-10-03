@@ -111,12 +111,11 @@ describe("TelegramService - reply callback", () => {
       debug() {},
       info: (event) => events.push(event),
       warn: (event) => events.push(event),
-      error: (event) => events.push(event),
+      error: (event) => { events.push(event); if (event === "telegram_update_processing_failed") void service.stop(); },
     };
     const client = new MockTelegramClient();
     let service!: TelegramService;
     client.getUpdates = async () => {
-      service.stop();
       return [{
         update_id: 7,
         message: {

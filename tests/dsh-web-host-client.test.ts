@@ -92,6 +92,10 @@ function fixtureResponder(request: Record<string, unknown>): Record<string, unkn
 }
 
 describe("DshWebHostClient", () => {
+  test("accepts the empty-history cursor minus one", async () => {
+    const { client } = await startConnector(() => ({ ok: true, cursor: -1, hasMore: false, truncated: false, events: [] }));
+    expect(await client.followSnapshot("session-empty")).toEqual({ cursor: -1, hasMore: false, truncated: false, events: [] });
+  });
   test("accepts a bounded live event window and rejects a noncontiguous event", async () => {
     const { client } = await startConnector(() => ({ ok: true, observed: true, cursor: 4,
       event: { type: "turn/end", seq: 5, time: 55, turn: 2, reasonKind: "completed", data: "private" },

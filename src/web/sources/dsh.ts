@@ -102,7 +102,7 @@ export class DshWebSource implements WebSource {
     if (!Number.isSafeInteger(through) || through < -1 || (before !== undefined && (!Number.isSafeInteger(before) || before > through))) throw new Error("history_cursor_invalid");
     if (through < 0) {
       this.transportHealthy = true; this.historyReadable = true;
-      return { messages: [], cursor: null, completeUserHistory: false };
+      return { messages: cursor ? [] : this.snapshots(id), cursor: null, completeUserHistory: false };
     }
     const page = await this.host.pageHistory(id, through, before);
     if (page.truncated) throw new Error("history_unavailable");

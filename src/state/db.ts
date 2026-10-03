@@ -116,6 +116,15 @@ export class StateDb {
         error_code TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS codex_creation_requests (
+        telegram_update_id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('dispatching','started','delivery_unknown')),
+        thread_id TEXT,
+        turn_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS observed_sessions (
         session_id TEXT PRIMARY KEY,
         turn_id TEXT,

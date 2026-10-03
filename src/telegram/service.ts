@@ -59,6 +59,7 @@ export class TelegramService {
   private lastPollSuccessAt: number | null = null;
   private lastPollHealthLogAt = 0;
   private pollFailed = false;
+  private activeUpdate: Promise<void> | null = null;
 
   constructor(
     private readonly config: AppConfig,
@@ -102,6 +103,7 @@ export class TelegramService {
 
     this.logger.info("telegram_polling_started");
     await this.syncBotCommands();
+    if (this.stopped) return;
 
     let offset = this.nextOffset();
     let backoffMs = 1000;
@@ -148,8 +150,10 @@ export class TelegramService {
         });
       }
       for (const update of updates) {
+        if (this.stopped) break;
+        const active = this.processUpdate(update); this.activeUpdate = active;
         try {
-          await this.processUpdate(update);
+          await active;
           offset = Math.max(offset, update.update_id + 1);
           processingBackoffMs = 1000;
         } catch (error) {
@@ -157,19 +161,21 @@ export class TelegramService {
             updateId: update.update_id,
             error: String(error),
           });
-          await Bun.sleep(processingBackoffMs);
+          if (!this.stopped) await Bun.sleep(processingBackoffMs);
           processingBackoffMs = Math.min(processingBackoffMs * 2, 30_000);
           break;
-        }
+        } finally { if (this.activeUpdate === active) this.activeUpdate = null; }
       }
     }
   }
 
-  stop(): void {
+  /** Stop admission and drain an already dispatched update before its state database closes. */
+  async stop(): Promise<void> {
     this.stopped = true;
     this.abortController?.abort();
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.cleanupTimer = null;
+    await this.activeUpdate?.catch(() => undefined);
   }
 
   private async syncBotCommands(): Promise<void> {
@@ -524,9 +530,10 @@ export class TelegramService {
       }
 
       await this.createThreadAndAcknowledge(
+        update.update_id,
         message.chat.id,
         project.name,
-        () => this.newThreads!.startThread(String(message.chat.id), project, prompt),
+        (onThreadStarted) => this.newThreads!.startThread(String(message.chat.id), project, prompt, onThreadStarted),
       );
       return;
     }
@@ -591,9 +598,10 @@ export class TelegramService {
           return;
         }
         await this.createThreadAndAcknowledge(
+          update.update_id,
           message.chat.id,
           consumed.projectName,
-          () => this.newThreads!.startPendingThread(chatId, consumed, text),
+          (onThreadStarted) => this.newThreads!.startPendingThread(chatId, consumed, text, onThreadStarted),
         );
         return;
       }
@@ -1071,19 +1079,33 @@ export class TelegramService {
     this.newThreads!.createPendingPrompt(String(chatId), promptMessage.message_id, project);
   }
 
+  /** Durably claim a creation update before dispatch; partial or uncertain results never replay. */
   private async createThreadAndAcknowledge(
+    updateId: number,
     chatId: number,
     projectName: string,
-    start: () => Promise<StartedThread>,
+    start: (onThreadStarted: (threadId: string) => void) => Promise<StartedThread>,
   ): Promise<void> {
+    const claimed = this.state.db.query("INSERT OR IGNORE INTO codex_creation_requests(telegram_update_id,status,created_at,updated_at) VALUES(?,'dispatching',?,?)").run(updateId, Date.now(), Date.now());
+    if (claimed.changes === 0) {
+      const prior = this.state.db.query("SELECT status,thread_id AS threadId FROM codex_creation_requests WHERE telegram_update_id=?").get(updateId) as { status: string; threadId: string | null };
+      await this.client.sendMessage(chatId, prior.status === "started"
+        ? `此请求已创建会话 ${prior.threadId ?? ""}，不会重复执行。`
+        : `此请求的派发结果待确认${prior.threadId ? `，已创建会话 ${prior.threadId}` : ""}，不会自动重复创建。`);
+      return;
+    }
     let started: StartedThread;
     try {
-      started = await start();
+      started = await start((threadId) => {
+        this.state.db.query("UPDATE codex_creation_requests SET thread_id=?,updated_at=? WHERE telegram_update_id=? AND status='dispatching'").run(threadId, Date.now(), updateId);
+      });
+      this.state.db.query("UPDATE codex_creation_requests SET status='started',thread_id=?,turn_id=?,updated_at=? WHERE telegram_update_id=?").run(started.threadId, started.turnId, Date.now(), updateId);
     } catch (error) {
+      this.state.db.query("UPDATE codex_creation_requests SET status='delivery_unknown',updated_at=? WHERE telegram_update_id=? AND status='dispatching'").run(Date.now(), updateId);
       this.logger.warn("new_thread_start_failed", { projectName, error: String(error) });
       await this.client.sendMessage(
         chatId,
-        "新会话启动失败，请检查项目/模型状态后重试；如刚切换过模型，可重新执行 /model。",
+        "新会话启动未得到完整确认，请先检查会话及项目/模型状态；此请求不会自动重复创建。",
       );
       return;
     }
@@ -1113,7 +1135,7 @@ export class TelegramService {
       return;
     }
 
-    this.messages.link({
+    try { this.messages.link({
       chatId: String(chatId),
       messageId: response.message_id,
       threadId: started.threadId,
@@ -1122,7 +1144,9 @@ export class TelegramService {
       eventFingerprint: createHash("sha256")
         .update(`thread_created:${chatId}:${response.message_id}:${started.threadId}:${started.turnId}`)
         .digest("hex"),
-    });
+    }); } catch (error) {
+      this.logger.warn("new_thread_mapping_failed", { threadId: started.threadId, turnId: started.turnId, error: String(error) });
+    }
     this.logger.info("new_thread_started", {
       projectName,
       threadId: started.threadId,

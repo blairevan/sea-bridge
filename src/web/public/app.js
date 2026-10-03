@@ -1,5 +1,5 @@
 "use strict";
-const state = { version: 0, settings: null, device: null, page: "overview", sessions: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
+const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -215,6 +215,7 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
+  state.viewEpoch++; reads.clear();
   for (const id of ["record-items", "log-items", "device-items", "create-project", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
   clearRecordSuggestions(); state.recordChoice = null; if (el("record-session")) el("record-session").value = "";
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
@@ -228,6 +229,7 @@ function clearSensitive() {
 function csrf() { return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("sea_csrf="))?.slice(9) ?? ""; }
 /** Make a version-aware same-origin API request with bounded client-side waiting. */
 async function requestApi(path, method = "GET", body) {
+  const authEpoch = state.authEpoch;
   let response; const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeoutMs = method === "GET" ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS;
   const timeout = controller && typeof setTimeout === "function" ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -237,20 +239,28 @@ async function requestApi(path, method = "GET", body) {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...(controller ? { signal: controller.signal } : {}) });
   } catch (cause) {
     if (timeout !== null && typeof clearTimeout === "function") clearTimeout(timeout);
+    if (authEpoch !== state.authEpoch) throw clientError("auth_changed", "登录状态已变化");
     throw clientError(cause?.name === "AbortError" ? "network_timeout" : "network_unavailable",
       cause?.name === "AbortError" ? "服务响应超时" : "服务暂不可达");
   }
   let payload;
   try { payload = await response.json(); }
   catch (cause) {
+    if (authEpoch !== state.authEpoch) throw clientError("auth_changed", "登录状态已变化");
     if (controller?.signal.aborted || cause?.name === "AbortError") throw clientError("network_timeout", "服务响应超时");
     if (response.status >= 500) throw clientError("transport_invalid_response", "服务暂不可达");
     throw clientError("invalid_response", `接口返回异常（HTTP ${response.status}，${response.headers.get("Content-Type") || "未提供内容类型"}）`);
   }
   finally { if (timeout !== null && typeof clearTimeout === "function") clearTimeout(timeout); }
+  if (authEpoch !== state.authEpoch) throw clientError("auth_changed", "登录状态已变化");
   const version = Number(response.headers.get("X-Sea-Bridge-Settings-Version") ?? state.version);
   if (version < state.version) throw clientError("settings_stale", "设置已变化，正在刷新");
-  if (version > state.version) { clearSensitive(); state.version = version; }
+  if (version > state.version) {
+    if (!["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) {
+      invalidatePolicy(version); throw clientError("settings_stale", "设置已变化，正在刷新");
+    }
+    clearSensitive(); state.version = version;
+  }
   if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw clientError("auth_required", "设备登录已失效，请重新配对"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
   if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
@@ -266,27 +276,36 @@ async function api(path, method = "GET", body) {
   if (method !== "GET") return requestApi(path, method, body);
   if (reads.has(path)) return reads.get(path);
   const pending = requestApi(path); reads.set(path, pending);
-  try { return await pending; } finally { reads.delete(path); }
+  try { return await pending; } finally { if (reads.get(path) === pending) reads.delete(path); }
 }
 /** Prevent repeated work for one UI action and keep errors visible. */
 async function run(key, work) {
-  if (state.busy.has(key)) return; state.busy.add(key);
+  const authEpoch = state.authEpoch;
+  const busyKey = JSON.stringify([authEpoch, state.viewEpoch, key]);
+  if (state.busy.has(busyKey)) return; state.busy.add(busyKey);
   try { await work(); }
   catch (error) {
+    if (authEpoch !== state.authEpoch) return;
     if (isTransportError(error)) enterDisconnected();
-    else if (!["auth_required", "connection_unverified"].includes(error?.code)) notice(error?.message || "操作失败", { sticky: true, kind: "error" });
-  } finally { state.busy.delete(key); }
+    else if (!["auth_required", "auth_changed", "settings_stale", "connection_unverified"].includes(error?.code)) notice(error?.message || "操作失败", { sticky: true, kind: "error" });
+  } finally { state.busy.delete(busyKey); }
 }
 /** Stop retry machinery and return to the explicit pairing boundary. */
 function showPairing() {
+  state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.selected = null;
+  state.recoverySeq++; state.version = 0; state.device = null; state.settings = null; state.caps = {};
+  el("operation-status").textContent = ""; el("reconcile").hidden = true; el("create-reconcile").hidden = true;
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
   state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
 }
 /** Validate both session and current display policy before restoring sensitive content. */
 async function validateConnection() {
+  const authEpoch = state.authEpoch;
   const session = await requestApi("/api/auth/session");
   const settings = await requestApi("/api/settings");
+  if (authEpoch !== state.authEpoch) throw clientError("auth_changed", "登录状态已变化");
+  if (settings.version < state.version) throw clientError("settings_stale", "设置已变化，正在刷新");
   const verifiedVersion = Math.max(session.settings?.version ?? 0, settings.version ?? 0);
   if (verifiedVersion > state.version) clearSensitive();
   state.device = session.device; state.settings = settings;
@@ -303,6 +322,7 @@ function scheduleReconnect(immediate = false) {
 }
 /** Pause server actions during a disconnect while retaining loaded views for reading. */
 function enterDisconnected() {
+  state.recoverySeq++;
   const failedRecovery = state.recovering;
   state.paused = true; state.recovering = false; cancelStreamTimer();
   if (failedRecovery) state.retryAttempt++;
@@ -329,14 +349,18 @@ async function finishRecovery(stream = state.stream) {
 async function recoverConnection() {
   if (document.hidden || state.recovering || !state.paused) return;
   state.recovering = true; cancelReconnectTimer();
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch; const recoverySeq = ++state.recoverySeq;
   showConnectionNotice(state.connectionDetail || "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。", "正在重试…");
   try {
     await validateConnection();
+    if (recoverySeq !== state.recoverySeq) return;
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) { state.recovering = false; scheduleReconnect(true); return; }
     state.stream?.close(); state.stream = null; connectEvents();
     showConnectionNotice("服务已响应", "正在恢复实时连接…");
   } catch (error) {
+    if (authEpoch !== state.authEpoch || recoverySeq !== state.recoverySeq) return;
     state.recovering = false;
-    if (error?.code === "auth_required") return;
+    if (["auth_required", "auth_changed"].includes(error?.code)) return;
     state.retryAttempt++;
     if (!state.connectionDetail || state.connectionDetail === "服务已响应") state.connectionDetail = "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。";
     scheduleReconnect();
@@ -347,25 +371,32 @@ async function bootstrap() {
   await validateConnection();
   if (!state.stream) connectEvents();
 }
+/** Invalidate the old display generation and verify the newest policy through one recovery path. */
+function invalidatePolicy(version) {
+  state.version = version; state.paused = true; clearSensitive(); setConnectionControls(true);
+  state.recoverySeq++; state.stream?.close(); state.stream = null; state.recovering = false;
+  cancelStreamTimer(); cancelReconnectTimer(); scheduleReconnect(true);
+}
 /** Subscribe only to control events; EventSource failure enters the same bounded recovery path. */
 function connectEvents() {
   cancelStreamTimer();
   const stream = new EventSource("/api/events"); state.stream = stream;
+  const streamSeq = ++state.streamSeq;
   if (typeof setTimeout === "function") state.streamTimer = setTimeout(() => {
     if (state.stream === stream && stream.readyState !== EventSource.OPEN) enterDisconnected();
   }, READ_TIMEOUT_MS);
   stream.onopen = () => {
     if (state.stream !== stream) return;
     cancelStreamTimer();
-    run("reconnect", () => finishRecovery(stream));
+    run("reconnect-" + streamSeq, () => finishRecovery(stream));
   };
   stream.onerror = () => { if (state.stream === stream) enterDisconnected(); };
-  stream.addEventListener("session_revoked", () => { showPairing(); notice("设备已被撤销，请重新配对"); });
+  stream.addEventListener("session_revoked", () => { if (state.stream !== stream) return; showPairing(); notice("设备已被撤销，请重新配对"); });
   stream.addEventListener("settings_version", (event) => {
+    if (state.stream !== stream) return;
     const version = JSON.parse(event.data).version;
     if (version > state.version) {
-      state.version = version; state.paused = true; clearSensitive(); setConnectionControls(true);
-      run("settings-sync", async () => { await validateConnection(); if (state.stream?.readyState === EventSource.OPEN) { state.paused = false; setConnectionControls(false); await refresh(); } });
+      invalidatePolicy(version);
     }
   });
 }
@@ -419,13 +450,14 @@ async function openOverviewCreate(source = null) {
 }
 /** Inspect a source catalog in a read-only dialog, keeping previous data if loading fails. */
 async function openOverviewCatalog(source, kind) {
+  const viewEpoch = state.viewEpoch;
   if (state.paused) {
     if (state.catalogContext?.source === source && state.catalogContext.kind === kind) el("catalog-dialog").showModal();
     else showConnectionNotice("此目录尚未加载，恢复连接后可查看。已加载页面内容继续保留。");
     return;
   }
   const result = await api(`/api/sources/${source}/${kind}`);
-  if (state.paused) return;
+  if (state.paused || viewEpoch !== state.viewEpoch) return;
   state.catalogContext = { source, kind };
   el("catalog-title").textContent = `${source === "codex" ? "Codex" : "dsh"} · ${kind === "projects" ? "项目目录" : "模型目录"}`;
   const list = el("catalog-items"); list.replaceChildren();
@@ -460,8 +492,9 @@ function sourceStatusCard(name, source) {
 }
 /** Render a bounded overview independently of session-page search filters. */
 async function loadStatus() {
+  const viewEpoch = state.viewEpoch;
   const [status, sessions] = await Promise.all([api("/api/status"), api("/api/sessions?limit=30")]);
-  if (state.paused || state.page !== "overview") return;
+  if (state.paused || viewEpoch !== state.viewEpoch || state.page !== "overview") return;
   state.overviewSessions = sessions.items; state.caps = sessions.capabilities ?? state.caps;
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   el("overview-observed").textContent = `来源采样 ${overviewTime(status.observedAt)}`;
@@ -494,10 +527,13 @@ async function loadStatus() {
 }
 /** Load a bounded session page, preserving target identity and current draft. */
 async function loadSessions(more) {
+  const viewEpoch = state.viewEpoch;
   const params = new URLSearchParams({ source: el("source-filter").value, q: el("session-search").value, limit: "30" });
   const activity = el("activity-filter")?.value || ""; if (activity) params.set("activity", activity);
   if (more && state.sessionCursor) params.set("cursor", state.sessionCursor);
-  const result = await api("/api/sessions?" + params); state.caps = result.capabilities;
+  const result = await api("/api/sessions?" + params);
+  if (state.paused || viewEpoch !== state.viewEpoch) return;
+  state.caps = result.capabilities;
   if (params.get("source") !== el("source-filter").value || params.get("q") !== el("session-search").value || (params.get("activity") || "") !== (el("activity-filter")?.value || "")) return;
   state.sessions = more ? [...state.sessions, ...result.items] : result.items; state.sessionCursor = result.cursor;
   el("more-sessions").hidden = !result.cursor;
@@ -543,10 +579,11 @@ function jumpToEarliestLoaded() {
 }
 /** Read final replies and verified user text; preserve scroll during periodic refresh. */
 async function loadHistory(older) {
+  const viewEpoch = state.viewEpoch;
   const session = state.selected; if (!session) return;
   const params = new URLSearchParams({ limit: "30" }); if (older && state.historyCursor) params.set("cursor", state.historyCursor);
   const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/history?${params}`);
-  if (state.selected?.id !== session.id || state.selected?.source !== session.source) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   const previousMessages = state.messages;
   const hadMessages = previousMessages.length > 0;
   state.messages = older ? [...result.messages, ...state.messages] : hadMessages ? [...state.messages, ...result.messages] : result.messages;
@@ -655,17 +692,18 @@ function recordFilterParams() {
 }
 /** Render filtered bridge operations and structured logs as plain text. */
 async function loadRecords(more) {
+  const viewEpoch = state.viewEpoch;
   if (el("record-session").value.trim() && !state.recordChoice) return;
   const params = recordFilterParams();
   const filterKey = params.toString(); const sameFilter = filterKey === state.recordFilterKey;
   if (more && sameFilter && state.recordCursor) params.set("cursor", state.recordCursor);
   const result = await api("/api/operations?" + params);
-  if (state.paused || filterKey !== recordFilterParams().toString()) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || filterKey !== recordFilterParams().toString()) return;
   const hadRecords = sameFilter && state.records.length > 0;
   const previous = sameFilter ? state.records : [];
   // A successful latest page replaces its covered window; only genuinely older pages survive.
   const boundary = result.items.at(-1);
-  const retained = more ? previous : !result.cursor || !boundary ? [] : previous.filter((item) => item.createdAt < boundary.createdAt || (item.createdAt === boundary.createdAt && item.id.localeCompare(boundary.id) > 0));
+  const retained = more ? previous : !result.cursor || !boundary ? [] : previous.filter((item) => item.createdAt < boundary.createdAt || (item.createdAt === boundary.createdAt && item.id > boundary.id));
   const merged = new Map((more ? [...retained, ...result.items] : [...result.items, ...retained]).map((item) => [item.id, item]));
   for (const item of result.items) merged.set(item.id, { ...item, sessionTitle: item.sessionTitle ?? previous.find((prior) => prior.id === item.id)?.sessionTitle ?? null });
   state.records = [...merged.values()];
@@ -683,13 +721,20 @@ async function loadRecords(more) {
     state.recordCursor = String(Math.max(0, Number(state.recordCursor) + state.records.length - previous.length));
   }
   el("more-records").hidden = !state.recordCursor;
-  const logs = await api("/api/logs"); el("log-items").replaceChildren();
+  const logs = await api("/api/logs");
+  if (state.paused || viewEpoch !== state.viewEpoch || filterKey !== recordFilterParams().toString()) return;
+  el("log-items").replaceChildren();
   for (const item of logs.items) el("log-items").append(node("pre", `${new Date(item.createdAt).toLocaleString()} ${item.event} ${item.fields}`, "record-row"));
 }
 /** Display global policy and revocable device metadata. */
 async function loadSettings() {
-  state.settings = await api("/api/settings"); el("redaction-enabled").checked = state.settings.redactionEnabled;
-  const devices = await api("/api/devices"); el("device-items").replaceChildren();
+  const viewEpoch = state.viewEpoch;
+  const settings = await api("/api/settings");
+  if (state.paused || viewEpoch !== state.viewEpoch) return;
+  state.settings = settings; el("redaction-enabled").checked = settings.redactionEnabled;
+  const devices = await api("/api/devices");
+  if (state.paused || viewEpoch !== state.viewEpoch) return;
+  el("device-items").replaceChildren();
   for (const device of devices.items) {
     const row = node("div", "", "device-row"); row.append(node("span", `${device.name}${device.id === devices.currentDeviceId ? "（当前设备）" : ""}\n配对：${new Date(device.pairedAt).toLocaleString()} · 活跃：${new Date(device.lastActiveAt).toLocaleString()}`));
     const button = node("button", device.revokedAt ? "已撤销" : "撤销", "quiet"); button.disabled = state.paused || Boolean(device.revokedAt); button.dataset.revoked = String(Boolean(device.revokedAt));
@@ -698,15 +743,16 @@ async function loadSettings() {
 }
 /** Discover source-specific catalogs without storing a global default model. */
 async function loadCatalogs() {
+  const viewEpoch = state.viewEpoch;
   const source = el("create-source").value; el("create-submit").disabled = true;
   const projectSelection = el("create-project").value; const modelSelection = el("create-model").value;
   const projects = await api(`/api/sources/${source}/projects`);
   let models = { items: [] }; let modelsUnavailable = false;
   try { models = await api(`/api/sources/${source}/models`); }
   catch (error) { if (isTransportError(error) || ["connection_unverified", "auth_required"].includes(error.code)) throw error; modelsUnavailable = true; }
-  if (state.paused || source !== el("create-source").value) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
   await loadSessions(false);
-  if (state.paused || source !== el("create-source").value) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
   el("create-project").replaceChildren();
   el("create-model").replaceChildren(node("option", "使用来源默认模型")); el("create-model").firstChild.value = "";
   for (const project of projects.items) { const option = node("option", project.name); option.value = project.id; el("create-project").append(option); }
@@ -736,14 +782,16 @@ function showOperation(operation, announce = true) {
 }
 /** Poll only the original operation record and source runtime evidence; this never resubmits a write. */
 async function refreshExecutionStatus() {
+  const viewEpoch = state.viewEpoch;
   const watch = state.executionWatch; if (!watch) return;
   const operation = await api("/api/operations/" + watch.operationId);
-  if (state.executionWatch?.operationId !== watch.operationId) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || state.executionWatch?.operationId !== watch.operationId) return;
   if (!["queued", "accepted", "delivery_unknown", "dispatching", "received"].includes(operation.state)) state.executionWatch = null;
   showOperation(operation, false);
 }
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
 async function submitWrite(create) {
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   const session = state.selected; if (!create && !session) return;
   if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
   const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
@@ -751,17 +799,20 @@ async function submitWrite(create) {
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     if (operation.state !== "delivery_unknown" && operation.state !== "dispatching") state.pending = null;
     if (["accepted", "queued", "delivery_unknown"].includes(operation.state) && operation.sessionId) state.executionWatch = { operationId };
     if (["accepted", "queued"].includes(operation.state)) {
       state.followLatest = true;
-      state.awaitingReply = { sessionId: operation.sessionId ?? session?.id, source, baseline: [...state.messages].reverse().find((message) => message.role === "assistant")?.id ?? null };
+      state.awaitingReply = { sessionId: operation.sessionId ?? session?.id, source, baseline: create ? null : [...state.messages].reverse().find((message) => message.role === "assistant")?.id ?? null };
       const draft = el(create ? "create-prompt" : "prompt");
       if (draft.value === body.prompt) draft.value = "";
-      if (create) { el("create-dialog").close(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
+      if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     showOperation(operation); await refresh();
   } catch (error) {
+    if (["auth_changed", "auth_required"].includes(error.code)) return;
     const definite = new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"]);
     if (definite.has(error.code)) {
       state.pending = null; notice(error.message || "提交失败", { sticky: true, kind: "error" }); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
@@ -772,13 +823,15 @@ async function submitWrite(create) {
       else notice("提交结果待确认，请刷新核查；不会自动重发。", { sticky: true, kind: "warning" });
     }
   }
-  finally { if (create && !state.pending) el("create-submit").disabled = state.paused || !state.caps[source]?.createEnabled; }
+  finally { if (authEpoch === state.authEpoch && create && !state.pending) el("create-submit").disabled = state.paused || !state.caps[source]?.createEnabled; }
 }
 /** Reconcile only the recorded operation; no branch resubmits its source write. */
 async function reconcilePending() {
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   if (!state.pending) return;
   try {
     const operation = await api("/api/operations/" + state.pending.operationId);
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     if (!["dispatching", "delivery_unknown", "received"].includes(operation.state)) state.pending = null;
     if (operation.sessionId && ["queued", "accepted", "delivery_unknown"].includes(operation.state)) state.executionWatch = { operationId: operation.id };
     showOperation(operation);
@@ -868,7 +921,7 @@ el("jump-earliest").onclick = jumpToEarliestLoaded;
 el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
-el("create-source").onchange = () => run("catalog", loadCatalogs);
+el("create-source").onchange = () => run("catalog-" + el("create-source").value, loadCatalogs);
 el("create-form").onsubmit = (event) => { event.preventDefault(); run("write", () => submitWrite(true)); };
 el("send-form").onsubmit = (event) => { event.preventDefault(); run("write", () => submitWrite(false)); };
 el("record-session").oninput = scheduleRecordSuggestions;

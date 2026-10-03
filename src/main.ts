@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
     await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
-    telegram.stop();
+    await telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
     await observer.stop();
     await hookServer.stop().catch((error) => logger.warn("hook_server_stop_failed", { error: String(error) }));

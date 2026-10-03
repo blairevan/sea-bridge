@@ -1,4 +1,4 @@
-import { createServer, connect, type Server } from "node:net";
+import { createServer, connect, type Server, type Socket } from "node:net";
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { WebAuth } from "./auth.ts";
@@ -7,6 +7,7 @@ import type { WebAuth } from "./auth.ts";
 export class WebControlServer {
   private server: Server | null = null;
   private inode: number | null = null;
+  private readonly sockets = new Set<Socket>();
 
   /** The socket path is operator configuration, never browser input. */
   constructor(private readonly path: string, private readonly auth: WebAuth) {}
@@ -21,6 +22,10 @@ export class WebControlServer {
     }
     await this.removeStaleSocket();
     const server = createServer({ allowHalfOpen: true }, (socket) => {
+      this.sockets.add(socket);
+      const deadline = setTimeout(() => socket.destroy(), 2000);
+      deadline.unref();
+      socket.once("close", () => { clearTimeout(deadline); this.sockets.delete(socket); });
       let text = ""; let complete = false;
       socket.setTimeout(2000, () => socket.destroy());
       socket.on("error", () => socket.destroy());
@@ -50,6 +55,7 @@ export class WebControlServer {
   /** Close the owned server and unlink only the socket inode that it created. */
   async stop(): Promise<void> {
     const server = this.server; this.server = null;
+    for (const socket of this.sockets) socket.destroy();
     if (server?.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     try {
       if (this.inode !== null && lstatSync(this.path).ino === this.inode) unlinkSync(this.path);

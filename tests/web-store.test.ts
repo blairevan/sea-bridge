@@ -9,6 +9,19 @@ import { WebStore } from "../src/web/store.ts";
 import { operationDigest, loadOperationPepper, tokenHash } from "../src/web/crypto.ts";
 
 describe("Web isolated persistence", () => {
+  test("accepted prompt snapshots retain the latest bounded window in display order", () => {
+    const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+    try {
+      for (let index = 0; index < 105; index++) {
+        const id = `op-${index}`;
+        store.claimOperation({ id, digest: id, kind: "send", source: "dsh", deviceId: "device", targetId: "session", projectId: null, modelId: null, createdAt: index });
+        store.transitionOperation(id, "received", "dispatching", index); store.transitionOperation(id, "dispatching", "accepted", index);
+        db.query("INSERT INTO web_message_snapshots(operation_id,source,session_id,text,created_at) VALUES(?,'dsh','session',?,?)").run(id, id, index);
+      }
+      const messages = store.listAcceptedMessageSnapshots("dsh", "session");
+      expect(messages).toHaveLength(100); expect(messages[0]?.id).toBe("op-5"); expect(messages.at(-1)?.id).toBe("op-104");
+    } finally { db.close(); }
+  });
   test("upgrades on disk without changing legacy rows, idempotently", () => {
     const root = mkdtempSync(join(tmpdir(), "web-store-"));
     try {

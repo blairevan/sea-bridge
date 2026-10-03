@@ -20,6 +20,22 @@ function request(path: string, text: string): Promise<string> {
   });
 }
 
+test("control shutdown closes an unfinished client without waiting for idle timeout", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-control-stop-"));
+  const db = new Database(":memory:"); migrateWeb(db);
+  const path = join(root, "control.sock"); const server = new WebControlServer(path, new WebAuth(new WebStore(db)));
+  try {
+    await server.start();
+    const client = connect(path); client.on("error", () => {});
+    await new Promise<void>((resolve) => client.once("connect", resolve)); client.write(" ");
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stopped = await Promise.race([server.stop().then(() => true), new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 200); })]);
+      expect(stopped).toBe(true);
+    } finally { if (timeout) clearTimeout(timeout); client.destroy(); }
+  } finally { await server.stop(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("private control socket allows only bounded pair.create and rejects live collisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-control-"));
   const db = new Database(":memory:"); migrateWeb(db);

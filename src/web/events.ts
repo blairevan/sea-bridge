@@ -8,7 +8,7 @@ export class WebEvents {
   private readonly encoder = new TextEncoder();
 
   /** Read durable revocation/expiry during periodic liveness checks. */
-  constructor(private readonly store: WebStore) {}
+  constructor(private readonly store: WebStore, private readonly heartbeatInterval: (tick: () => void) => ReturnType<typeof setInterval> = (tick) => setInterval(tick, 15000)) {}
 
   /** Open a stream after HTTP authentication; no credential or body is put in its URL. */
   open(deviceId: string, signal: AbortSignal): ReadableStream<Uint8Array> {
@@ -23,11 +23,11 @@ export class WebEvents {
           if (connection) this.connections.delete(connection);
           try { controller.close(); } catch { /* The client may already have canceled. */ }
         };
-        const timer = setInterval(() => {
+        const timer = this.heartbeatInterval(() => {
           const device = this.store.getDevice(deviceId);
           if (!device || device.revokedAt !== null || device.expiresAt <= Date.now()) { this.revoke(deviceId); return; }
-          try { controller.enqueue(this.encoder.encode(": heartbeat\n\n")); } catch { dispose(); }
-        }, 15000);
+          if (connection) this.enqueue(connection, ": heartbeat\n\n");
+        });
         timer.unref();
         connection = { deviceId, controller, dispose }; this.connections.add(connection);
         signal.addEventListener("abort", dispose, { once: true });
@@ -53,9 +53,14 @@ export class WebEvents {
 
   /** Encode a bounded control event, disposing slow clients instead of buffering forever. */
   private emit(connection: Connection, name: string, value: Record<string, number>): void {
+    this.enqueue(connection, `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`);
+  }
+
+  /** Apply the same buffer bound to both controls and periodic heartbeats. */
+  private enqueue(connection: Connection, text: string): void {
     try {
       if ((connection.controller.desiredSize ?? 0) < -16) { connection.dispose(); return; }
-      connection.controller.enqueue(this.encoder.encode(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`));
+      connection.controller.enqueue(this.encoder.encode(text));
     } catch { connection.dispose(); }
   }
 }

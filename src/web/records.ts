@@ -23,7 +23,7 @@ export function operationRecords(store: WebStore, input: {
     if (input.session) { where.push("session_id=?"); params.push(input.session); }
     if (input.state) { where.push("state=?"); params.push(input.state); }
     const sql = `SELECT id,source,'web' AS transport,kind,state,session_id AS sessionId,error_code AS errorCode,created_at AS createdAt
-      FROM web_operations WHERE ${where.join(" AND ")} ORDER BY created_at DESC,id ASC LIMIT ?`;
+      FROM web_operations WHERE ${where.join(" AND ")} ORDER BY created_at DESC,id COLLATE BINARY ASC LIMIT ?`;
     records.push(...store.db.query(sql).all(...params, count) as RecordItem[]);
   }
 
@@ -39,7 +39,7 @@ export function operationRecords(store: WebStore, input: {
     if (input.session) { where.push(`${target}=?`); params.push(input.session); }
     if (storedState) { where.push("status=?"); params.push(storedState); }
     const sql = `SELECT telegram_update_id AS id,status AS state,${target} AS sessionId,error_code AS errorCode,created_at AS createdAt
-      FROM ${table} WHERE ${where.join(" AND ")} ORDER BY created_at DESC,telegram_update_id ASC LIMIT ?`;
+      FROM ${table} WHERE ${where.join(" AND ")} ORDER BY created_at DESC,CAST(telegram_update_id AS TEXT) COLLATE BINARY ASC LIMIT ?`;
     const rows = store.db.query(sql).all(...params, count) as Array<{ id: number; state: string; sessionId: string; errorCode: string | null; createdAt: number }>;
     records.push(...rows.map((row) => ({ ...row, id: `telegram-${source}-${row.id}`, source, transport: "telegram", kind: "send",
       state: row.state === "delivered" ? source === "codex" ? "queued" : "accepted" : row.state })));
@@ -60,13 +60,13 @@ export function operationRecords(store: WebStore, input: {
       where.push("status=?"); params.push(input.state);
     }
     const rows = store.db.query(`SELECT telegram_update_id AS id,status AS state,session_id AS sessionId,error_code AS errorCode,created_at AS createdAt
-      FROM dsh_creation_requests WHERE ${where.join(" AND ")} ORDER BY created_at DESC,telegram_update_id ASC LIMIT ?`)
+      FROM dsh_creation_requests WHERE ${where.join(" AND ")} ORDER BY created_at DESC,CAST(telegram_update_id AS TEXT) COLLATE BINARY ASC LIMIT ?`)
       .all(...params, count) as Array<{ id: number; state: string; sessionId: string | null; errorCode: string | null; createdAt: number }>;
     records.push(...rows.map((row) => ({ ...row, id: `telegram-dsh-create-${row.id}`, source: "dsh", transport: "telegram", kind: "create",
       state: row.state === "acknowledged" ? "accepted" : row.state })));
   }
 
-  records.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  records.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return { items: records.slice(input.offset, input.offset + input.limit), cursor: records.length > input.offset + input.limit ? String(input.offset + input.limit) : null };
 }
 
