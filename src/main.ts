@@ -1,3 +1,4 @@
+import { openCodexDesktopThread } from "./desktop/codex-desktop-opener.ts";
 import { loadConfig, loadWebConfig, isExecutableUsable } from "./config.ts";
 import { startWebLifecycle } from "./web/server.ts";
 import { WebRuntime } from "./web/runtime.ts";
@@ -223,7 +224,7 @@ async function main(): Promise<void> {
     }
     return new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
       sourceFactory: (webStore) => ({
-        codex: new CodexWebSource({ threads: threadStore, appServer: appServerClient, queue: queueClient,
+        codex: new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: threadStore, appServer: appServerClient, queue: queueClient,
           readQueue: (id) => nativeQueue.read(id),
           sessionRoots, pathExists: existsSync,
           queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),

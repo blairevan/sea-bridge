@@ -2,12 +2,13 @@ import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../deskt
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
-import { readCodexTranscript, readCodexActivity } from "../codex-transcript.ts";
+import { readCodexTranscript, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
 import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
+  openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
   appServer: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">;
   queue: Pick<ProcessCodexQueueClient, "queue">;
@@ -22,7 +23,10 @@ export interface CodexSourceDependencies {
 
 /** Transport-neutral Codex adapter with a first-turn ownership gate. */
 export class CodexWebSource implements WebSource {
+  private desktopOpening = false;
+  private desktopOpenedAt = 0;
   private readonly owners = new Set<string>();
+  private readonly nativeActivity = new Map<string, { activity: CodexActivity; readAt: number }>();
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
   private projectsReadable = false;
@@ -38,9 +42,22 @@ export class CodexWebSource implements WebSource {
 
   /** Report independently proven discovery and configured execution capabilities. */
   capabilities(): WebSourceCapabilities {
-    return { sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
+    return { desktopOpenEnabled: Boolean(this.deps.openDesktop), sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
       historyReadable: this.historyReadable, completeUserHistoryReadable: false, finalReplyReadable: this.historyReadable,
       createEnabled: this.projectsReadable && this.deps.queueUsable, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
+  }
+
+  /** Open an existing active thread on explicit request; never queue or resume input here. */
+  async openDesktop(id: string): Promise<void> {
+    if (!this.deps.openDesktop) throw new Error("desktop_open_unavailable");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("invalid_session_id");
+    if (!this.deps.threads.listActive().some((thread) => thread.id === id)) throw new Error("session_missing");
+    if (this.owners.has(id)) throw new Error("first_turn_owned");
+    if (this.desktopOpening || Date.now() - this.desktopOpenedAt < 5000) throw new Error("desktop_open_busy");
+    this.desktopOpening = true;
+    this.desktopOpenedAt = Date.now();
+    try { await this.deps.openDesktop(id); }
+    finally { this.desktopOpening = false; }
   }
 
   /** List verified nonarchived threads without inventing project ownership. */
@@ -49,11 +66,12 @@ export class CodexWebSource implements WebSource {
       const threads = this.deps.threads.listActive(); this.sessionsReadable = true;
       return threads.sort((a, b) => b.updatedAtMs - a.updatedAtMs).map((thread) => {
         const approval = this.deps.pendingApproval(thread.id);
-        const activity = this.deps.activity?.(thread.id) ?? null;
+        const cached = this.nativeActivity.get(thread.id);
+        const activity = cached && Date.now() - cached.readAt < 10_000 ? cached.activity : this.deps.activity?.(thread.id) ?? null;
         return {
           source: "codex" as const, id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
           state: approval ? "waiting_external_approval" as const
-            : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : "unknown" as const,
+            : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
           sendEnabled: this.deps.queueUsable && !this.owners.has(thread.id),
         };
       });
@@ -93,10 +111,20 @@ export class CodexWebSource implements WebSource {
     const thread = this.deps.threads.getThread?.(id);
     if (!thread) { this.historyReadable = false; throw new Error("session_missing"); }
     try {
-      const history = await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit);
+      const [history, activity] = await Promise.all([
+        readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit),
+        readCodexActivity(thread.rolloutPath, this.deps.sessionRoots).catch(() => null),
+      ]);
+      if (activity) {
+        this.nativeActivity.delete(id);
+        this.nativeActivity.set(id, { activity, readAt: Date.now() });
+        if (this.nativeActivity.size > 100) this.nativeActivity.delete(this.nativeActivity.keys().next().value ?? "");
+      } else this.nativeActivity.delete(id);
+      const sessionState: WebSession["state"] = this.deps.pendingApproval(id) ? "waiting_external_approval"
+        : this.owners.has(id) || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
-      return queue ? { ...history, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : history;
+      return queue ? { ...history, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, sessionState };
     } catch (error) {
       this.historyReadable = false;
       throw error;

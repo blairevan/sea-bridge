@@ -3,7 +3,7 @@ const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, versio
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
-const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
+const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", idle: "空闲", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
 const reads = new Map();
 const messageViews = new Map();
 let historyTools;
@@ -294,7 +294,7 @@ async function run(key, work) {
 function showPairing() {
   state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.selected = null;
   state.recoverySeq++; state.version = 0; state.device = null; state.settings = null; state.caps = {};
-  el("operation-status").textContent = ""; el("reconcile").hidden = true; el("create-reconcile").hidden = true;
+  setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
   state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
@@ -331,7 +331,7 @@ function enterDisconnected() {
     ? "服务暂不可达。发送结果待确认，恢复后会核查原请求，不会自动重发。"
     : "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。";
   showConnectionNotice(state.connectionDetail);
-  if (state.pending) el("operation-status").textContent = "结果待确认；恢复连接后自动核查";
+  if (state.pending) setComposerStatus("结果待确认；恢复连接后自动核查");
   scheduleReconnect();
 }
 /** Complete recovery only after HTTP auth/settings and the SSE control channel are both healthy. */
@@ -555,6 +555,7 @@ async function loadSessions(more) {
     const live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
     if (live) state.selected = live;
     el("session-title").textContent = state.selected.title; el("session-meta").textContent = `${state.selected.source} · ${labels[state.selected.state] ?? "未知"}`;
+    el("open-desktop").hidden = state.selected.source !== "codex" || !state.caps.codex?.desktopOpenEnabled;
     el("send-button").disabled = !state.selected.sendEnabled || Boolean(state.pending);
   }
 }
@@ -577,6 +578,12 @@ function jumpToEarliestLoaded() {
   const container = el("messages"); container.scrollTop = 0;
   container.querySelector?.(".message")?.scrollIntoView?.({ block: "start", inline: "nearest" });
 }
+/** Describe native pending input age without claiming why the source has not consumed it. */
+function queueStatusText(message, now = Date.now()) {
+  if (message.deliveryState === "queue_unknown") return "排队状态待确认";
+  const age = Number.isFinite(message.createdAt) ? now - message.createdAt : 0;
+  return age >= 120000 ? `↳ 排队中 · 已等待 ${Math.floor(age / 60000)} 分钟` : "↳ 排队中";
+}
 /** Merge executed history with a replaceable native queue snapshot, preserving scroll and older pages. */
 async function loadHistory(older) {
   const viewEpoch = state.viewEpoch;
@@ -584,11 +591,15 @@ async function loadHistory(older) {
   const params = new URLSearchParams({ limit: "30" }); if (older && state.historyCursor) params.set("cursor", state.historyCursor);
   const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/history?${params}`);
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
+  if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
+    state.selected = { ...state.selected, state: result.sessionState };
+    el("session-meta").textContent = `${session.source} · ${labels[result.sessionState]}`;
+  }
   const previousMessages = state.messages;
   const hadMessages = previousMessages.length > 0;
   const historyMessages = previousMessages.filter((message) => !message.deliveryState);
-  const queuedMessages = Array.isArray(result.queuedMessages) ? result.queuedMessages
-    : previousMessages.filter((message) => message.deliveryState).map((message) => ({ ...message, deliveryState: "queue_unknown" }));
+  const queuedMessages = (Array.isArray(result.queuedMessages) ? result.queuedMessages
+    : previousMessages.filter((message) => message.deliveryState).map((message) => ({ ...message, deliveryState: "queue_unknown" }))).map((message) => ({ ...message, queueStatusText: queueStatusText(message) }));
   state.messages = [...(older ? [...result.messages, ...historyMessages] : hadMessages ? [...historyMessages, ...result.messages] : result.messages), ...queuedMessages];
   state.messages = [...new Map(state.messages.map((message) => [message.id, message])).values()];
   // Latest polling must not move the "older" boundary forward after the user has paged back.
@@ -598,18 +609,18 @@ async function loadHistory(older) {
   const nearBottom = container.scrollHeight - container.clientHeight - scroll < 100;
   const follow = !older && (!hadMessages || state.followLatest || nearBottom);
   const unchanged = hadMessages && previousMessages.length === state.messages.length && previousMessages.every((message, index) => {
-    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt && message.deliveryState === next.deliveryState;
+    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt && message.deliveryState === next.deliveryState && message.queueStatusText === next.queueStatusText;
   });
   if (!unchanged) {
     const visibleKeys = new Set(); const items = [];
     for (const message of state.messages) {
       const key = JSON.stringify([session.source, session.id, message.id]); visibleKeys.add(key);
-      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState]);
+      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState, message.queueStatusText]);
       let view = messageViews.get(key);
       if (!view || view.signature !== signature) {
         const item = node("div", "", "message " + message.role);
         const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
-        if (message.deliveryState) item.append(node("small", message.deliveryState === "queued" ? "↳ 排队中" : "排队状态待确认", "message-queue-status"));
+        if (message.deliveryState) item.append(node("small", message.queueStatusText, "message-queue-status"));
         item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}`, "message-meta"), renderMarkdown(message.text));
         view = { signature, item }; messageViews.set(key, view);
       }
@@ -624,7 +635,7 @@ async function loadHistory(older) {
   if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
     const latest = [...state.messages].reverse().find((message) => message.role === "assistant");
     if (latest && latest.id !== state.awaitingReply.baseline) {
-      state.awaitingReply = null; state.executionWatch = null; el("operation-status").textContent = "会话收到新的最终回复"; notice("会话收到新的最终回复", { kind: "success" });
+      state.awaitingReply = null; state.executionWatch = null; if (!state.pending) setComposerStatus(""); notice("会话收到新的最终回复", { kind: "success" });
     }
   }
 }
@@ -767,17 +778,24 @@ async function loadCatalogs() {
   el("create-submit").disabled = state.paused || Boolean(state.pending) || !allowed || !projects.items.length;
   el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
-/** Show delivery and runtime evidence separately; never infer execution from queue admission alone. */
+/** Keep the composer reserved for the current submission or a delivery problem needing attention. */
+function setComposerStatus(text) {
+  el("operation-status").textContent = text;
+  el("composer-footer").hidden = !text;
+}
+/** Show receipts transiently; accepted message state belongs in history, not an empty composer. */
 function showOperation(operation, announce = true) {
   const knownSession = operation.kind === "create" && operation.sessionId ? ` · 已创建会话 ${operation.sessionId}` : "";
   let status = labels[operation.state] ?? operation.state;
   if (operation.execution?.state === "waiting_external_approval") status = "等待 Telegram 审批";
-  if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行"
-    : operation.state === "queued" ? "已入队 · 会话正在执行，本条是否开始尚未确认" : "检测到会话正在执行";
+  if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行" : "会话正在执行";
   if (operation.execution?.state === "session_ended") status = operation.execution.exact ? "本轮已结束" : "会话在投递后有任务结束，本次投递关联未确认";
   if (operation.state === "delivery_unknown" && operation.execution?.state === "running") status += " · 投递回执待确认";
   const detail = `${status}${operation.errorCode && operation.execution?.state !== "running" ? " · " + operation.errorCode : ""}${knownSession}`;
-  el("operation-status").textContent = detail; el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending;
+  if (!state.pending || state.pending.operationId === operation.id) {
+    setComposerStatus(["failed", "delivery_unknown", "received", "dispatching"].includes(operation.state) ? detail : "");
+  }
+  el("reconcile").hidden = !state.pending; el("create-reconcile").hidden = !state.pending;
   if (el("create-dialog").open) el("create-hint").textContent = detail;
   if (announce) {
     const needsAction = operation.execution?.state === "waiting_external_approval" || ["failed", "delivery_unknown"].includes(operation.state);
@@ -802,6 +820,7 @@ async function submitWrite(create) {
   const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
   const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
+  if (!create) setComposerStatus("发送中…");
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
@@ -820,9 +839,9 @@ async function submitWrite(create) {
     if (["auth_changed", "auth_required"].includes(error.code)) return;
     const definite = new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"]);
     if (definite.has(error.code)) {
-      state.pending = null; notice(error.message || "提交失败", { sticky: true, kind: "error" }); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
+      state.pending = null; if (!create) setComposerStatus("发送失败，请检查后重试"); notice(error.message || "提交失败", { sticky: true, kind: "error" }); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
     } else {
-      el("operation-status").textContent = "结果待确认；不会自动重发";
+      setComposerStatus("结果待确认；不会自动重发");
       el("reconcile").hidden = false; el("create-reconcile").hidden = false;
       if (isTransportError(error)) enterDisconnected();
       else notice("提交结果待确认，请刷新核查；不会自动重发。", { sticky: true, kind: "warning" });
@@ -842,7 +861,7 @@ async function reconcilePending() {
     showOperation(operation);
   } catch (error) {
     if (error.code !== "operation_not_received") throw error;
-    state.pending = null; el("reconcile").hidden = true; el("create-reconcile").hidden = true;
+    state.pending = null; setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
     notice("未找到提交记录。请核对任务后再手动提交。", { sticky: true, kind: "warning" });
   }
   if (el("create-dialog").open && !state.pending) el("create-submit").disabled = state.paused || !state.caps[el("create-source").value]?.createEnabled;
@@ -871,6 +890,18 @@ function syncViewport() {
   document.documentElement.style.setProperty("--app-top", `${viewport?.offsetTop ?? 0}px`);
   document.documentElement.classList.toggle("keyboard-open", document.activeElement === el("prompt") && window.innerHeight - (viewport?.height ?? window.innerHeight) > 120);
   if (follow && !state.paused) scrollMessagesToLatest(messages);
+}
+
+/** Explicit host-side navigation only; an OS receipt does not prove execution resumed. */
+async function openSelectedDesktop() {
+  const session = state.selected;
+  if (state.paused || !session || session.source !== "codex") return;
+  if (!confirm("将在运行 Sea-Bridge 的 Mac 上打开此会话，可能切换窗口。继续？")) return;
+  const button = el("open-desktop"); button.disabled = true;
+  try {
+    await api(`/api/sessions/codex/${encodeURIComponent(session.id)}/open-desktop`, "POST");
+    if (state.selected?.id === session.id && state.selected?.source === session.source) notice("已请求 Mac 打开会话；是否开始执行请以消息状态为准");
+  } finally { button.disabled = false; }
 }
 
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
@@ -958,3 +989,5 @@ window.addEventListener("online", () => { if (state.paused) { cancelReconnectTim
 window.addEventListener("offline", () => enterDisconnected());
 setInterval(() => run("poll", refresh), 3000);
 run("startup", async () => { await bootstrap(); });
+
+el("open-desktop").onclick = () => run("open-desktop", openSelectedDesktop);

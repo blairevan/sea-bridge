@@ -4,17 +4,18 @@ import type { OperationState } from "../store.ts";
 export interface WebSourceCapabilities {
   sessionsReadable: boolean; projectsReadable: boolean; modelsReadable: boolean; historyReadable: boolean;
   completeUserHistoryReadable: boolean; finalReplyReadable: boolean; createEnabled: boolean; sendEnabled: boolean;
+  desktopOpenEnabled?: boolean;
   approvalTransport: "telegram" | null;
 }
 /** Source-owned identity plus evidence-based display metadata. */
 export interface WebSession {
   source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
-  state: "running" | "unknown" | "waiting_external_approval"; sendEnabled: boolean;
+  state: "running" | "idle" | "unknown" | "waiting_external_approval"; sendEnabled: boolean;
 }
 /** Executed conversation and explicitly marked native queue inputs share safe message fields. */
 export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; deliveryState?: "queued" | "queue_unknown"; }
 /** Bounded history and an independent current queue snapshot with an opaque history cursor. */
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; }
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */
@@ -31,6 +32,7 @@ export interface CreateRequest {
 }
 /** Web adapter boundary independent of Telegram IDs and preferences. */
 export interface WebSource {
+  openDesktop?(id: string): Promise<void>;
   capabilities(): WebSourceCapabilities;
   sessions(): Promise<WebSession[]>;
   projects(): Promise<CatalogItem[]>;

@@ -46,10 +46,10 @@
             <label for="session-search">搜索会话</label><input id="session-search" type="search" placeholder="搜索标题" maxlength="200">
             <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>
           </aside>
-          <article id="session-detail" class="session-detail"><div class="section-heading"><button id="back-to-list" class="quiet mobile-only">← 会话</button><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span></div>
+          <article id="session-detail" class="session-detail"><div class="section-heading"><button id="back-to-list" class="quiet mobile-only">← 会话</button><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span><button id="open-desktop" class="quiet" hidden title="在运行 Sea-Bridge 的 Mac 上打开，可能切换窗口">在 Mac 上打开会话</button></div>
             <div class="message-shortcuts" role="group" aria-label="消息定位"><button id="jump-earliest" type="button" class="quiet">最早已加载 ↑</button><button id="jump-latest" type="button" class="quiet">最新消息 ↓</button></div>
             <div id="messages" aria-live="polite"><div id="history-tools" class="history-tools"><button id="more-history" class="quiet" hidden>加载较早消息</button><details id="history-limit" class="muted"><summary>历史说明</summary><p>只展示来源已提供的消息；不保证完整历史。</p></details></div></div>
-            <form id="send-form" class="composer"><label for="prompt" class="visually-hidden">发送消息</label><div class="composer-row"><textarea id="prompt" rows="1" maxlength="32000" placeholder="输入消息…" required></textarea><button id="send-button" type="submit" disabled>发送</button></div><div class="composer-footer"><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button></div></form>
+            <form id="send-form" class="composer"><label for="prompt" class="visually-hidden">发送消息</label><div class="composer-row"><textarea id="prompt" rows="1" maxlength="32000" placeholder="输入消息…" required></textarea><button id="send-button" type="submit" disabled>发送</button></div><div id="composer-footer" class="composer-footer" hidden><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button></div></form>
           </article>
         </section>
         <section id="records" class="page" hidden><h1>操作记录</h1><p class="muted">桥接提交结果与诊断记录；不代表完整聊天历史。</p>
