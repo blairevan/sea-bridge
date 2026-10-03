@@ -17,7 +17,10 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog"]) expect(html).toContain(`id="${id}"`);
   expect(html).toContain('role="combobox"'); expect(html).toContain('aria-controls="record-suggestions"'); expect(html).toContain('会话标题'); expect(html).not.toContain('<label>会话 ID');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
-  expect(script).not.toMatch(/innerHTML|localStorage|indexedDB|serviceWorker/);
+  expect(script).not.toMatch(/innerHTML|indexedDB|serviceWorker/);
+  const pointerStart = script.indexOf("function lastSessionPointer()");
+  const pointerEnd = script.indexOf("/** Select the previous conversation", pointerStart);
+  expect(script.slice(0, pointerStart) + script.slice(pointerEnd)).not.toContain("localStorage");
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
   expect(script).toContain('run("reconnect-" + streamSeq, () => finishRecovery(stream))');
   expect(script).toContain('const session = await requestApi("/api/auth/session")');

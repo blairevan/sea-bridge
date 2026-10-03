@@ -140,10 +140,12 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       if (path === "/api/sessions" && method === "GET") {
         const { limit, offset } = pagination(url); const query = url.searchParams.get("q") ?? "";
         if (query.length > 200) throw new HttpError(400, "query_too_long");
+        const sessionId = url.searchParams.get("sessionId");
+        if (sessionId && sessionId.length > 200) throw new HttpError(400, "invalid_session_id");
         const activity = url.searchParams.get("activity");
         if (activity && !["running", "waiting_external_approval", "unknown"].includes(activity)) throw new HttpError(400, "invalid_activity");
         const results = await Promise.allSettled(Object.entries(deps.sources).filter(([name]) => !selected || name === selected).map(async ([, source]) => source?.sessions() ?? []));
-        const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!activity || item.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
+        const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!sessionId || item.id === sessionId) && (!activity || item.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
         return json({ items: items.slice(offset, offset + limit), cursor: items.length > offset + limit ? String(offset + limit) : null, partial: results.some((result) => result.status === "rejected"), capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
       const desktopOpen = path.match(/^\/api\/sessions\/codex\/([^/]+)\/open-desktop$/);

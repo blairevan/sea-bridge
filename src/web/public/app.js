@@ -220,8 +220,9 @@ function clearSensitive() {
   clearRecordSuggestions(); state.recordChoice = null; if (el("record-session")) el("record-session").value = "";
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   for (const id of ["overview-session-count", "overview-running-count", "overview-approval-count"]) { const value = el(id); if (value) value.textContent = "—"; }
-  el("session-title").textContent = "会话"; el("session-meta").textContent = "";
+  el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
   el("messages").replaceChildren(historyTools ?? el("history-tools"));
+  if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
   if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false };
 }
@@ -490,11 +491,66 @@ function sourceStatusCard(name, source) {
   card.append(capabilities, open, node("p", source?.capabilities?.approvalTransport === "telegram" ? "审批通过 Telegram 处理" : "能力以接口结果为准", "source-footnote muted"));
   return card;
 }
+/** Read only a device-scoped source/id pointer, never cached chat content. */
+function lastSessionPointer() {
+  try {
+    const value = JSON.parse(localStorage.getItem(`sea-last-session:${state.device?.id ?? ""}`) ?? "null");
+    return value && ["codex", "dsh"].includes(value.source) && typeof value.id === "string" && value.id.length <= 200 ? value : null;
+  } catch { return null; }
+}
+
+/** Remember a successfully loaded conversation without leaking its title or messages. */
+function rememberSession(session) {
+  if (!state.device?.id) return;
+  try { localStorage.setItem(`sea-last-session:${state.device.id}`, JSON.stringify({ source: session.source, id: session.id })); } catch { /* Storage may be disabled. */ }
+}
+
+/** Select the previous conversation even outside the latest page, respecting source failures. */
+async function continueSessionTarget(sessions) {
+  const pointer = lastSessionPointer();
+  if (!pointer) return sessions.items[0] ?? null;
+  const known = sessions.items.find((item) => item.source === pointer.source && item.id === pointer.id);
+  if (known) return known;
+  try {
+    const params = new URLSearchParams({ source: pointer.source, sessionId: pointer.id, limit: "1" });
+    const result = await api(`/api/sessions?${params}`);
+    if (result.partial) return null;
+    return result.items.find((item) => item.source === pointer.source && item.id === pointer.id) ?? sessions.items[0] ?? null;
+  } catch { return null; }
+}
+
+/** Route a single deliberate click directly into the selected conversation. */
+async function openContinueSession(session) {
+  if (state.paused) { showConnectionNotice("恢复连接后可继续会话"); return; }
+  el("source-filter").value = session.source; el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
+  state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
+  el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open");
+  await showPage("sessions");
+}
+
+/** Keep the primary action compact and readable without replacing its DOM on every poll. */
+function renderContinueSession(session) {
+  const button = el("continue-session"); if (!button) return;
+  button.hidden = !session;
+  if (!session) { button.replaceChildren(); button.onclick = null; return; }
+  const signature = JSON.stringify([session.source, session.id, session.title, session.state, session.updatedAt]);
+  if (button.dataset?.sessionSignature !== signature || !button.childElementCount) {
+    if (button.dataset) button.dataset.sessionSignature = signature;
+    const heading = node("span", "", "continue-heading"); heading.append(node("small", "继续会话"), node("span", "进入 →", "continue-arrow"));
+    const title = node("strong", session.title, "continue-title"); title.title = session.title;
+    button.replaceChildren(heading, title, node("small", `${session.source === "codex" ? "Codex" : "DSH"} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
+  }
+  button.onclick = () => run("continue-session", () => openContinueSession(session));
+}
+
 /** Render a bounded overview independently of session-page search filters. */
 async function loadStatus() {
   const viewEpoch = state.viewEpoch;
   const [status, sessions] = await Promise.all([api("/api/status"), api("/api/sessions?limit=30")]);
   if (state.paused || viewEpoch !== state.viewEpoch || state.page !== "overview") return;
+  const continuation = await continueSessionTarget(sessions);
+  if (state.paused || viewEpoch !== state.viewEpoch || state.page !== "overview") return;
+  renderContinueSession(continuation);
   state.overviewSessions = sessions.items; state.caps = sessions.capabilities ?? state.caps;
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   el("overview-observed").textContent = `来源采样 ${overviewTime(status.observedAt)}`;
@@ -554,7 +610,7 @@ async function loadSessions(more) {
   if (state.selected) {
     const live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
     if (live) state.selected = live;
-    el("session-title").textContent = state.selected.title; el("session-meta").textContent = `${state.selected.source} · ${labels[state.selected.state] ?? "未知"}`;
+    el("session-title").textContent = state.selected.title; renderSessionStatus();
     el("open-desktop").hidden = state.selected.source !== "codex" || !state.caps.codex?.desktopOpenEnabled;
     el("send-button").disabled = !state.selected.sendEnabled || Boolean(state.pending);
   }
@@ -591,9 +647,10 @@ async function loadHistory(older) {
   const params = new URLSearchParams({ limit: "30" }); if (older && state.historyCursor) params.set("cursor", state.historyCursor);
   const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/history?${params}`);
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
+  rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState };
-    el("session-meta").textContent = `${session.source} · ${labels[result.sessionState]}`;
+    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt };
+    renderSessionStatus();
   }
   const previousMessages = state.messages;
   const hadMessages = previousMessages.length > 0;
@@ -615,13 +672,14 @@ async function loadHistory(older) {
     const visibleKeys = new Set(); const items = [];
     for (const message of state.messages) {
       const key = JSON.stringify([session.source, session.id, message.id]); visibleKeys.add(key);
-      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState, message.queueStatusText]);
+      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState, message.queueStatusText, message.durationMs]);
       let view = messageViews.get(key);
       if (!view || view.signature !== signature) {
         const item = node("div", "", "message " + message.role);
         const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
         if (message.deliveryState) item.append(node("small", message.queueStatusText, "message-queue-status"));
-        item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}`, "message-meta"), renderMarkdown(message.text));
+        const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · 耗时 ${formatTurnDuration(message.durationMs)}` : "";
+        item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}${duration}`, "message-meta"), renderMarkdown(message.text));
         view = { signature, item }; messageViews.set(key, view);
       }
       items.push(view.item);
@@ -904,6 +962,46 @@ async function openSelectedDesktop() {
   } finally { button.disabled = false; }
 }
 
+/** Render native elapsed time from an absolute timestamp; foregrounding never resets it. */
+function renderSessionStatus() {
+  const session = state.selected;
+  if (!session) return;
+  const knownStart = Number.isFinite(session.startedAt) && session.startedAt > 0;
+  const elapsed = session.state === "running" && knownStart
+    ? ` · 已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
+  const text = `${session.source} · ${labels[session.state] ?? "未知"}`;
+  el("session-meta").textContent = text;
+  el("session-meta").title = text;
+  const timer = el("execution-timer");
+  if (timer) {
+    timer.hidden = !elapsed;
+    timer.textContent = elapsed ? `已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
+  }
+}
+
+/** Count whole seconds forward, including zero, while retaining hours and remaining seconds. */
+function formatRunningDuration(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒`;
+}
+
+/** Format execution elapsed time without including queue wait. */
+function formatTurnDuration(milliseconds) {
+  const seconds = Math.max(1, Math.round(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分`;
+}
+
+/** Revoke the login only after the user confirms the logout action. */
+async function confirmLogout() {
+  if (!confirm("确认退出登录？再次访问需要重新配对。")) return;
+  await api("/api/auth/logout", "POST");
+  showPairing();
+}
+
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
 historyTools = el("history-tools");
 el("notice-toggle").onclick = toggleNoticeExpanded;
@@ -935,7 +1033,7 @@ async function pairDevice() {
 }
 el("pair-submit").onclick = () => run("pair", pairDevice);
 el("pair-form").onsubmit = (event) => { event.preventDefault(); run("pair", pairDevice); };
-el("logout").onclick = () => run("logout", async () => { await api("/api/auth/logout", "POST"); showPairing(); });
+el("logout").onclick = () => run("logout", confirmLogout);
 el("overview-all-sessions").onclick = () => run("overview-action", () => openOverviewSessions());
 el("overview-total").onclick = () => run("overview-action", () => openOverviewSessions());
 el("overview-running").onclick = () => run("overview-action", () => openOverviewSessions("", "running"));
@@ -991,3 +1089,5 @@ setInterval(() => run("poll", refresh), 3000);
 run("startup", async () => { await bootstrap(); });
 
 el("open-desktop").onclick = () => run("open-desktop", openSelectedDesktop);
+
+setInterval(renderSessionStatus, 1000);

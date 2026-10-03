@@ -121,7 +121,11 @@ export class DshWebSource implements WebSource {
         this.summaryCache.set(key, message);
         if (this.summaryCache.size > 1000) this.summaryCache.delete(this.summaryCache.keys().next().value!);
       }
-      if (message) messages.push(message);
+      if (message) {
+        const start = events.find((item) => item.type === "turn/start" && item.turn === event.turn);
+        const duration = start && Number.isFinite(start.time) && Number.isFinite(event.time) ? event.time - start.time : -1;
+        messages.push(duration >= 0 ? { ...message, durationMs: duration } : message);
+      }
     }
     const oldest = selected[0]?.seq;
     const more = page.hasMore || events.length > selected.length;

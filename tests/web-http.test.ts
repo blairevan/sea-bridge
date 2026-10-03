@@ -51,6 +51,8 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     expect(filtered.status).toBe(200);
     expect((await filtered.json()).data.items.map((item: { id: string }) => item.id)).toEqual(["active"]);
     expect((await request("/api/sessions?activity=invalid", "GET", undefined, cookie)).status).toBe(400);
+    const exact = await request("/api/sessions?source=codex&sessionId=idle&limit=1", "GET", undefined, cookie);
+    expect((await exact.json()).data.items.map((item: { id: string }) => item.id)).toEqual(["idle"]);
     const payload = { operationId: randomUUID(), source: "codex", projectId: "project", modelId: null, prompt: "hello fixture-secret" };
     expect((await request("/api/sessions", "POST", payload, cookie)).status).toBe(403);
     expect((await request("/api/sessions", "POST", payload, cookie, paired.csrfToken)).status).toBe(200);

@@ -10,12 +10,12 @@ export interface WebSourceCapabilities {
 /** Source-owned identity plus evidence-based display metadata. */
 export interface WebSession {
   source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
-  state: "running" | "idle" | "unknown" | "waiting_external_approval"; sendEnabled: boolean;
+  state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
 }
 /** Executed conversation and explicitly marked native queue inputs share safe message fields. */
-export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; deliveryState?: "queued" | "queue_unknown"; }
+export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; }
 /** Bounded history and an independent current queue snapshot with an opaque history cursor. */
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; }
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; activeTurnStartedAt?: number; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */
