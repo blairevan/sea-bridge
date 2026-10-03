@@ -506,6 +506,18 @@ export class DshBridgeStore {
     return result.changes === 1;
   }
 
+  /** Select the latest mapped Telegram message across both providers in this chat. */
+  findLatestReplyMessageId(chatId: string): number | null {
+    const row = this.state.db.query(
+      `SELECT MAX(telegram_message_id) AS message_id FROM (
+        SELECT telegram_message_id FROM desktop_message_links WHERE telegram_chat_id=?
+        UNION ALL
+        SELECT telegram_message_id FROM dsh_message_links WHERE telegram_chat_id=?
+      )`,
+    ).get(chatId, chatId) as { message_id: number | null };
+    return row.message_id;
+  }
+
   findMessageLink(chatId: string, messageId: number): DshMessageLink | null {
     const row = this.state.db.query(
       `SELECT telegram_chat_id,telegram_message_id,session_id,event_kind,event_fingerprint

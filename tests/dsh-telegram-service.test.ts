@@ -314,7 +314,7 @@ describe("Telegram dsh full integration", () => {
     }
   });
 
-  test("plain text without reply remains latest Codex and provider collision writes nowhere", async () => {
+  test("plain text selects the latest Codex notification and provider collision writes nowhere", async () => {
     const { state, desktopStore, dshStore, hostCalls, codexCalls, client, service } = setup();
     try {
       desktopStore.link({
@@ -352,6 +352,21 @@ describe("Telegram dsh full integration", () => {
     } finally {
       state.close();
     }
+  });
+
+  test("plain text selects the latest dsh notification through the authenticated Telegram service", async () => {
+    const { state, desktopStore, dshStore, hostCalls, codexCalls, client, service } = setup();
+    try {
+      desktopStore.link({ chatId: "456", messageId: 400, threadId: "thread-old", turnId: null,
+        eventKind: "completed", eventFingerprint: "old-codex" });
+      dshStore.linkMessage({ chatId: "456", messageId: 500, sessionId: "session-latest",
+        eventKind: "completed", eventFingerprint: "latest-dsh" });
+      await (service as unknown as { processUpdate(value: TelegramUpdate): Promise<void> })
+        .processUpdate(messageUpdate(35, "continue dsh directly"));
+      expect(hostCalls).toEqual([{ op: "prompt", args: ["session-latest", "sea-bridge-tg-35", "continue dsh directly"] }]);
+      expect(codexCalls).toEqual([]);
+      expect(client.sent.at(-1)?.text).toContain("已投递到对应的 dsh Web 会话");
+    } finally { state.close(); }
   });
 
   test("consumed callback token cannot execute a second write action", async () => {

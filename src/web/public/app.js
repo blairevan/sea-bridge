@@ -577,7 +577,7 @@ function jumpToEarliestLoaded() {
   const container = el("messages"); container.scrollTop = 0;
   container.querySelector?.(".message")?.scrollIntoView?.({ block: "start", inline: "nearest" });
 }
-/** Read final replies and verified user text; preserve scroll during periodic refresh. */
+/** Merge executed history with a replaceable native queue snapshot, preserving scroll and older pages. */
 async function loadHistory(older) {
   const viewEpoch = state.viewEpoch;
   const session = state.selected; if (!session) return;
@@ -586,7 +586,10 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   const previousMessages = state.messages;
   const hadMessages = previousMessages.length > 0;
-  state.messages = older ? [...result.messages, ...state.messages] : hadMessages ? [...state.messages, ...result.messages] : result.messages;
+  const historyMessages = previousMessages.filter((message) => !message.deliveryState);
+  const queuedMessages = Array.isArray(result.queuedMessages) ? result.queuedMessages
+    : previousMessages.filter((message) => message.deliveryState).map((message) => ({ ...message, deliveryState: "queue_unknown" }));
+  state.messages = [...(older ? [...result.messages, ...historyMessages] : hadMessages ? [...historyMessages, ...result.messages] : result.messages), ...queuedMessages];
   state.messages = [...new Map(state.messages.map((message) => [message.id, message])).values()];
   // Latest polling must not move the "older" boundary forward after the user has paged back.
   if (older || !hadMessages) state.historyCursor = result.cursor;
@@ -595,17 +598,18 @@ async function loadHistory(older) {
   const nearBottom = container.scrollHeight - container.clientHeight - scroll < 100;
   const follow = !older && (!hadMessages || state.followLatest || nearBottom);
   const unchanged = hadMessages && previousMessages.length === state.messages.length && previousMessages.every((message, index) => {
-    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt;
+    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt && message.deliveryState === next.deliveryState;
   });
   if (!unchanged) {
     const visibleKeys = new Set(); const items = [];
     for (const message of state.messages) {
       const key = JSON.stringify([session.source, session.id, message.id]); visibleKeys.add(key);
-      const signature = JSON.stringify([message.role, message.text, message.createdAt]);
+      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState]);
       let view = messageViews.get(key);
       if (!view || view.signature !== signature) {
         const item = node("div", "", "message " + message.role);
         const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
+        if (message.deliveryState) item.append(node("small", message.deliveryState === "queued" ? "↳ 排队中" : "排队状态待确认", "message-queue-status"));
         item.append(node("small", `${message.role === "user" ? "用户" : "助手 · 最终回复"} · ${time}`, "message-meta"), renderMarkdown(message.text));
         view = { signature, item }; messageViews.set(key, view);
       }
@@ -768,7 +772,8 @@ function showOperation(operation, announce = true) {
   const knownSession = operation.kind === "create" && operation.sessionId ? ` · 已创建会话 ${operation.sessionId}` : "";
   let status = labels[operation.state] ?? operation.state;
   if (operation.execution?.state === "waiting_external_approval") status = "等待 Telegram 审批";
-  if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行" : "检测到会话正在执行";
+  if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行"
+    : operation.state === "queued" ? "已入队 · 会话正在执行，本条是否开始尚未确认" : "检测到会话正在执行";
   if (operation.execution?.state === "session_ended") status = operation.execution.exact ? "本轮已结束" : "会话在投递后有任务结束，本次投递关联未确认";
   if (operation.state === "delivery_unknown" && operation.execution?.state === "running") status += " · 投递回执待确认";
   const detail = `${status}${operation.errorCode && operation.execution?.state !== "running" ? " · " + operation.errorCode : ""}${knownSession}`;

@@ -3,6 +3,22 @@ import type { QueueResult } from "../src/desktop/codex-queue-client.ts";
 import { CodexWebSource } from "../src/web/sources/codex.ts";
 import type { CodexAppServerClient } from "../src/desktop/codex-app-server-client.ts";
 
+test("Codex history exposes native queued messages separately from executed conversation", async () => {
+  const fixture = "tests/fixtures/codex-rollout-web/visible.jsonl";
+  const deps = {
+    threads: { listActive: () => [], getThread: () => ({ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: fixture }) },
+    appServer: { async listProjects() { return []; }, async listModels() { return []; }, async startThreadAndTurn(): Promise<never> { throw new Error("unused"); } },
+    queue: { async queue(): Promise<never> { throw new Error("unused"); } },
+    sessionRoots: ["tests/fixtures/codex-rollout-web"], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+    readQueue: () => ({ available: true, messages: [{ id: "queue-one", role: "user" as const, text: "waiting", createdAt: 10, deliveryState: "queued" as const }] }),
+  };
+  const source = new CodexWebSource(deps);
+  expect(await source.history("thread", null, 30)).toMatchObject({ queuedMessages: [
+    { id: "queue-one", text: "waiting", deliveryState: "queued" },
+  ], queueUnavailable: false });
+  expect((await source.history("thread", null, 30)).messages.some((message) => message.text === "waiting")).toBe(false);
+});
+
 test("Web Codex prompt is raw, catalog coalesces, ownership blocks queue until release", async () => {
   type Start = Parameters<CodexAppServerClient["startThreadAndTurn"]>[0];
   let release: Start["onOwnershipReleased"]; let prompt = ""; let queues = 0; let catalogs = 0; let approval = false;

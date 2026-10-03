@@ -618,12 +618,13 @@ export class TelegramService {
     }
 
     let result: Awaited<ReturnType<typeof routeThreadReply>>;
-    if (this.dshStore && this.dshReplyRouter) {
+    const providerStore = this.dshStore ?? this.dshReadOnly;
+    if (providerStore) {
       const routed = await routeProviderReply(
         update.update_id,
         message,
         this.messages,
-        this.dshStore,
+        providerStore,
         this.queueClient,
         this.dshReplyRouter,
       );
@@ -637,6 +638,11 @@ export class TelegramService {
           await this.client.sendMessage(
             message.chat.id,
             "这条通知同时存在 Codex 与 dsh 映射，已阻止投递，请检查 Sea-Bridge 状态。",
+          );
+        } else if (routed.status === "dsh_read_only") {
+          await this.client.sendMessage(
+            message.chat.id,
+            "这是 dsh Web 只读通知。当前回复功能尚未启用，本条内容没有发送到 dsh。",
           );
         } else {
           await this.client.sendMessage(message.chat.id, "这条消息不属于 Sea-Bridge 通知，无法确定会话。");
@@ -669,31 +675,6 @@ export class TelegramService {
       }
       result = routed.result;
     } else {
-      if (message.reply_to_message && this.dshReadOnly) {
-        const chatId = String(message.chat.id);
-        const replyToMessageId = message.reply_to_message.message_id;
-        const dshLink = this.dshReadOnly.findMessageLink(chatId, replyToMessageId);
-        const codexLink = this.messages.findLink(chatId, replyToMessageId);
-        if (dshLink && codexLink) {
-          this.logger.error("telegram_provider_mapping_conflict", {
-            updateId: update.update_id,
-            chatId,
-            replyToMessageId,
-          });
-          await this.client.sendMessage(
-            message.chat.id,
-            "这条通知同时存在 Codex 与 dsh 映射，已阻止投递，请检查 Sea-Bridge 状态。",
-          );
-          return;
-        }
-        if (dshLink) {
-          await this.client.sendMessage(
-            message.chat.id,
-            "这是 dsh Web 只读通知。当前回复功能尚未启用，本条内容没有发送到 dsh。",
-          );
-          return;
-        }
-      }
       result = await routeThreadReply(update.update_id, message, this.messages, this.queueClient);
     }
     if (result.status === "missing_reply") {

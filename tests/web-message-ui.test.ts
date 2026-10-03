@@ -54,6 +54,36 @@ class ElementFixture {
 /** Flatten the fixture tree for structural security and formatting assertions. */
 function flatten(root: ElementFixture): ElementFixture[] { return [root, ...root.children.flatMap(flatten)]; }
 
+test("queued bubbles refresh by identity, preserve queue order and disappear when consumed", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  let queued = [{ id: "q2", role: "user", text: "second", createdAt: 20, deliveryState: "queued" }, { id: "q1", role: "user", text: "first", createdAt: 10, deliveryState: "queued" }];
+  let unavailable = false;
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, loadHistory })", {
+    URL, URLSearchParams, location: { origin: "http://127.0.0.1:7310" },
+    fetch: async () => Response.json({ data: { messages: [{ id: "history", role: "user", text: "executed", createdAt: 1 }], queuedMessages: unavailable ? undefined : queued, queueUnavailable: unavailable, cursor: null } }),
+    document: {
+      cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode(text: string) { const node = new ElementFixture("#text"); node.textContent = text; return node; },
+    },
+  }) as { state: { paused: boolean; selected: { id: string; source: string }; messages: Array<{ id: string; deliveryState?: string }> }; loadHistory(older: boolean): Promise<void> };
+  ui.state.paused = false; ui.state.selected = { id: "thread", source: "codex" };
+  await ui.loadHistory(false);
+  expect(ui.state.messages.map((message) => message.id)).toEqual(["history", "q2", "q1"]);
+  const root = nodes.get("messages")!;
+  expect(flatten(root).filter((node) => node.textContent === "↳ 排队中")).toHaveLength(2);
+  queued[0]!.text = "edited second"; await ui.loadHistory(false);
+  expect(ui.state.messages.map((message) => message.id)).toEqual(["history", "q2", "q1"]);
+  expect(flatten(root).some((node) => node.textContent === "edited second")).toBe(true);
+  unavailable = true; await ui.loadHistory(false);
+  expect(flatten(root).filter((node) => node.textContent === "排队状态待确认")).toHaveLength(2);
+  unavailable = false; queued = []; await ui.loadHistory(false);
+  expect(ui.state.messages.map((message) => message.id)).toEqual(["history"]);
+  expect(flatten(root).some((node) => node.textContent.includes("排队"))).toBe(false);
+});
+
 test("Markdown renders structure without HTML execution and loads images only on click", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -210,7 +240,7 @@ test("operation polling distinguishes exact execution from session-level activit
   expect(nodes.get("operation-status")?.textContent).toBe("正在执行");
   execution = { state: "running", exact: false };
   await harness.refreshExecutionStatus();
-  expect(nodes.get("operation-status")?.textContent).toBe("检测到会话正在执行");
+  expect(nodes.get("operation-status")?.textContent).toBe("已入队 · 会话正在执行，本条是否开始尚未确认");
   execution = { state: "waiting_external_approval", exact: false };
   await harness.refreshExecutionStatus();
   expect(nodes.get("operation-status")?.textContent).toBe("等待 Telegram 审批");
