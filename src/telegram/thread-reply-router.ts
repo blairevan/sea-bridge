@@ -40,7 +40,7 @@ export async function routeThreadReply(
   }
   if (!store.markDispatching(updateId)) return { status: "duplicate" };
 
-  const result = await queueClient.queue(link.threadId, `[Telegram reply]\n${text}`);
+  const result = await queueClient.queue(link.threadId, `[Telegram reply]\n${text}`, { source: "telegram", updateId });
   store.finishDelivery(updateId, result.status, result.exitCode, result.errorCode ?? null);
   return result.status === "delivered"
     ? { status: "delivered", threadId: link.threadId }

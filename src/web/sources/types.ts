@@ -11,10 +11,10 @@ export interface WebSession {
   source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
   state: "running" | "unknown" | "waiting_external_approval"; sendEnabled: boolean;
 }
-/** Only verified user text and visible final assistant text enter the timeline. */
-export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; }
-/** Bounded history page with an opaque continuation cursor. */
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; }
+/** Executed conversation and explicitly marked native queue inputs share safe message fields. */
+export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; deliveryState?: "queued" | "queue_unknown"; }
+/** Bounded history and an independent current queue snapshot with an opaque history cursor. */
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */

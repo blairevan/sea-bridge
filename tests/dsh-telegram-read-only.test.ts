@@ -211,7 +211,7 @@ describe("Telegram dsh read-only integration", () => {
     }
   });
 
-  test("keeps no-reply plain text on the existing latest-Codex behavior", async () => {
+  test("routes no-reply text when the latest notification is Codex", async () => {
     const { state, desktop, queueCalls, service } = setup();
     try {
       desktop.link({
@@ -230,5 +230,19 @@ describe("Telegram dsh read-only integration", () => {
     } finally {
       state.close();
     }
+  });
+
+  test("blocks direct text to the latest read-only dsh notification instead of sending it to Codex", async () => {
+    const { state, desktop, dshStore, client, queueCalls, service } = setup();
+    try {
+      desktop.link({ chatId: "456", messageId: 70, threadId: "thread-old", turnId: null,
+        eventKind: "completed", eventFingerprint: "old-codex" });
+      dshStore.linkMessage({ chatId: "456", messageId: 80, sessionId: "session-latest",
+        eventKind: "completed", eventFingerprint: "latest-dsh" });
+      await (service as unknown as { processUpdate(value: TelegramUpdate): Promise<void> })
+        .processUpdate(update(7, "continue"));
+      expect(queueCalls).toEqual([]);
+      expect(client.sent.at(-1)?.text).toContain("dsh Web 只读通知");
+    } finally { state.close(); }
   });
 });

@@ -56,4 +56,9 @@ export class DshReadOnlyBridge {
   findMessageLink(chatId: string, messageId: number): DshMessageLink | null {
     return this.store.findMessageLink(chatId, messageId);
   }
+
+  /** Expose shared notification ordering without granting Host write access. */
+  findLatestReplyMessageId(chatId: string): number | null {
+    return this.store.findLatestReplyMessageId(chatId);
+  }
 }

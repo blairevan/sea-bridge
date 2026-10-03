@@ -145,6 +145,8 @@ export class DesktopObserver {
       if (!event) continue;
       lastEventFingerprint = event.fingerprint;
       if (this.messages.hasEventFingerprint(event.fingerprint)) continue;
+      this.logger.info("codex_turn_terminal_observed", { threadId: thread.id, turnId: turn.turnId,
+        status: turn.status, completedAt: turn.completedAtMs });
       this.messages.enqueueNotification({
         chatId: this.chatId,
         threadId: thread.id,

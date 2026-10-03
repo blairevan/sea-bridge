@@ -17,8 +17,11 @@ import { TelegramService } from "./telegram/service.ts";
 import { DesktopSameSessionAdapter } from "./desktop/same-session-adapter.ts";
 import { DesktopMessageStore } from "./state/desktop-message-store.ts";
 import { CodexThreadStore } from "./desktop/codex-thread-store.ts";
+import { CodexQueueStore } from "./desktop/codex-queue-store.ts";
 import { DesktopObserver } from "./desktop/desktop-observer.ts";
 import { ProcessCodexQueueClient } from "./desktop/codex-queue-client.ts";
+import { CodexQueueDiagnostics } from "./desktop/codex-queue-diagnostics.ts";
+import { readQueueExecutionEvidence, readCodexProcesses, readRolloutOpenPids } from "./desktop/codex-queue-evidence.ts";
 import { ThreadHistoryStore } from "./desktop/thread-history-store.ts";
 import { CodexAppServerClient } from "./desktop/codex-app-server-client.ts";
 import { NewThreadManager } from "./desktop/new-thread-manager.ts";
@@ -68,8 +71,32 @@ async function main(): Promise<void> {
   );
   const desktop = new DesktopSameSessionAdapter(state, sessions, queue, config.activeSessionTtlMs);
   const messages = new DesktopMessageStore(state);
-  const queueClient = new ProcessCodexQueueClient(config.codexCliPath);
   const threadStore = new CodexThreadStore(config.codexStateDbPath);
+  const nativeQueue = new CodexQueueStore(join(config.codexHome, "queue_1.sqlite"));
+  const sessionRoots = [join(config.codexHome, "sessions"), join(config.codexHome, "archived_sessions")];
+  const queueDiagnostics = new CodexQueueDiagnostics({ logger, readQueue: () => nativeQueue.readMetadata(),
+    processes: async (id) => {
+      const processes = await readCodexProcesses();
+      try {
+        const thread = threadStore.getThread(id);
+        const handles = thread ? await readRolloutOpenPids(thread.rolloutPath) : null;
+        return { ...processes, rolloutHandleReadAvailable: handles?.available ?? false,
+          rolloutOpenPids: handles?.pids.filter((pid) => processes.codexChildPids.includes(pid)) ?? [] };
+      } catch { return { ...processes, rolloutHandleReadAvailable: false, rolloutOpenPids: [] }; }
+    },
+    evidence: async (id, clientIds) => {
+      let native;
+      try {
+        const thread = threadStore.getThread(id);
+        native = thread ? await readQueueExecutionEvidence(thread.rolloutPath, sessionRoots, clientIds) : null;
+      } catch { native = null; }
+      const hook = sessions.getById(id);
+      return { available: native?.available ?? false, activity: native?.activity ?? null, matches: native?.matches ?? new Map(),
+        pendingApproval: Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
+        hook: hook ? { state: hook.activityState, turnId: hook.turnId, lastEvent: hook.lastEvent, lastSeenAt: hook.lastSeenAt } : null };
+    },
+  });
+  const queueClient = new ProcessCodexQueueClient(config.codexCliPath, undefined, 15_000, queueDiagnostics);
   const appServerClient = new CodexAppServerClient(config.codexCliPath, {
     inboundRequestHandler: createAppServerApprovalHandler(approvals, logger),
     codexHome: config.codexHome,
@@ -197,7 +224,8 @@ async function main(): Promise<void> {
     return new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
       sourceFactory: (webStore) => ({
         codex: new CodexWebSource({ threads: threadStore, appServer: appServerClient, queue: queueClient,
-          sessionRoots: [join(config.codexHome, "sessions"), join(config.codexHome, "archived_sessions")], pathExists: existsSync,
+          readQueue: (id) => nativeQueue.read(id),
+          sessionRoots, pathExists: existsSync,
           queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),
           pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
           activity: (id) => {
@@ -220,6 +248,7 @@ async function main(): Promise<void> {
     await telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
     await observer.stop();
+    await queueDiagnostics.stop();
     await hookServer.stop().catch((error) => logger.warn("hook_server_stop_failed", { error: String(error) }));
     await appServerClient.close().catch((error) => logger.warn("app_server_stop_failed", { error: String(error) }));
     state.close();
@@ -231,12 +260,16 @@ async function main(): Promise<void> {
 
   await hookServer.start();
   observer.start();
+  queueDiagnostics.start();
   dshObserver?.start();
   logger.info("sea_bridge_started", {
     dbPath: config.dbPath,
     hookSocketPath: config.hookSocketPath,
     approvalTimeoutMs: config.approvalTimeoutMs,
     activeSessionTtlMs: config.activeSessionTtlMs,
+    codexCliPath: config.codexCliPath,
+    codexHome: config.codexHome,
+    nativeQueueDbPath: join(config.codexHome, "queue_1.sqlite"),
     dshReadOnlyEnabled: config.dshReadOnlyEnabled,
     dshWriteEnabled: config.dshWriteEnabled,
     dshNotificationsEnabled: config.dshNotificationsEnabled,

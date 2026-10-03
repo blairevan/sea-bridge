@@ -1,6 +1,7 @@
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
+import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
 import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
@@ -16,6 +17,7 @@ export interface CodexSourceDependencies {
   pendingApproval: (id: string) => boolean;
   activity?: (id: string) => { state: "active" | "idle" | "unknown"; turnId: string | null } | null;
   registerCreatedThread?: (id: string) => void;
+  readQueue?: (id: string) => CodexQueueSnapshot;
 }
 
 /** Transport-neutral Codex adapter with a first-turn ownership gate. */
@@ -93,7 +95,8 @@ export class CodexWebSource implements WebSource {
     try {
       const history = await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit);
       this.historyReadable = true;
-      return history;
+      const queue = this.deps.readQueue?.(id);
+      return queue ? { ...history, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : history;
     } catch (error) {
       this.historyReadable = false;
       throw error;
@@ -129,7 +132,7 @@ export class CodexWebSource implements WebSource {
     if (!this.deps.queueUsable) return { state: "failed", sessionId: id, errorCode: "queue_unavailable" };
     if (this.owners.has(id)) return { state: "failed", sessionId: id, errorCode: "first_turn_owned" };
     if (!this.deps.threads.getThread?.(id)) return { state: "failed", sessionId: id, errorCode: "session_missing" };
-    const result = await this.deps.queue.queue(id, prompt);
+    const result = await this.deps.queue.queue(id, prompt, { source: "web" });
     return { state: result.status === "delivered" ? "queued" : result.status, sessionId: id, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
   }
 }
