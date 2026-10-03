@@ -148,6 +148,16 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!sessionId || item.id === sessionId) && (!activity || item.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
         return json({ items: items.slice(offset, offset + limit), cursor: items.length > offset + limit ? String(offset + limit) : null, partial: results.some((result) => result.status === "rejected"), capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
+      const attachment = path.match(/^\/api\/sessions\/codex\/([^/]+)\/attachments\/([^/]+)\/(\d+)$/);
+      if (attachment && method === "GET") {
+        try {
+          const image = await deps.sources.codex?.attachment?.(decodeURIComponent(attachment[1] ?? ""), decodeURIComponent(attachment[2] ?? ""), Number(attachment[3]));
+          if (!image) throw new Error("attachment_missing");
+          return new Response(new Blob([Uint8Array.from(image.bytes).buffer], { type: image.contentType }), { headers: {
+            "Content-Type": image.contentType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'", "Referrer-Policy": "no-referrer",
+          } });
+        } catch { throw new HttpError(404, "attachment_missing"); }
+      }
       const desktopOpen = path.match(/^\/api\/sessions\/codex\/([^/]+)\/open-desktop$/);
       if (desktopOpen && method === "POST") {
         const source = deps.sources.codex;

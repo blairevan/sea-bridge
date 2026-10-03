@@ -11,6 +11,8 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
   expect(html).toContain(`src="/app.js?v=${APP_VERSION}"`); expect(html).toContain(`href="/app.css?v=${APP_VERSION}"`);
+  expect(html).toContain('<main id="pairing" class="pairing" hidden>');
+  expect(html).toContain('id="auth-loading"');
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
   expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-retry"'); expect(html).toContain('id="notice-close"');
@@ -20,7 +22,9 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(script).not.toMatch(/innerHTML|indexedDB|serviceWorker/);
   const pointerStart = script.indexOf("function lastSessionPointer()");
   const pointerEnd = script.indexOf("/** Select the previous conversation", pointerStart);
-  expect(script.slice(0, pointerStart) + script.slice(pointerEnd)).not.toContain("localStorage");
+  const themeStart = script.indexOf("/** Apply a visual preference");
+  const themeEnd = script.indexOf("/** Generate an RFC", themeStart);
+  expect(script.slice(0, themeStart) + script.slice(themeEnd, pointerStart) + script.slice(pointerEnd)).not.toContain("localStorage");
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
   expect(script).toContain('run("reconnect-" + streamSeq, () => finishRecovery(stream))');
   expect(script).toContain('const session = await requestApi("/api/auth/session")');

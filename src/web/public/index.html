@@ -8,7 +8,10 @@
   <script src="/app.js?v=__SEA_BRIDGE_VERSION__" defer></script>
 </head>
 <body>
-  <main id="pairing" class="pairing">
+  <main id="auth-loading" class="auth-loading" aria-label="检查登录状态">
+    <div><div class="eyebrow">SEA-BRIDGE</div><p id="auth-loading-text" role="status">正在检查登录状态…</p><button id="auth-loading-retry" type="button" class="quiet" hidden>重新检查</button></div>
+  </main>
+  <main id="pairing" class="pairing" hidden>
     <form id="pair-form" class="card" novalidate>
       <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
       <p>在本机运行配对命令，输入一次性配对码。</p><p id="client-version" class="muted">Sea-Bridge v__SEA_BRIDGE_VERSION__</p>
@@ -19,7 +22,7 @@
     </form>
   </main>
   <div id="console" hidden>
-    <header><strong>SEA-BRIDGE <small class="app-version">v__SEA_BRIDGE_VERSION__</small></strong><span class="muted">会话桥接控制台</span><button id="logout" class="quiet">退出登录</button></header>
+    <header><strong>SEA-BRIDGE <small class="app-version">v__SEA_BRIDGE_VERSION__</small></strong><span class="muted">会话桥接控制台</span><div class="header-actions"><button id="theme-toggle" type="button" class="quiet" aria-label="切换到深色主题" aria-pressed="false">☾ 深色</button><button id="logout" class="quiet">退出登录</button></div></header>
     <section id="notice-bar" class="notice-bar notice-info" role="region" aria-label="消息通知" hidden>
       <div id="notice-text" class="notice-text" role="status" aria-live="polite" aria-atomic="true"></div>
       <div class="notice-actions">
@@ -47,10 +50,10 @@
             <label for="session-search">搜索会话</label><input id="session-search" type="search" placeholder="搜索标题" maxlength="200">
             <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>
           </aside>
-          <article id="session-detail" class="session-detail"><h2 id="session-title" class="visually-hidden">选择一个会话</h2>
-            <div class="session-toolbar" role="group" aria-label="会话操作"><button id="back-to-list" class="quiet mobile-only">← 会话</button><span id="session-meta" class="muted"></span><button id="open-desktop" class="quiet" hidden title="在运行 Sea-Bridge 的 Mac 上打开，可能切换窗口" aria-label="在 Mac 上打开会话">打开 Mac</button><button id="jump-earliest" type="button" class="quiet" title="最早已加载消息">最早 ↑</button><button id="jump-latest" type="button" class="quiet" title="最新消息">最新 ↓</button></div>
+          <article id="session-detail" class="session-detail">
+            <div class="session-toolbar" role="group" aria-label="会话操作"><button id="back-to-list" class="quiet mobile-only">← 会话</button><div class="session-heading"><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span></div><button id="open-desktop" class="quiet" hidden title="在运行 Sea-Bridge 的 Mac 上打开，可能切换窗口" aria-label="在 Mac 上打开会话">打开 Mac</button></div>
             <small id="execution-timer" class="muted execution-timer" hidden></small>
-            <div id="messages" aria-live="polite"><div id="history-tools" class="history-tools"><button id="more-history" class="quiet" hidden>加载较早消息</button><details id="history-limit" class="muted"><summary>历史说明</summary><p>只展示来源已提供的消息；不保证完整历史。</p></details></div></div>
+            <div class="messages-region"><div id="messages" aria-live="polite"><div id="history-tools" class="history-tools"><button id="more-history" class="quiet" hidden>加载较早消息</button><details id="history-limit" class="muted"><summary>历史说明</summary><p>只展示来源已提供的消息；不保证完整历史。</p></details></div></div><button id="floating-earliest" class="floating-latest floating-earliest" type="button" aria-label="回到最早已加载消息" title="回到最早已加载消息" aria-controls="messages" hidden>↑</button><button id="floating-latest" class="floating-latest" type="button" aria-label="回到最新消息" title="回到最新消息" aria-controls="messages" hidden>↓</button></div>
             <form id="send-form" class="composer"><label for="prompt" class="visually-hidden">发送消息</label><div class="composer-row"><textarea id="prompt" rows="1" maxlength="32000" placeholder="输入消息…" required></textarea><button id="send-button" type="submit" disabled>发送</button></div><div id="composer-footer" class="composer-footer" hidden><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button></div></form>
           </article>
         </section>
@@ -62,6 +65,7 @@
       </main>
     </div>
   </div>
+  <dialog id="image-dialog" class="image-dialog" aria-labelledby="image-dialog-title"><div class="section-heading"><h2 id="image-dialog-title">图片预览</h2><button id="close-image-dialog" type="button" class="quiet" aria-label="关闭图片预览">关闭</button></div><div class="image-dialog-body"><img id="image-dialog-image" alt=""></div></dialog>
   <dialog id="catalog-dialog" aria-labelledby="catalog-title"><div class="section-heading"><h2 id="catalog-title">来源目录</h2><button id="close-catalog" type="button" class="quiet" aria-label="关闭目录">×</button></div><p id="catalog-hint" class="muted">只读目录。新建会话时可选择项目和模型。</p><div id="catalog-items" class="catalog-items"></div><button id="catalog-retry" type="button" class="quiet" hidden>立即重试连接</button><button id="catalog-new" type="button">用此来源新建会话</button></dialog>
   <dialog id="create-dialog"><form id="create-form"><div class="section-heading"><h2>新建会话</h2><button id="close-create" type="button" class="quiet" aria-label="关闭">×</button></div>
     <label for="create-source">执行来源</label><select id="create-source"><option value="codex">Codex</option><option value="dsh">dsh</option></select>
