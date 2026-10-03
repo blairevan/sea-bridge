@@ -161,7 +161,7 @@ function parseEvents(payload: JsonRecord): DshEventMetadata[] {
 function parseFollow(payload: unknown): DshFollowSnapshot {
   const body = record(payload);
   return {
-    cursor: safeInteger(body.cursor, "follow.cursor"),
+    cursor: safeInteger(body.cursor, "follow.cursor", -1),
     hasMore: requiredBoolean(body.hasMore, "follow.hasMore"),
     truncated: requiredBoolean(body.truncated, "follow.truncated"),
     events: parseEvents(body),

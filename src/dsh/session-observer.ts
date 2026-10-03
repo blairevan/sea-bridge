@@ -12,6 +12,7 @@ const LEGACY_CONTRACT_FINGERPRINT = "dsh-web-0.1.7-rc.2-metadata-v1";
 const TELEGRAM_SEND_TIMEOUT_MS = 15_000;
 const REPLY_CALLBACK_TTL_MS = 24 * 60 * 60_000;
 const MAX_POLL_BACKOFF_MS = 5 * 60_000;
+const RECOVERY_CHUNK_EVENTS = 32;
 
 type ReadHost =
   Pick<DshWebHostClient, "listSessions" | "followSnapshot" | "pageHistory"> &
@@ -118,8 +119,9 @@ export class DshSessionObserver {
       return;
     }
     const fromSeq = previous?.cursor ?? -1;
-    const recovered = await recoverDshHistory(fromSeq, snapshot.cursor,
-      (beforeSeq) => this.host.pageHistory(sessionId, snapshot.cursor, beforeSeq, signal));
+    const throughSeq = Math.min(snapshot.cursor, fromSeq + RECOVERY_CHUNK_EVENTS);
+    const recovered = await recoverDshHistory(fromSeq, throughSeq,
+      (beforeSeq) => this.host.pageHistory(sessionId, throughSeq, beforeSeq, signal));
     const notifications = [];
     for (const event of recovered.events) {
       if (event.type !== "turn/end") continue;
@@ -153,9 +155,10 @@ export class DshSessionObserver {
       }
     }
     if (!this.store.commitObservation(previous?.cursor ?? null, {
-      sessionId, cursor: snapshot.cursor, contractFingerprint: CONTRACT_FINGERPRINT,
+      sessionId, cursor: throughSeq, contractFingerprint: CONTRACT_FINGERPRINT,
       lastEventFingerprint: notifications.at(-1)?.eventFingerprint ?? previous?.lastEventFingerprint ?? null,
     }, notifications, created?.baselinePending === true)) throw new Error("dsh_observer_cursor_conflict");
+    if (throughSeq < snapshot.cursor) this.liveWakePending = true;
   }
 
   /** Deliver durable terminal notification chunks in per-session order. */

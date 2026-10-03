@@ -101,12 +101,12 @@ export class WebStore {
   listAcceptedMessageSnapshots(source: "codex" | "dsh", sessionId: string, limit = 100): Array<{ id: string; role: "user"; text: string; createdAt: number }> {
     const bounded = Math.max(1, Math.min(100, limit));
     return this.db.query(`
-      SELECT snapshots.operation_id AS id,'user' AS role,snapshots.text,snapshots.created_at AS createdAt
+      SELECT * FROM (SELECT snapshots.operation_id AS id,'user' AS role,snapshots.text,snapshots.created_at AS createdAt
       FROM web_message_snapshots AS snapshots
       JOIN web_operations AS operations ON operations.id=snapshots.operation_id
       WHERE snapshots.source=? AND snapshots.session_id=? AND operations.state='accepted'
-      ORDER BY snapshots.created_at ASC,snapshots.operation_id ASC
-      LIMIT ?
+      ORDER BY snapshots.created_at DESC,snapshots.operation_id DESC
+      LIMIT ?) ORDER BY createdAt ASC,id ASC
     `).all(source, sessionId, bounded) as Array<{ id: string; role: "user"; text: string; createdAt: number }>;
   }
 

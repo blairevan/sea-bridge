@@ -73,6 +73,38 @@ test("pairing body is streaming-bounded before materialization", async () => {
   events.close(); db.close();
 });
 
+test("revocation during body upload prevents settings and source writes", async () => {
+  for (const path of ["/api/settings/redaction", "/api/sessions"]) {
+    const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+    const auth = new WebAuth(store); const events = new WebEvents(store);
+    const paired = auth.pair(auth.createPairCode().code, "local", "fixture");
+    if (!paired) throw new Error("fixture failed");
+    let writes = 0;
+    const source: WebSource = {
+      capabilities: () => ({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: true, sendEnabled: true, approvalTransport: null }),
+      async sessions() { return []; }, async projects() { return []; }, async models() { return []; },
+      async history() { return { messages: [], cursor: null, completeUserHistory: false }; },
+      async create() { writes++; return { state: "accepted", sessionId: "created" }; },
+      async send() { writes++; return { state: "accepted", sessionId: "created" }; },
+    };
+    const handler = createWebHandler({ store, auth, events, sources: { codex: source }, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
+    let finish!: () => void;
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      finish = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify(path.includes("settings")
+        ? { enabled: false, expectedVersion: 1 }
+        : { operationId: randomUUID(), source: "codex", projectId: "project", prompt: "hello" }))); controller.close(); };
+    } });
+    try {
+      const pending = handler(new Request("http://127.0.0.1:7310" + path, { method: path.includes("settings") ? "PUT" : "POST", headers: {
+        Origin: "http://127.0.0.1:7310", "Content-Type": "application/json", Cookie: `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`, "X-Sea-Bridge-CSRF": paired.csrfToken,
+      }, body }), "127.0.0.1");
+      store.revokeDevice(paired.device.id, Date.now()); finish();
+      expect((await pending).status).toBe(401);
+      expect(writes).toBe(0); expect(store.getSettings().version).toBe(1);
+    } finally { events.close(); db.close(); }
+  }
+});
+
 test("Tailnet HTTP pairing emits usable host-only cookies while HTTPS remains Secure", async () => {
   for (const origin of ["http://100.112.22.85:7310", "https://machine.example.test"]) {
     const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);

@@ -7,6 +7,9 @@ import { TelegramService } from "../src/telegram/service.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { InlineButton, TelegramMessage, TelegramUpdate } from "../src/telegram/client.ts";
 import type { Logger } from "../src/logger.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -71,8 +74,9 @@ class MockTelegramClient {
   async editMessageReplyMarkup(): Promise<unknown> { return true; }
 }
 
-function setup() {
-  const state = new StateDb(":memory:");
+/** Compose a deterministic Telegram creation flow with optional persistent state. */
+function setup(path = ":memory:") {
+  const state = new StateDb(path);
   const messages = new DesktopMessageStore(state);
   const newState = new NewThreadStateStore(state);
   const starts: any[] = [];
@@ -134,6 +138,77 @@ function messageUpdate(updateId: number, text: string, replyTo?: number): Telegr
     },
   };
 }
+
+test("a mapping failure after creation cannot replay the same Telegram update", async () => {
+  const { state, messages, starts, service } = setup();
+  const process = service as unknown as { processUpdate(update: TelegramUpdate): Promise<void> };
+  const link = messages.link.bind(messages); let fail = true;
+  messages.link = (input) => { if (fail) { fail = false; throw new Error("fixture persistence failed"); } return link(input); };
+  try {
+    const update = messageUpdate(900, "/new 1 hello");
+    await process.processUpdate(update).catch(() => {});
+    await process.processUpdate(update);
+    expect(starts).toHaveLength(1);
+  } finally { state.close(); }
+});
+
+test("an interrupted creation claim survives update retry without dispatching again", async () => {
+  const { state, starts, client, service } = setup();
+  try {
+    state.db.query("INSERT INTO codex_creation_requests(telegram_update_id,status,thread_id,created_at,updated_at) VALUES(901,'dispatching','known-thread',1,1)").run();
+    const process = service as unknown as { processUpdate(update: TelegramUpdate): Promise<void> };
+    await process.processUpdate(messageUpdate(901, "/new 1 hello"));
+    expect(starts).toHaveLength(0); expect(client.sent.at(-1)?.text).toContain("known-thread");
+    expect(client.sent.at(-1)?.text).toContain("不会自动重复创建");
+  } finally { state.close(); }
+});
+
+test("a completed creation survives a restart before update acknowledgement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "telegram-creation-restart-")); const path = join(root, "state.db");
+  const first = setup(path);
+  try {
+    const process = first.service as unknown as { processUpdate(update: TelegramUpdate): Promise<void> };
+    await process.processUpdate(messageUpdate(903, "/new 1 hello"));
+    first.state.db.query("UPDATE telegram_updates SET status='failed' WHERE update_id=903").run();
+  } finally { first.state.close(); }
+  const second = setup(path);
+  try {
+    const process = second.service as unknown as { processUpdate(update: TelegramUpdate): Promise<void> };
+    await process.processUpdate(messageUpdate(903, "/new 1 hello"));
+    expect(second.starts).toHaveLength(0); expect(second.client.sent.at(-1)?.text).toContain("thread-1");
+  } finally { second.state.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("creation callback persistence failures keep the claim and never dispatch a second thread", async () => {
+  for (const condition of ["NEW.thread_id IS NOT NULL", "1"]) {
+    const { state, starts, service } = setup();
+    const process = service as unknown as { processUpdate(update: TelegramUpdate): Promise<void> };
+    try {
+      state.db.exec(`CREATE TRIGGER reject_creation_update BEFORE UPDATE ON codex_creation_requests WHEN ${condition} BEGIN SELECT RAISE(ABORT,'fixture'); END`);
+      const update = messageUpdate(904, "/new 1 hello");
+      await process.processUpdate(update).catch(() => {});
+      state.db.exec("DROP TRIGGER reject_creation_update");
+      await process.processUpdate(update); expect(starts).toHaveLength(1);
+    } finally { state.close(); }
+  }
+});
+
+test("Telegram stop waits for an in-flight update before state closure", async () => {
+  const { state, client, service } = setup();
+  let release!: () => void; let enter!: () => void; let polled = false;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  client.getUpdates = async () => { if (polled) throw new Error("unexpected second poll"); polled = true; return [messageUpdate(902, "/new 1 hello")]; };
+  const send = client.sendMessage.bind(client);
+  client.sendMessage = async (chatId, text, buttons) => { enter(); await held; return send(chatId, text, buttons); };
+  try {
+    const running = service.run(); await entered;
+    let stopped = false; const stopping = service.stop().then(() => { stopped = true; });
+    await Promise.resolve(); await Promise.resolve(); expect(stopped).toBe(false);
+    release(); await stopping; await running;
+    expect(state.db.query("SELECT status FROM telegram_updates WHERE update_id=902").get()).toEqual({ status: "processed" });
+  } finally { release(); await service.stop(); state.close(); }
+});
 
 describe("Telegram project new-thread flow", () => {
   test("/projects and /model render live app-server data", async () => {

@@ -115,10 +115,12 @@ export class NewThreadManager {
     return this.state.cleanupExpired(this.now());
   }
 
+  /** Start a Telegram-origin turn and persist its known identity before admitting the prompt. */
   async startThread(
     chatId: string,
     project: Pick<ProjectItem, "id" | "primaryRoot">,
     prompt: string,
+    onThreadStarted?: (threadId: string) => void,
   ): Promise<StartedThread> {
     if (!this.pathExists(project.primaryRoot)) {
       throw new Error("project_path_missing");
@@ -129,11 +131,12 @@ export class NewThreadManager {
       cwd: project.primaryRoot,
       ...(model ? { model } : {}),
       prompt: `[Telegram init]\n${prompt}`,
-      onThreadStarted: this.onThreadStarted,
+      onThreadStarted: (threadId) => { onThreadStarted?.(threadId); this.onThreadStarted(threadId); },
     });
   }
 
-  async startPendingThread(chatId: string, pending: PendingNewThreadPrompt, prompt: string): Promise<StartedThread> {
+  /** Start a consumed ForceReply request with the same early identity callback as direct creation. */
+  async startPendingThread(chatId: string, pending: PendingNewThreadPrompt, prompt: string, onThreadStarted?: (threadId: string) => void): Promise<StartedThread> {
     if (!this.pathExists(pending.cwd)) {
       throw new Error("project_path_missing");
     }
@@ -143,7 +146,7 @@ export class NewThreadManager {
       cwd: pending.cwd,
       ...(model ? { model } : {}),
       prompt: `[Telegram init]\n${prompt}`,
-      onThreadStarted: this.onThreadStarted,
+      onThreadStarted: (threadId) => { onThreadStarted?.(threadId); this.onThreadStarted(threadId); },
     });
   }
 }

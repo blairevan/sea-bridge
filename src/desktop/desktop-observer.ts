@@ -72,6 +72,7 @@ export class DesktopObserver {
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   private initialized = false;
+  private activePoll: Promise<void> | null = null;
 
   constructor(
     private readonly threads: CodexThreadReader,
@@ -90,9 +91,11 @@ export class DesktopObserver {
     this.timer = setInterval(() => void this.runScheduledPoll(), this.pollIntervalMs);
   }
 
+  /** Stop scheduling and drain the notification currently being persisted. */
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await this.activePoll?.catch(() => undefined);
   }
 
   async pollOnce(): Promise<void> {
@@ -117,12 +120,14 @@ export class DesktopObserver {
   private async runScheduledPoll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
+    const active = this.pollOnce(); this.activePoll = active;
     try {
-      await this.pollOnce();
+      await active;
     } catch (error) {
       this.logger.warn("desktop_observer_poll_failed", { error: String(error) });
     } finally {
       this.polling = false;
+      if (this.activePoll === active) this.activePoll = null;
     }
   }
 

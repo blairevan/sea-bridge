@@ -98,6 +98,13 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       const cookie = cookies(request); const device = deps.auth.authenticate(cookie.sea_session ?? "");
       if (!device) throw new HttpError(401, "unauthorized"); authenticated = true;
       if (write && !deps.auth.verifyCsrf(device.id, cookie.sea_csrf ?? "", request.headers.get("X-Sea-Bridge-CSRF") ?? "")) throw new HttpError(403, "csrf_denied");
+      /** Revalidate after asynchronous body upload before admitting a durable write. */
+      const readAuthorizedJson = async (maxBytes: number): Promise<Record<string, unknown>> => {
+        const body = await readJson(request, maxBytes);
+        if (!deps.auth.authenticate(cookie.sea_session ?? "")) throw new HttpError(401, "unauthorized");
+        if (!deps.auth.verifyCsrf(device.id, cookie.sea_csrf ?? "", request.headers.get("X-Sea-Bridge-CSRF") ?? "")) throw new HttpError(403, "csrf_denied");
+        return body;
+      };
       if (path === "/api/auth/session" && method === "GET") return json({ device, settings: deps.store.getSettings() });
       if (path === "/api/auth/logout" && method === "POST") {
         deps.store.revokeDevice(device.id, Date.now()); deps.events.revoke(device.id);
@@ -107,7 +114,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       }
       if (path === "/api/settings" && method === "GET") return json(deps.store.getSettings());
       if (path === "/api/settings/redaction" && method === "PUT") {
-        const body = await readJson(request, 1024);
+        const body = await readAuthorizedJson(1024);
         if (typeof body.enabled !== "boolean" || !Number.isSafeInteger(body.expectedVersion)) throw new HttpError(400, "invalid_setting");
         const settings = deps.store.setRedaction(body.enabled, Number(body.expectedVersion), device.id, Date.now());
         if (!settings) throw new HttpError(409, "settings_conflict");
@@ -176,7 +183,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       }
       const send = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/messages$/);
       if (method === "POST" && (path === "/api/sessions" || send)) {
-        const body = await readJson(request, WEB_MAX_REQUEST_BYTES);
+        const body = await readAuthorizedJson(WEB_MAX_REQUEST_BYTES);
         const executionSource = send?.[1] ?? body.source;
         if (executionSource !== "codex" && executionSource !== "dsh") throw new HttpError(400, "invalid_source");
         const source = deps.sources[executionSource]; if (!source) throw new HttpError(503, "source_unavailable");

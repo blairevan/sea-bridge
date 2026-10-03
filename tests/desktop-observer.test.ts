@@ -9,6 +9,22 @@ import { StateDb } from "../src/state/db.ts";
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 describe("DesktopObserver", () => {
+  test("stop drains a notification send before its database is closed", async () => {
+    const state = new StateDb(":memory:"); const messages = new DesktopMessageStore(state);
+    messages.enqueueNotification({ chatId: "42", threadId: "thread", turnId: "turn", eventKind: "completed", eventFingerprint: "pending", text: "reply" });
+    let release!: () => void; let sending!: () => void;
+    const entered = new Promise<void>((resolve) => { sending = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const observer = new DesktopObserver({ listActive: () => [] }, { latestOrdinal: () => 0, latestOrdinals: () => new Map(), listTurnsAfter: () => [] }, messages,
+      { sendMessage: async () => { sending(); await held; return { message_id: 30, chat: { id: 42, type: "private" } }; } }, "42", logger, 5000, 1000);
+    try {
+      observer.start(); await entered;
+      let stopped = false; const stopping = observer.stop().then(() => { stopped = true; });
+      await Promise.resolve(); await Promise.resolve(); expect(stopped).toBe(false);
+      release(); await stopping;
+      expect(messages.findLink("42", 30)?.threadId).toBe("thread"); expect(messages.listPendingNotifications()).toHaveLength(0);
+    } finally { release(); await observer.stop(); state.close(); }
+  });
   test("keeps the entire notification within Telegram's message limit", async () => {
     const thread: CodexThread = { id: "thread-long", rolloutPath: "history://thread-long", title: "会话标题".repeat(500), updatedAtMs: 1 };
     const history: ThreadHistoryReader = {

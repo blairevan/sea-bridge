@@ -25,6 +25,10 @@ test("dsh Web gates, history limitations, request-local model and unknown writes
   const disabled = new DshWebSource(host, false, false);
   await expect(disabled.sessions()).rejects.toThrow("source_disabled");
   const source = new DshWebSource(host, true, true, () => [{ id: "web-op", role: "user", text: "Web fixture prompt" }]);
+  const originalSnapshot = host.followSnapshot;
+  host.followSnapshot = async () => ({ cursor: -1, hasMore: false, truncated: false, events: [] });
+  expect((await source.history("session-example", null, 20)).messages.map((message) => message.id)).toEqual(["web-op"]);
+  host.followSnapshot = originalSnapshot;
   running = true;
   expect(await source.execution("session-example", null)).toEqual({ state: "running", exact: false });
   running = false;

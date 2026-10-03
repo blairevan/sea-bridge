@@ -26,6 +26,49 @@ function state(): { db: StateDb; store: DshBridgeStore } {
 }
 
 describe("DshSessionObserver", () => {
+  test("drains a large backlog in bounded forward chunks without skipping completion", async () => {
+    const { db, store } = state();
+    try {
+      store.saveObserverState({ sessionId: "session-1", cursor: -1, contractFingerprint: "dsh-web-0.1.7-rc.2-metadata-v1", lastEventFingerprint: null });
+      const bounds: number[] = []; const sent: string[] = [];
+      const events: DshEventMetadata[] = Array.from({ length: 513 }, (_, seq) => seq === 512
+        ? { type: "turn/end", seq, time: 1, turn: 1, reasonKind: "completed" }
+        : { type: "test/event", seq, time: 1 });
+      const host = {
+        listSessions: async () => [{ sessionId: "session-1", updatedAt: 1, running: false, blank: false }],
+        followSnapshot: async () => ({ cursor: 512, hasMore: false, truncated: false, events: [] }),
+        pageHistory: async (_id: string, through: number, before?: number | null) => {
+          bounds.push(through); const end = before ?? through + 1;
+          const selected = events.filter((event) => event.seq <= through && event.seq < end).slice(-100);
+          return page(selected, (selected[0]?.seq ?? 0) > 0);
+        }, ...summary("last reply", 511),
+      };
+      const observer = new DshSessionObserver(host, store, { sendMessage: async (_chat, text) => { sent.push(text); return { message_id: 99 }; } }, "one-chat");
+      for (let chunk = 0; chunk < 16; chunk++) {
+        await observer.pollOnce(); expect(store.getObserverState("session-1")?.cursor).toBe((chunk + 1) * 32 - 1);
+      }
+      await observer.pollOnce(); expect(store.getObserverState("session-1")?.cursor).toBe(512);
+      expect(Math.max(...bounds)).toBe(512); expect(sent).toHaveLength(1); expect(sent[0]).toContain("last reply");
+    } finally { db.close(); }
+  });
+  test("backlog advances even when every legal history page contains one event", async () => {
+    const { db, store } = state();
+    try {
+      store.saveObserverState({ sessionId: "session-1", cursor: 0, contractFingerprint: "dsh-web-0.1.7-rc.2-metadata-v1", lastEventFingerprint: null });
+      let pages = 0;
+      const host = {
+        listSessions: async () => [{ sessionId: "session-1", updatedAt: 1, running: false, blank: false }],
+        followSnapshot: async () => ({ cursor: 257, hasMore: false, truncated: false, events: [] }),
+        pageHistory: async (_id: string, through: number, before?: number) => {
+          pages++; const seq = before === undefined ? through : before - 1;
+          return page([{ type: "test/event", seq, time: 1 }], seq > 0);
+        },
+      };
+      const observer = new DshSessionObserver(host, store, { sendMessage: async () => ({ message_id: 1 }) }, "one-chat");
+      await observer.pollOnce(); expect(store.getObserverState("session-1")?.cursor).toBe(32); expect(pages).toBe(32);
+      await observer.pollOnce(); expect(store.getObserverState("session-1")?.cursor).toBe(64); expect(pages).toBe(64);
+    } finally { db.close(); }
+  });
   test("baselines an existing session, then enqueues one verified completion only", async () => {
     const { db, store } = state();
     try {

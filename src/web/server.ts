@@ -42,6 +42,8 @@ export async function startWebLifecycle(
 /** Fixed-loopback HTTP service with allowlisted static assets and injected authenticated API. */
 export class WebServer implements WebService {
   private server: Bun.Server<undefined> | null = null;
+  private stopping = false;
+  private readonly activeRequests = new Set<Promise<Response>>();
 
   /** Require explicit configuration and handlers; no global state is consulted. */
   constructor(private readonly options?: {
@@ -52,6 +54,7 @@ export class WebServer implements WebService {
   /** Validate required assets before opening any loopback listener. */
   async start(): Promise<void> {
     if (!this.options) throw new Error("web_not_implemented");
+    this.stopping = false;
     const { config, staticRoot, handler } = this.options;
     const assets = new Map<string, { bytes: ArrayBuffer | string; type: string }>();
     for (const [path, file, type] of [["/", "index.html", "text/html; charset=utf-8"], ["/app.js", "app.js", "text/javascript; charset=utf-8"], ["/app.css", "app.css", "text/css; charset=utf-8"]]) {
@@ -63,6 +66,7 @@ export class WebServer implements WebService {
     }
     this.server = Bun.serve({ hostname: "127.0.0.1", port: config.port, maxRequestBodySize: WEB_MAX_REQUEST_BYTES, idleTimeout: 30,
       fetch: async (request, server) => {
+        if (this.stopping) return new Response("Service unavailable", { status: 503 });
         const peer = server.requestIP(request)?.address ?? "unknown";
         const url = new URL(request.url);
         const asset = assets.get(url.pathname);
@@ -73,12 +77,17 @@ export class WebServer implements WebService {
             "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           } });
         }
-        return handler(request, peer);
+        const pending = handler(request, peer); this.activeRequests.add(pending);
+        try { return await pending; } finally { this.activeRequests.delete(pending); }
       },
       error: () => new Response("Service unavailable", { status: 503 }),
     });
   }
 
   /** Stop existing connections before the shared database is closed. */
-  async stop(): Promise<void> { const server = this.server; this.server = null; await server?.stop(true); }
+  async stop(): Promise<void> {
+    this.stopping = true;
+    const server = this.server; this.server = null; await server?.stop(true);
+    await Promise.allSettled([...this.activeRequests]);
+  }
 }
