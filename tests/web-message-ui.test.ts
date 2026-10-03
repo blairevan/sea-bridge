@@ -639,3 +639,70 @@ test("manual desktop opening requires confirmation and sends no message", async 
   state.paused = true; await open(); expect(requests).toHaveLength(1);
   state.paused = false; state.selected.source = "dsh"; await open(); expect(requests).toHaveLength(1);
 });
+
+test("logout cancellation preserves pairing and confirmation revokes exactly once", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("async function confirmLogout()");
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach', start);
+  let accepted = false; let writes = 0; let resets = 0;
+  const logout = runInNewContext(script.slice(start, end) + "\nconfirmLogout", {
+    confirm: () => accepted,
+    api: async (path: string, method: string) => { expect(path).toBe("/api/auth/logout"); expect(method).toBe("POST"); writes++; },
+    showPairing: () => { resets++; },
+  });
+  await logout(); expect(writes).toBe(0); expect(resets).toBe(0);
+  accepted = true; await logout(); expect(writes).toBe(1); expect(resets).toBe(1);
+});
+
+test("running timer counts from native timestamp and hides on completion or missing evidence", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("function renderSessionStatus()");
+  const end = script.indexOf("/** Format execution elapsed", start);
+  let now = 100000;
+  const state: { selected: { source: string; state: string; startedAt?: number } } = { selected: { source: "codex", state: "running", startedAt: 100000 } };
+  const nodes = new Map<string, { hidden: boolean; textContent: string; title: string }>();
+  const ui = runInNewContext(script.slice(start, end) + "\n({renderSessionStatus, formatRunningDuration})", {
+    state, labels: { running: "执行中", idle: "空闲" }, Date: { now: () => now },
+    el: (id: string) => { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "", title: "" }); return nodes.get(id); },
+  });
+  ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.textContent).toBe("已运行 0 秒");
+  now += 83000; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.textContent).toBe("已运行 1 分 23 秒");
+  now += 1000; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.textContent).toBe("已运行 1 分 24 秒");
+  expect(ui.formatRunningDuration(3661000)).toBe("1 小时 1 分 1 秒");
+  state.selected.state = "idle"; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.hidden).toBe(true);
+  state.selected = { source: "codex", state: "running" }; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.hidden).toBe(true);
+});
+
+test("continuation prefers last visited identity and verifies old or unavailable sessions", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("function lastSessionPointer()");
+  const end = script.indexOf("/** Route a single deliberate click", start);
+  let pointer: string | null = null; let partial = false;
+  const old = { id: "old", source: "codex" }; const latest = { id: "latest", source: "dsh" };
+  let items = [old]; let calls = 0;
+  const ui = runInNewContext(script.slice(start, end) + "\n({continueSessionTarget, rememberSession})", {
+    state: { device: { id: "device" } }, URLSearchParams,
+    localStorage: { getItem: () => pointer, setItem: (_key: string, value: string) => { pointer = value; } },
+    api: async () => { calls++; return { items, partial }; },
+  });
+  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
+  ui.rememberSession({ ...old, title: "private title", text: "private message" });
+  expect(pointer).not.toContain("private");
+  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(old); expect(calls).toBe(1);
+  partial = true; expect(await ui.continueSessionTarget({ items: [latest] })).toBeNull();
+  partial = false; items = []; expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
+});
+
+test("continuation card rebuilds after privacy clearing even with unchanged identity", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("function renderContinueSession(session)");
+  const end = script.indexOf("/** Render a bounded overview", start);
+  const button = { hidden: true, dataset: { sessionSignature: "" }, childElementCount: 0, replaceChildren(...items: unknown[]) { this.childElementCount = items.length; } };
+  const render = runInNewContext(script.slice(start, end) + "\nrenderContinueSession", {
+    el: () => button, labels: { idle: "空闲" }, overviewTime: () => "fixture",
+    node: () => ({ append() {} }),
+  });
+  const session = { source: "codex", id: "fixture", title: "test", state: "idle", updatedAt: 1 };
+  render(session); expect(button.childElementCount).toBe(3);
+  button.replaceChildren(); render(session); expect(button.childElementCount).toBe(3);
+});

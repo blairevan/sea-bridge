@@ -134,7 +134,7 @@ test("selected history provides native runtime state without hooks and updates s
     queue: { async queue(): Promise<never> { throw new Error("unused"); } }, sessionRoots: [root], pathExists: () => true, queueUsable: true, pendingApproval: () => false });
   try {
     writeFileSync(file, JSON.stringify({ timestamp: "2026-10-03T10:10:38Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-a" } }));
-    expect(await source.history("thread", null, 30)).toMatchObject({ sessionState: "running" });
+    expect(await source.history("thread", null, 30)).toMatchObject({ sessionState: "running", activeTurnStartedAt: Date.parse("2026-10-03T10:10:38Z") });
     expect(await source.sessions()).toMatchObject([{ state: "running" }]);
     writeFileSync(file, JSON.stringify({ timestamp: "2026-10-03T10:10:55Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn-a" } }));
     expect(await source.history("thread", null, 30)).toMatchObject({ sessionState: "idle" });

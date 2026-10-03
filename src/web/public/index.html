@@ -33,6 +33,7 @@
       <main class="content">
         <section id="overview" class="page overview-page">
           <div class="section-heading overview-heading"><div><p class="eyebrow">SEA-BRIDGE</p><h1>运行概览</h1><p id="overview-observed" class="muted">等待来源状态同步</p></div><div class="overview-actions"><button id="overview-new-session" type="button">新建会话</button><button id="refresh-status" class="quiet">刷新</button></div></div>
+          <button id="continue-session" type="button" class="continue-session" hidden></button>
           <p id="overview-freshness" class="overview-freshness" role="status" hidden></p>
           <div class="overview-summary" aria-label="会话快捷入口"><button id="overview-total" type="button"><span class="muted">最近一页会话</span><strong id="overview-session-count">—</strong><small>查看会话 →</small></button><button id="overview-running" type="button"><span class="muted">检测到运行</span><strong id="overview-running-count">—</strong><small>查看运行 →</small></button><button id="overview-approval" type="button"><span class="muted">等待审批</span><strong id="overview-approval-count">—</strong><small>查看待审批 →</small></button></div>
           <div class="overview-context"><button id="overview-privacy" type="button" class="quiet">等待脱敏状态同步</button><span id="overview-session-scope" class="muted">统计以来源返回数据为准</span></div>
@@ -46,8 +47,9 @@
             <label for="session-search">搜索会话</label><input id="session-search" type="search" placeholder="搜索标题" maxlength="200">
             <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>
           </aside>
-          <article id="session-detail" class="session-detail"><div class="section-heading"><button id="back-to-list" class="quiet mobile-only">← 会话</button><h2 id="session-title">选择一个会话</h2><span id="session-meta" class="muted"></span><button id="open-desktop" class="quiet" hidden title="在运行 Sea-Bridge 的 Mac 上打开，可能切换窗口">在 Mac 上打开会话</button></div>
-            <div class="message-shortcuts" role="group" aria-label="消息定位"><button id="jump-earliest" type="button" class="quiet">最早已加载 ↑</button><button id="jump-latest" type="button" class="quiet">最新消息 ↓</button></div>
+          <article id="session-detail" class="session-detail"><h2 id="session-title" class="visually-hidden">选择一个会话</h2>
+            <div class="session-toolbar" role="group" aria-label="会话操作"><button id="back-to-list" class="quiet mobile-only">← 会话</button><span id="session-meta" class="muted"></span><button id="open-desktop" class="quiet" hidden title="在运行 Sea-Bridge 的 Mac 上打开，可能切换窗口" aria-label="在 Mac 上打开会话">打开 Mac</button><button id="jump-earliest" type="button" class="quiet" title="最早已加载消息">最早 ↑</button><button id="jump-latest" type="button" class="quiet" title="最新消息">最新 ↓</button></div>
+            <small id="execution-timer" class="muted execution-timer" hidden></small>
             <div id="messages" aria-live="polite"><div id="history-tools" class="history-tools"><button id="more-history" class="quiet" hidden>加载较早消息</button><details id="history-limit" class="muted"><summary>历史说明</summary><p>只展示来源已提供的消息；不保证完整历史。</p></details></div></div>
             <form id="send-form" class="composer"><label for="prompt" class="visually-hidden">发送消息</label><div class="composer-row"><textarea id="prompt" rows="1" maxlength="32000" placeholder="输入消息…" required></textarea><button id="send-button" type="submit" disabled>发送</button></div><div id="composer-footer" class="composer-footer" hidden><span id="operation-status" class="muted"></span><button id="reconcile" type="button" class="quiet" hidden>刷新核查</button></div></form>
           </article>

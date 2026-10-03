@@ -72,6 +72,7 @@ export class CodexWebSource implements WebSource {
           source: "codex" as const, id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
           state: approval ? "waiting_external_approval" as const
             : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
+          ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
           sendEnabled: this.deps.queueUsable && !this.owners.has(thread.id),
         };
       });
@@ -124,7 +125,8 @@ export class CodexWebSource implements WebSource {
         : this.owners.has(id) || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
-      return queue ? { ...history, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, sessionState };
+      const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt } : {};
+      return queue ? { ...history, ...timing, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, ...timing, sessionState };
     } catch (error) {
       this.historyReadable = false;
       throw error;

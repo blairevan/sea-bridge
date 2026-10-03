@@ -41,3 +41,12 @@
 @media(max-width:760px){#record-filter{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 12px}#record-filter .record-filter-submit{grid-column:1/-1;width:100%;margin-top:0}}
 @media(max-width:360px){#record-filter{grid-template-columns:minmax(0,1fr)}}
 .message.user{margin-left:auto;max-width:85%;width:fit-content;border:0;padding:0;background:transparent}.message.user>.markdown{background:#e8efe9;border:1px solid var(--line);border-radius:22px;padding:10px 16px;min-width:0}.message.user>.message-meta{border:0;padding:0;margin:0 8px 5px;text-align:right}.message-queue-status{display:block;margin:0 8px 6px;text-align:right;color:#687770;font-size:12px}.message.user .markdown p:first-child{margin-top:0}.message.user .markdown p:last-child{margin-bottom:0}@media(max-width:760px){.message.user{max-width:90%;padding:0}.message.user>.markdown{padding:9px 14px}}
+
+/* Keep session controls on one row, including narrow phone screens. */
+.session-toolbar{display:flex;flex-wrap:nowrap;align-items:center;gap:5px;flex-shrink:0;min-width:0;margin-bottom:8px}.session-toolbar button{flex-shrink:0;white-space:nowrap;font-size:12px;line-height:1.2;padding:4px 8px;height:30px;min-height:30px;border-radius:6px;border-color:#e2e7e3}.session-toolbar #session-meta{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.session-toolbar button[hidden]{display:none}
+@media(max-width:360px){.session-toolbar{gap:3px}.session-toolbar button{padding:4px 6px;font-size:11px;height:28px;min-height:28px}.session-toolbar #session-meta{font-size:10px}}
+
+.execution-timer{display:block;flex-shrink:0;margin:0 0 7px;font-size:11px;font-variant-numeric:tabular-nums}.execution-timer[hidden]{display:none}
+
+/* A single primary continuation card precedes dashboard diagnostics. */
+.continue-session{display:block;width:100%;text-align:left;margin:0 0 16px;padding:13px 16px;background:#e8f0e9;color:#21312f;border:1px solid #d5e2d8;border-radius:10px}.continue-session[hidden]{display:none}.continue-heading{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#547062;margin-bottom:7px}.continue-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;font-weight:600;line-height:1.5}.continue-meta{display:block;margin-top:5px;font-size:11px;color:#687770;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.continue-arrow{color:var(--accent)}.continue-session:hover{background:#e0ebe3}.continue-session:active{background:#d8e6dc}

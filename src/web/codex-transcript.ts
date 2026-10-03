@@ -1,3 +1,4 @@
+import { parseTurnTiming, replyDurations, type TurnTimingRecord } from "./turn-duration.ts";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import { relative, isAbsolute } from "node:path";
@@ -49,6 +50,11 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
     if (!opened.isFile() || opened.ino !== fileStat.ino || opened.dev !== fileStat.dev) throw new Error("history_unavailable");
     const end = cursor === null ? opened.size : Number(cursor);
     if (!Number.isSafeInteger(end) || end < 0 || end > opened.size) throw new Error("history_cursor_invalid");
+    const timings: TurnTimingRecord[] = [];
+    /** Retain timing metadata alongside the existing observer without a second file scan. */
+    const observeRecord = (line: string, offset: number): void => {
+      observe?.(line, offset); const timing = parseTurnTiming(line, offset); if (timing) timings.push(timing);
+    };
     const messages: Array<{ offset: number; message: WebMessage }> = [];
     let windowEnd = end; let alignedStart = end;
     const maxWindows = Math.ceil(MAX_LATEST_SCAN_BYTES / READ_WINDOW_BYTES);
@@ -78,13 +84,13 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
           // A fully-written JSON record need not end with a newline. Only the current EOF window
           // may safely attempt to parse such a tail; invalid/partially-written JSON stays hidden.
           if (readEnd === opened.size) {
-            const line = bytes.subarray(offset).toString("utf8"); observe?.(line, start + offset);
+            const line = bytes.subarray(offset).toString("utf8"); observeRecord(line, start + offset);
             const message = visibleMessage(line, start + offset);
             if (message) page.push({ offset: start + offset, message });
           }
           break;
         }
-        const line = bytes.subarray(offset, newline).toString("utf8"); observe?.(line, start + offset);
+        const line = bytes.subarray(offset, newline).toString("utf8"); observeRecord(line, start + offset);
         const message = visibleMessage(line, start + offset);
         if (message) page.push({ offset: start + offset, message });
         offset = newline + 1;
@@ -92,6 +98,8 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
       messages.unshift(...page);
       windowEnd = alignedStart < readEnd ? alignedStart : start;
     }
+    const durations = replyDurations(timings);
+    for (const item of messages) { const duration = durations.get(item.offset); if (duration !== undefined) item.message.durationMs = duration; }
     const selected = messages.slice(-limit);
     const before = messages.length > limit ? selected[0]?.offset ?? alignedStart : alignedStart;
     return { messages: selected.map((item) => item.message), cursor: before > 0 ? String(before) : null, completeUserHistory: false };

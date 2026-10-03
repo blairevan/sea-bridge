@@ -87,3 +87,16 @@ test("rollout lifecycle evidence follows the last complete event and remains con
     await expect(readCodexActivity(file, [])).rejects.toThrow("history_unavailable");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("history replies include native start-to-completion duration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-turn-duration-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    writeFileSync(file, [
+      { timestamp: "2026-10-03T10:00:00Z", type: "event_msg", payload: { type: "task_started", turn_id: "a" } },
+      { timestamp: "2026-10-03T10:00:10Z", type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "done" }] } },
+      { timestamp: "2026-10-03T10:00:12Z", type: "event_msg", payload: { type: "task_complete", turn_id: "a" } },
+    ].map((row) => JSON.stringify(row)).join("\n"));
+    expect((await readCodexTranscript(file, [root], null, 30)).messages[0]?.durationMs).toBe(12000);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
