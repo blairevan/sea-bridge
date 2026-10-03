@@ -29,6 +29,29 @@ function toggleTheme() {
   try { localStorage.setItem("sea-theme", next); } catch { /* The current-page selection still applies. */ }
 }
 
+/** Discard the overview snapshot on logout or verified privacy-policy changes. */
+function clearOverviewCache() {
+  try { localStorage.removeItem("sea-overview-v1"); } catch { /* Storage may be restricted. */ }
+}
+/** Persist only the bounded, server-filtered dashboard after a successful refresh. */
+function saveOverviewCache(status, sessions, continuation) {
+  if (!state.device?.id || !state.settings || sessions.items.length > 30) return;
+  const snapshot = { schema: 1, deviceId: state.device.id, settingsVersion: state.settings.version, savedAt: Date.now(), status, sessions, continuation };
+  try { const value = JSON.stringify(snapshot); if (value.length <= 128000) localStorage.setItem("sea-overview-v1", value); } catch { /* Quota errors do not interrupt live data. */ }
+}
+/** Restore a recent snapshot only after this device and display policy are freshly verified. */
+function restoreOverviewCache() {
+  if (state.page !== "overview" || !state.device?.id || !state.settings) return;
+  try {
+    const raw = localStorage.getItem("sea-overview-v1"); if (!raw || raw.length > 128000) return;
+    const value = JSON.parse(raw);
+    if (value.schema !== 1 || value.deviceId !== state.device.id || value.settingsVersion !== state.settings.version || !Number.isFinite(value.savedAt) || Date.now() - value.savedAt > 86400000 || value.savedAt > Date.now() || !value.status || !Array.isArray(value.sessions?.items) || value.sessions.items.length > 30) { clearOverviewCache(); return; }
+    renderOverview(value.status, value.sessions, value.continuation, true);
+    const freshness = el("overview-freshness"); freshness.hidden = false;
+    freshness.textContent = `上次数据 · ${new Date(value.savedAt).toLocaleString("zh-CN")} · 正在更新`;
+  } catch { clearOverviewCache(); }
+}
+
 /** Generate an RFC 4122 UUID with secure randomness on HTTP Tailnet pages too. */
 function operationUuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -341,6 +364,7 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
+  if (state.device?.id) clearOverviewCache();
   closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
   state.viewEpoch++; reads.clear();
@@ -421,6 +445,7 @@ async function run(key, work) {
 }
 /** Stop retry machinery and return to the explicit pairing boundary. */
 function showPairing() {
+  clearOverviewCache();
   state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.selected = null;
   state.recoverySeq++; state.version = 0; state.device = null; state.settings = null; state.caps = {};
   setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
@@ -429,10 +454,36 @@ function showPairing() {
   if (el("auth-loading")) el("auth-loading").hidden = true;
   el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
 }
+let loginStage = "page";
+let loginStageStartedAt = Date.now();
+/** Show only the current verified startup phase, including before an API responds. */
+function setLoginStage(stage, text, detail, failed = false) {
+  const gate = el("auth-loading"); if (!gate || gate.hidden) return;
+  loginStage = stage; loginStageStartedAt = Date.now();
+  el("auth-loading-text").textContent = text; el("auth-loading-detail").textContent = detail;
+  el("auth-loading-spinner").hidden = failed; el("auth-loading-retry").hidden = !failed;
+  gate.setAttribute?.("aria-busy", String(!failed));
+  const steps = ["page", "session", "settings"]; const current = steps.indexOf(stage);
+  for (const [index, step] of steps.entries()) el(`auth-step-${step}`).className = index < current ? "complete" : index === current ? failed ? "failed" : "active" : "";
+  el("auth-loading-elapsed").textContent = "";
+}
+/** Identify the failed request instead of retaining a generic login-check label. */
+function showLoginFailure(error) {
+  const phase = loginStage === "settings" ? "显示设置" : "设备登录";
+  const timeout = error?.code === "network_timeout";
+  setLoginStage(loginStage, timeout ? `${phase}请求超时` : `暂时无法确认${phase}`, timeout ? "服务未在8秒内返回。可立即重试；手机远程访问请确认 Tailscale 已连接。" : "服务连接或响应异常。保留现有登录信息，恢复后会重新验证。", true);
+}
+/** Count elapsed time for the visible startup request without inventing percentage progress. */
+function updateLoginElapsed() {
+  const gate = el("auth-loading"); if (!gate || gate.hidden || el("auth-loading-spinner").hidden) return;
+  el("auth-loading-elapsed").textContent = `当前步骤已等待 ${Math.max(0, Math.floor((Date.now() - loginStageStartedAt) / 1000))} 秒`;
+}
 /** Validate both session and current display policy before restoring sensitive content. */
 async function validateConnection() {
   const authEpoch = state.authEpoch;
+  setLoginStage("session", "正在验证设备登录…", "检查已有登录凭证是否有效，最长等待8秒。");
   const session = await requestApi("/api/auth/session");
+  setLoginStage("settings", "登录有效，正在读取显示设置…", "同步显示与隐私设置，完成后进入控制台，最长等待8秒。");
   const settings = await requestApi("/api/settings");
   if (authEpoch !== state.authEpoch) throw clientError("auth_changed", "登录状态已变化");
   if (settings.version < state.version) throw clientError("settings_stale", "设置已变化，正在刷新");
@@ -442,6 +493,7 @@ async function validateConnection() {
   state.version = Math.max(state.version, session.settings?.version ?? 0, settings.version ?? 0);
   if (el("auth-loading")) el("auth-loading").hidden = true;
   el("pairing").hidden = true; el("console").hidden = false;
+  if (!state.overviewSessions.length) restoreOverviewCache();
 }
 /** Schedule bounded exponential recovery attempts without replaying writes. */
 function scheduleReconnect(immediate = false) {
@@ -449,6 +501,8 @@ function scheduleReconnect(immediate = false) {
   const delay = immediate ? 0 : RETRY_DELAYS_MS[Math.min(state.retryAttempt, RETRY_DELAYS_MS.length - 1)];
   const retryState = delay === 0 ? "正在重试…" : `${Math.ceil(delay / 1000)} 秒后自动重试`;
   showConnectionNotice(state.connectionDetail || "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。", retryState);
+  const gate = el("auth-loading");
+  if (gate && !gate.hidden) el("auth-loading-elapsed").textContent = retryState;
   state.reconnectTimer = setTimeout(() => { state.reconnectTimer = null; void recoverConnection(); }, delay);
 }
 /** Pause server actions during a disconnect while retaining loaded views for reading. */
@@ -492,7 +546,7 @@ async function recoverConnection() {
     if (authEpoch !== state.authEpoch || recoverySeq !== state.recoverySeq) return;
     state.recovering = false;
     if (["auth_required", "auth_changed"].includes(error?.code)) return;
-    state.retryAttempt++;
+    state.retryAttempt++; showLoginFailure(error);
     if (!state.connectionDetail || state.connectionDetail === "服务已响应") state.connectionDetail = "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。";
     scheduleReconnect();
   }
@@ -506,12 +560,12 @@ async function bootstrap() {
 async function checkInitialLogin() {
   const gate = el("auth-loading"); const retry = el("auth-loading-retry");
   if (retry) retry.hidden = true;
-  if (gate && !gate.hidden) el("auth-loading-text").textContent = "正在检查登录状态…";
+  if (gate && !gate.hidden) setLoginStage("session", "正在验证设备登录…", "检查已有登录凭证是否有效，最长等待8秒。");
   try { await bootstrap(); }
   catch (error) {
     if (["auth_required", "auth_changed"].includes(error?.code)) return;
     if (gate && !gate.hidden) {
-      el("auth-loading-text").textContent = "暂时无法确认登录状态，请重试";
+      showLoginFailure(error);
       if (retry) retry.hidden = false;
     }
     state.connectionDetail = "暂时无法确认登录状态";
@@ -697,8 +751,13 @@ async function loadStatus() {
   if (state.paused || viewEpoch !== state.viewEpoch || state.page !== "overview") return;
   const continuation = await continueSessionTarget(sessions);
   if (state.paused || viewEpoch !== state.viewEpoch || state.page !== "overview") return;
+  renderOverview(status, sessions, continuation);
+  saveOverviewCache(status, sessions, continuation);
+}
+/** Render live or explicitly stale dashboard data without fetching conversation bodies. */
+function renderOverview(status, sessions, continuation, cached = false) {
   renderContinueSession(continuation);
-  state.overviewSessions = sessions.items; state.caps = sessions.capabilities ?? state.caps;
+  state.overviewSessions = sessions.items; if (!cached) state.caps = sessions.capabilities ?? state.caps;
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   el("overview-observed").textContent = `来源采样 ${overviewTime(status.observedAt)}`;
   el("overview-privacy").textContent = state.settings?.redactionEnabled === true ? "隐私脱敏已开启" : state.settings?.redactionEnabled === false ? "隐私脱敏已关闭" : "脱敏状态未确认";
@@ -1268,3 +1327,5 @@ el("floating-earliest").onclick = jumpToEarliestLoaded;
 
 initializeTheme();
 el("theme-toggle").onclick = toggleTheme;
+
+setInterval(updateLoginElapsed, 1000);

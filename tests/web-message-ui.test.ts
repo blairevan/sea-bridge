@@ -716,8 +716,9 @@ test("initial login network failure retains the gate rather than showing pairing
   const end = script.indexOf("/** Invalidate the old display", start);
   const nodes = new Map<string, { hidden: boolean; textContent: string }>([["auth-loading", { hidden: false, textContent: "" }], ["auth-loading-retry", { hidden: true, textContent: "" }], ["auth-loading-text", { hidden: false, textContent: "" }]]);
   let code = "network_unavailable"; let retries = 0;
-  const check = runInNewContext(script.slice(start, end) + "\ncheckInitialLogin", {
-    state: {}, el: (id: string) => nodes.get(id),
+  const progress = script.slice(script.indexOf('let loginStage = "page"'), script.indexOf("/** Validate both session"));
+  const check = runInNewContext(progress + script.slice(start, end) + "\ncheckInitialLogin", {
+    state: {}, el: (id: string) => { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "" }); return nodes.get(id); },
     bootstrap: async () => { throw Object.assign(new Error("fixture"), { code }); },
     scheduleReconnect: () => { retries++; },
   });
@@ -856,4 +857,45 @@ test("theme restores valid preferences and remains usable when storage is restri
   ui.toggleTheme(); expect(dataset.theme).toBe("light"); expect(stored).toBe("light"); expect(button.attributes.get("aria-pressed")).toBe("false");
   stored = "invalid"; ui.initializeTheme(); expect(dataset.theme).toBe("light");
   denied = true; ui.toggleTheme(); expect(dataset.theme).toBe("dark"); ui.initializeTheme(); expect(dataset.theme).toBe("light");
+});
+
+test("startup reports login versus settings requests and names the timed-out stage", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf('let loginStage = "page"'); const end = script.indexOf("/** Schedule bounded exponential", start);
+  const nodes = new Map<string, ElementFixture>();
+  /** Keep every progress and shell element independently observable. */
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  let release: (value: unknown) => void = () => {}; const pending = new Promise<unknown>((resolve) => { release = resolve; });
+  const ui = runInNewContext(script.slice(start, end) + "\n({ validateConnection, showLoginFailure, updateLoginElapsed })", {
+    el: get, state: { authEpoch: 0, version: 0 }, clearSensitive() {}, clientError: (code: string) => Object.assign(new Error(code), { code }),
+    requestApi: async (path: string) => path === "/api/auth/session" ? pending : Promise.reject(Object.assign(new Error("timeout"), { code: "network_timeout" })),
+  }) as { validateConnection(): Promise<void>; showLoginFailure(error: { code: string }): void; updateLoginElapsed(): void };
+  const checking = ui.validateConnection(); expect(get("auth-loading-text").textContent).toContain("验证设备登录");
+  ui.updateLoginElapsed(); expect(get("auth-loading-elapsed").textContent).toContain("当前步骤已等待");
+  release({ device: { id: "test" }, settings: { version: 0 } }); await expect(checking).rejects.toThrow("timeout");
+  expect(get("auth-step-session").className).toBe("complete"); expect(get("auth-step-settings").className).toBe("active");
+  ui.showLoginFailure({ code: "network_timeout" }); expect(get("auth-loading-text").textContent).toBe("显示设置请求超时");
+  expect(get("auth-loading-spinner").hidden).toBe(true); expect(get("auth-loading-retry").hidden).toBe(false);
+  expect(get("auth-loading").hidden).toBe(false); expect(get("auth-step-settings").className).toBe("failed");
+});
+
+test("overview snapshots require fresh device/policy verification and expire safely", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("/** Discard the overview snapshot"); const end = script.indexOf("/** Generate an RFC", start);
+  let raw: string | null = null; let renders = 0; let blocked = false;
+  const state = { page: "overview", device: { id: "device" }, settings: { version: 7 } };
+  const freshness = new ElementFixture("p");
+  const ui = runInNewContext(script.slice(start, end) + "\n({ saveOverviewCache, restoreOverviewCache, clearOverviewCache })", {
+    state, el: () => freshness, renderOverview() { renders++; }, localStorage: {
+      getItem() { if (blocked) throw new Error("blocked"); return raw; }, setItem(_key: string, value: string) { if (blocked) throw new Error("blocked"); raw = value; }, removeItem() { raw = null; },
+    },
+  }) as { saveOverviewCache(status: unknown, sessions: { items: unknown[] }, continuation: unknown): void; restoreOverviewCache(): void; clearOverviewCache(): void };
+  ui.saveOverviewCache({ observedAt: 1 }, { items: [{ id: "session", title: "last title" }] }, null);
+  const valid = raw!; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(freshness.textContent).toContain("上次数据");
+  state.device.id = "other"; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
+  state.device.id = "device"; raw = valid; state.settings.version = 8; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
+  state.settings.version = 7; raw = JSON.stringify({ ...JSON.parse(valid), savedAt: Date.now() - 86400001 }); ui.restoreOverviewCache(); expect(raw).toBeNull();
+  raw = "invalid"; ui.restoreOverviewCache(); expect(raw).toBeNull();
+  raw = valid; ui.clearOverviewCache(); expect(raw).toBeNull();
+  blocked = true; expect(() => ui.restoreOverviewCache()).not.toThrow(); expect(() => ui.saveOverviewCache({}, { items: [] }, null)).not.toThrow();
 });

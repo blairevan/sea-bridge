@@ -2,7 +2,7 @@ import type { Logger } from "../logger.ts";
 import type { WebConfig, WebService } from "./types.ts";
 import { join } from "node:path";
 import { classifyRequest } from "./auth.ts";
-import { renderVersionedShell } from "./version.ts";
+import { APP_VERSION, renderVersionedShell } from "./version.ts";
 import { WEB_MAX_REQUEST_BYTES } from "./http.ts";
 
 /** Resolve development assets or their self-contained packaged siblings. */
@@ -73,7 +73,7 @@ export class WebServer implements WebService {
         if (asset && request.method === "GET") {
           if (!classifyRequest(request, { port: config.port, remoteOrigin: config.remoteOrigin, peer }, false)) return new Response("Forbidden", { status: 403 });
           return new Response(asset.bytes, { headers: {
-            "Content-Type": asset.type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+            "Content-Type": asset.type, "Cache-Control": url.pathname !== "/" && url.searchParams.get("v") === APP_VERSION ? "public, max-age=31536000, immutable" : "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           } });
         }

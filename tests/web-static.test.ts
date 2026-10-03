@@ -25,6 +25,8 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const themeStart = script.indexOf("/** Apply a visual preference");
   const themeEnd = script.indexOf("/** Generate an RFC", themeStart);
   expect(script.slice(0, themeStart) + script.slice(themeEnd, pointerStart) + script.slice(pointerEnd)).not.toContain("localStorage");
+  expect(script).toContain('value.deviceId !== state.device.id');
+  expect(script).toContain('value.settingsVersion !== state.settings.version');
   expect(script).toContain("textContent"); expect(script).toContain("crypto.randomUUID");
   expect(script).toContain('run("reconnect-" + streamSeq, () => finishRecovery(stream))');
   expect(script).toContain('const session = await requestApi("/api/auth/session")');
@@ -70,6 +72,10 @@ test("real loopback server sends strict static headers, allows no traversal, and
     expect(await response.text()).toContain(`v${APP_VERSION}`);
     expect(response.status).toBe(200); expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("Cache-Control")).toBe("no-store"); expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    const versioned = await fetch(`http://127.0.0.1:${port}/app.js?v=${APP_VERSION}`);
+    expect(versioned.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    const obsolete = await fetch(`http://127.0.0.1:${port}/app.js?v=0.0.0`);
+    expect(obsolete.headers.get("Cache-Control")).toBe("no-store");
     expect((await fetch(`http://127.0.0.1:${port}/config.ts`)).status).toBe(404);
   } finally { await server.stop(); }
   const root = mkdtempSync(join(tmpdir(), "web-missing-assets-"));
