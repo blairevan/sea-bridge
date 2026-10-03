@@ -78,3 +78,59 @@ launchctl print gui/501/com.aitools.sea-bridge.queue-diagnostic.temp
 ## 最终状态（17:37 后更新）
 
 长空闲托管测试已完成：17:21:42投递返回成功，120秒内未观察到新任务；17:37仍保留在原生队列。v0.6.1日志确认最近任务idle、无待审批、rollout没有后端打开句柄。此会话曾归档/恢复，因此该现场不能直接证明原故障根因。诊断日志已部署，具体证据和读取限制见 [日志记录](2026-10-03-queue-diagnostics.md)。临时会话已再次归档，托管测试job已卸载。以上更新替代先前“测试待完成”和“生产版本v0.6.0”的当前状态描述，先前记录保留作时间线。
+
+## 18:09 / 18:10 真实业务现场
+
+用户提供两张手机截图：网页18:09显示两条排队，Desktop18:10显示第一条已运行4秒、第二条仍排队。两图时间不同，不能直接定性网页排队标记错误。新诊断日志精确关联原生client_id证明：
+
+- 网页17:55:49.866提交，17:55:50.024返回成功，queueItemId=01a10130-fc2f-71a0-9eb7-54af53f4d0c9；原生18:10:38.449开始，等待约14分49秒。
+- Telegram18:00:39提交，queueItemId=01a10135-67e7-7521-aab3-bccd95141c32；原生18:10:55.543开始，等待约10分16秒。
+- 两条输入分别精确关联到turn 01a1013e-8ae6-71e2-87d4-9100ad963c42、01a1013e-cdb2-7ef3-97a9-b5fffbc0184f。18:10:48和18:10:58的观察轮询记录队列移出。
+- 17:57、18:02、18:07的等待快照：latestState=idle，前一任务17:54:45.904完成，无pendingApproval、hook=null，Codex进程存在，rolloutOpenPids为空。不存在“前一轮还在执行，因此正常排队”的证据。句柄为空仅支持调查会话加载状态，不能证明锁、暂停或具体后台策略。
+- 网页标题“状态未知”的确定原因是sessions()只使用Hook/owner状态，没有使用已有rollout生命周期兜底；它是状态发现的缺口，与真实长等待分别分析。
+- “当前会话无待处理”的先前答复来自18:11执行期间/之后的队列检查，不能否定18:09仍在排队。
+
+现场确认长等待再次出现，原生内部消费决策仍未观测。不得通过Sea-Bridge代替原生调度或篡改原生队列来掩盖问题。
+
+## 未加载会话消费机制隔离验证
+
+本机当前嵌入CLI（实时验证0.160.0）、独立临时CODEX_HOME、仅loopback模拟Responses，无用户凭证或业务提示词。先完成测试任务，再关闭隔离后端，启动新隔离后端，保持该会话未加载。CLI queue返回0；等12秒后原生队列仍有1项，thread/loaded/list为空。调用同一隔离后端的thread/resume后，再等12秒队列为0，收到turn/started，loaded列表包含测试会话。不调用turn/start消费排队输入，不重发，不修改生产队列。
+
+命令：`python3 /tmp/sea-bridge-unloaded-queue-probe.py`。结果：`/tmp/sea-bridge-unloaded-queue-result.log`。该实验确认“未加载+成功离线入队不会自动开始；恢复加载后原生消费”的机制，真实Desktop现场的loaded状态没有直接读取，不能把吻合迹象当成完整内部根因证据。
+
+运行Desktop直属app-server PID66038默认stdio，无unix/ws监听，lsof无命名unix控制socket。`codex app-server daemon version`报告本机app-server-control.sock不存在。正式proxy支持--sock，但没有可供其连接的Desktop socket。Sea-Bridge自己的app-server不是Desktop同一后端，不能将对它的thread/resume当成安全Desktop唤醒。
+
+修复边界：原生队列入队应唤醒对应执行后端并加载会话，或Desktop提供稳定的同后端RPC连接方式；当前没有验证可用的生产自动唤醒入口，因此没有启用兼容唤醒。v0.6.4仅修正原生状态显示和长等待识别。
+
+版本边界：先前调查记录曾为0.159.2，当前`codex --version`为0.160.0；本轮隔离实验使用当前0.160.0。不能通过磁盘上CLI版本直接证明早先启动的Desktop后端进程版本相同。
+
+## 共享后端接入验证与待批准切换方案
+
+本节更新前文“无可用入口”的调查结论：当前安装包只读检查发现入口存在于 `.vite/build/application-network-startup-ouXbhtc5.js`，先前缓存main文件不足以覆盖拆分模块。
+
+- `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` 分支要求配置覆盖项为空；Desktop自动生成app-tools等覆盖项，不能仅设置此变量就保证共享后端生效。公开报告 https://github.com/openai/codex/issues/41014 描述相同限制，属于用户报告，不能当作官方修复承诺。
+- `CODEX_APP_SERVER_WS_URL` 显式连接入口在当前包中存在，优先选择WebSocket transport，绕过私有stdio的启动分支。包内WebSocket实现支持 `ws+unix:`。入口仍属未公开稳定接口。
+- 工具覆盖项只在stdio启动分支生成，因此真实Desktop的app-tools、密钥存储覆盖、审批、历史和通知必须验收，不能承诺原功能完整保留。Unix URL应使用localhost主机部分，避免Desktop将空hostname误判为外部地址而选择SOCKS代理。
+
+隔离验证命令：`python3 /tmp/sea-bridge-shared-websocket-probe.py`。测试使用临时CODEX_HOME、loopback模拟模型、现有Python websockets库；没有安装依赖、生产环境变更、真实提示词或用户凭证。一个原生后端监听私有Unix socket，两个独立RPC客户端连接，输出 `shared_loaded True`、`remote_queue_exit 0`、`remaining 0`、`second_client_resume True`。证明相同后端的多客户端观察、远程投递及恢复可工作；尚未验证真实Desktop。先前proxy对手动监听socket的探测initialize超时，不作为成功路径。
+
+待批准方案：
+1. 在当前任务结束后备份Codex配置、队列与Sea-Bridge服务配置；确认无任务运行，再完整退出Desktop。
+2. 用现有完整捆绑CLI启动单个共享原生app-server，socket仅本机用户访问；Desktop显式连接它，Sea-Bridge通过同一socket投递和恢复会话。完整包直接复用，不新增npm/Python依赖。不得同时保留两个占用同一业务会话的后端。
+3. Sea-Bridge成功投递后检查同一后端loaded状态，仅对未加载的目标会话执行thread/resume；不重发输入、不调用turn/start、不自行推进下一条，运行中的会话保持原生调度。投递成功但恢复失败分别记录；连接中断不能触发重发。
+4. 为后端连接、恢复失败、重连与投递未知增加测试；验证后台空闲后投递、连续队列、Desktop审批、应用工具、历史和Telegram通知。无法保留关键Desktop功能即回滚，不能将日志改善标为自动唤醒修复。
+5. 回滚时先停共享后端，清除本次Desktop连接覆盖并恢复原服务配置，重启Desktop；保留原生队列，禁止清空或重复提交。
+
+该方案更改Desktop后端接入并要求完整重启，属于需要用户批准的架构切换。本轮仅完成只读包检查、隔离实验与方案记录；未修改生产Codex接入或部署自动恢复。
+
+## 非侵入式打开会话验证
+
+用户明确拒绝共享后端等侵入式修改，前述共享后端切换方案已放弃，不再作为待批准实施项。生产Desktop配置和接入方式没有修改。
+
+用户授权临时测试，创建会话 `01a10206-f239-75d1-94cc-7b63265a7c12`，首轮仅回复OK。归档后恢复，以构造未加载状态；read_thread确认notLoaded。使用现有CLI投递单条测试输入，成功回执 `01a10207-739b-7082-bedc-3407b84b2a1b`。等待20秒后，read_thread仍为notLoaded、无新turn，原生队列只读计数为1。
+
+调用Codex提供的navigate_to_codex_page打开临时会话，返回navigated=true。20秒后read_thread确认新turn `01a10208-22d7-79c3-aae4-02d3ba1426bb` 已完成，回复QUEUE-OPEN-OK，队列计数为0。原消息仅投递一次。测试完成后返回业务会话并归档临时会话。
+
+验证边界：这是人为构造未加载状态的单次对照实验，验证原生导航可触发加载并消费已有队列。未通过macOS外部codex://链接调用，未验证窗口前台焦点变化，也未证明自然后台偶发现场全部属于此机制。Sea-Bridge手动恢复按钮尚未实现或部署。不得将本结果写成外部深链全链路验证通过。
+
+验证使用：Codex create_thread、read_thread、navigate_to_codex_page、set_thread_archived工具；捆绑CLI `codex queue --thread <test-thread> --message <test-marker>`；Python sqlite3 mode=ro只读查询queued_items；`git diff --check`。

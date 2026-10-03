@@ -122,3 +122,22 @@ test("Codex operation uses rollout lifecycle without hooks and rejects evidence 
     expect(await source.execution("thread", "turn", observedAt - 1)).toEqual({ state: "session_ended", exact: true });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("selected history provides native runtime state without hooks and updates session discovery", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = mkdtempSync(join(tmpdir(), "web-native-state-")); const file = join(root, "fixture.jsonl");
+  const thread = { id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: file };
+  const source = new CodexWebSource({ threads: { listActive: () => [thread], getThread: () => thread },
+    appServer: { async listProjects() { return []; }, async listModels() { return []; }, async startThreadAndTurn(): Promise<never> { throw new Error("unused"); } },
+    queue: { async queue(): Promise<never> { throw new Error("unused"); } }, sessionRoots: [root], pathExists: () => true, queueUsable: true, pendingApproval: () => false });
+  try {
+    writeFileSync(file, JSON.stringify({ timestamp: "2026-10-03T10:10:38Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-a" } }));
+    expect(await source.history("thread", null, 30)).toMatchObject({ sessionState: "running" });
+    expect(await source.sessions()).toMatchObject([{ state: "running" }]);
+    writeFileSync(file, JSON.stringify({ timestamp: "2026-10-03T10:10:55Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn-a" } }));
+    expect(await source.history("thread", null, 30)).toMatchObject({ sessionState: "idle" });
+    expect(await source.sessions()).toMatchObject([{ state: "idle" }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

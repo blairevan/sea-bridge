@@ -58,11 +58,11 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   const nodes = new Map<string, ElementFixture>();
-  let queued = [{ id: "q2", role: "user", text: "second", createdAt: 20, deliveryState: "queued" }, { id: "q1", role: "user", text: "first", createdAt: 10, deliveryState: "queued" }];
-  let unavailable = false;
+  let queued = [{ id: "q2", role: "user", text: "second", createdAt: Date.now(), deliveryState: "queued" }, { id: "q1", role: "user", text: "first", createdAt: Date.now(), deliveryState: "queued" }];
+  let unavailable = false; let sessionState = "running";
   const ui = runInNewContext(script.slice(0, end) + "\n({ state, loadHistory })", {
     URL, URLSearchParams, location: { origin: "http://127.0.0.1:7310" },
-    fetch: async () => Response.json({ data: { messages: [{ id: "history", role: "user", text: "executed", createdAt: 1 }], queuedMessages: unavailable ? undefined : queued, queueUnavailable: unavailable, cursor: null } }),
+    fetch: async () => Response.json({ data: { messages: [{ id: "history", role: "user", text: "executed", createdAt: 1 }], queuedMessages: unavailable ? undefined : queued, queueUnavailable: unavailable, sessionState, cursor: null } }),
     document: {
       cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
       createElement: (tag: string) => new ElementFixture(tag),
@@ -72,6 +72,7 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   ui.state.paused = false; ui.state.selected = { id: "thread", source: "codex" };
   await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history", "q2", "q1"]);
+  expect(nodes.get("session-meta")?.textContent).toBe("codex · 执行中");
   const root = nodes.get("messages")!;
   expect(flatten(root).filter((node) => node.textContent === "↳ 排队中")).toHaveLength(2);
   queued[0]!.text = "edited second"; await ui.loadHistory(false);
@@ -79,8 +80,9 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   expect(flatten(root).some((node) => node.textContent === "edited second")).toBe(true);
   unavailable = true; await ui.loadHistory(false);
   expect(flatten(root).filter((node) => node.textContent === "排队状态待确认")).toHaveLength(2);
-  unavailable = false; queued = []; await ui.loadHistory(false);
+  unavailable = false; queued = []; sessionState = "idle"; await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history"]);
+  expect(nodes.get("session-meta")?.textContent).toBe("codex · 空闲");
   expect(flatten(root).some((node) => node.textContent.includes("排队"))).toBe(false);
 });
 
@@ -216,7 +218,7 @@ test("latest polling preserves loaded older pages and their continuation boundar
   expect(harness.state.historyCursor).toBe("100");
 });
 
-test("operation polling distinguishes exact execution from session-level activity", async () => {
+test("execution polling never pins completed delivery status below the composer", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   const nodes = new Map<string, ElementFixture>();
@@ -237,13 +239,16 @@ test("operation polling distinguishes exact execution from session-level activit
   }) as { state: { paused: boolean; executionWatch: { operationId: string } | null }; refreshExecutionStatus: () => Promise<void> };
   harness.state.paused = false; harness.state.executionWatch = { operationId: "op" };
   await harness.refreshExecutionStatus();
-  expect(nodes.get("operation-status")?.textContent).toBe("正在执行");
+  expect(nodes.get("operation-status")?.textContent).toBe("");
+  expect(nodes.get("composer-footer")?.hidden).toBe(true);
   execution = { state: "running", exact: false };
   await harness.refreshExecutionStatus();
-  expect(nodes.get("operation-status")?.textContent).toBe("已入队 · 会话正在执行，本条是否开始尚未确认");
+  expect(nodes.get("operation-status")?.textContent).toBe("");
+  expect(nodes.get("composer-footer")?.hidden).toBe(true);
   execution = { state: "waiting_external_approval", exact: false };
   await harness.refreshExecutionStatus();
-  expect(nodes.get("operation-status")?.textContent).toBe("等待 Telegram 审批");
+  expect(nodes.get("operation-status")?.textContent).toBe("");
+  expect(nodes.get("composer-footer")?.hidden).toBe(true);
 });
 
 test("history follows a sent message and identifies a new final reply without replaying writes", async () => {
@@ -265,7 +270,8 @@ test("history follows a sent message and identifies a new final reply without re
   await harness.loadHistory(false);
   expect(nodes.get("messages")?.scrollTop).toBe(1000);
   expect(harness.state.awaitingReply).toBeNull();
-  expect(nodes.get("operation-status")?.textContent).toBe("会话收到新的最终回复");
+  expect(nodes.get("operation-status")?.textContent).toBe("");
+  expect(nodes.get("composer-footer")?.hidden).toBe(true);
 });
 
 test("mobile selection reveals the detail before positioning the latest history", async () => {
@@ -577,4 +583,59 @@ test("record pagination adjusts its offset when latest matching rows disappear",
   expect(ui.state.recordCursor).toBe("59"); await ui.loadRecords(true);
   expect(ui.state.records.map((item) => item.id)).toEqual(matching.map((item) => item.id));
   expect(ui.state.recordCursor).toBeNull();
+});
+
+
+test("composer hides normal receipts but preserves actionable errors and newer submissions", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const harness = runInNewContext(script.slice(0, end) + "\n({ state, showOperation, setComposerStatus })", {
+    document: { getElementById: (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); } },
+  }) as { state: { pending: { operationId: string } | null }; showOperation: (operation: { id: string; state: string; execution?: { state: string } }, announce: boolean) => void; setComposerStatus: (text: string) => void };
+  for (const state of ["queued", "accepted"]) {
+    harness.showOperation({ id: "old", state }, false);
+    expect(nodes.get("operation-status")?.textContent).toBe("");
+    expect(nodes.get("composer-footer")?.hidden).toBe(true);
+  }
+  harness.showOperation({ id: "old", state: "failed" }, false);
+  expect(nodes.get("operation-status")?.textContent).toContain("提交失败");
+  expect(nodes.get("composer-footer")?.hidden).toBe(false);
+  harness.state.pending = { operationId: "new" }; harness.setComposerStatus("发送中…");
+  harness.showOperation({ id: "old", state: "queued", execution: { state: "running" } }, false);
+  expect(nodes.get("operation-status")?.textContent).toBe("发送中…");
+  harness.showOperation({ id: "new", state: "delivery_unknown" }, false);
+  expect(nodes.get("operation-status")?.textContent).toContain("结果待确认");
+  expect(nodes.get("reconcile")?.hidden).toBe(false);
+});
+
+
+test("queue age labels stay attached to confirmed native pending input", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const label = runInNewContext(script.slice(0, end) + "\nqueueStatusText", {}) as (message: { createdAt?: number; deliveryState: string }, now: number) => string;
+  expect(label({ deliveryState: "queued", createdAt: 1000 }, 10000)).toBe("↳ 排队中");
+  expect(label({ deliveryState: "queued", createdAt: 1000 }, 601000)).toBe("↳ 排队中 · 已等待 10 分钟");
+  expect(label({ deliveryState: "queue_unknown", createdAt: 1000 }, 601000)).toBe("排队状态待确认");
+  expect(label({ deliveryState: "queued" }, 601000)).toBe("↳ 排队中");
+});
+
+test("manual desktop opening requires confirmation and sends no message", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("async function openSelectedDesktop()");
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach', start);
+  let allowed = false; const requests: string[] = []; const notices: string[] = [];
+  const state = { paused: false, selected: { source: "codex", id: "thread" } };
+  const button = { disabled: false };
+  const open = runInNewContext(script.slice(start, end) + "\nopenSelectedDesktop", {
+    state, confirm: () => allowed, el: () => button,
+    api: async (path: string, method: string) => { requests.push(method + " " + path); },
+    notice: (value: string) => notices.push(value),
+  });
+  await open(); expect(requests).toEqual([]);
+  allowed = true; await open();
+  expect(requests).toEqual(["POST /api/sessions/codex/thread/open-desktop"]);
+  expect(notices[0]).toContain("是否开始执行"); expect(button.disabled).toBe(false);
+  state.paused = true; await open(); expect(requests).toHaveLength(1);
+  state.paused = false; state.selected.source = "dsh"; await open(); expect(requests).toHaveLength(1);
 });

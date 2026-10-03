@@ -12,8 +12,9 @@ import type { WebSource } from "../src/web/sources/types.ts";
 test("HTTP protects reads/writes and durably claims raw requests exactly once", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
   const auth = new WebAuth(store); const events = new WebEvents(store);
-  let writes = 0; let raw = "";
+  let writes = 0; let raw = ""; let opens = 0;
   const source: WebSource = {
+    async openDesktop() { opens++; },
     capabilities: () => ({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: true, sendEnabled: true, approvalTransport: null }),
     async sessions() { return [
       { source: "codex", id: "idle", title: "idle", updatedAt: 3, projectId: null, state: "unknown", sendEnabled: true },
@@ -38,6 +39,14 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
     const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
+    const openPath = "/api/sessions/codex/11111111-1111-4111-8111-111111111111/open-desktop";
+    expect((await request(openPath, "POST")).status).toBe(401);
+    expect((await request(openPath, "POST", undefined, cookie)).status).toBe(403);
+    expect(opens).toBe(0);
+    const opened = await request(openPath, "POST", undefined, cookie, paired.csrfToken);
+    expect(opened.status).toBe(200);
+    expect((await opened.json()).data.status).toBe("open_requested");
+    expect(opens).toBe(1); expect(writes).toBe(0);
     const filtered = await request("/api/sessions?source=codex&activity=running&limit=1", "GET", undefined, cookie);
     expect(filtered.status).toBe(200);
     expect((await filtered.json()).data.items.map((item: { id: string }) => item.id)).toEqual(["active"]);

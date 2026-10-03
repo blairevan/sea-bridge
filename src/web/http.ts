@@ -146,6 +146,19 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!activity || item.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
         return json({ items: items.slice(offset, offset + limit), cursor: items.length > offset + limit ? String(offset + limit) : null, partial: results.some((result) => result.status === "rejected"), capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
+      const desktopOpen = path.match(/^\/api\/sessions\/codex\/([^/]+)\/open-desktop$/);
+      if (desktopOpen && method === "POST") {
+        const source = deps.sources.codex;
+        if (!source?.openDesktop) throw new HttpError(503, "desktop_open_unavailable");
+        const id = decodeURIComponent(desktopOpen[1] ?? "");
+        try { await source.openDesktop(id); }
+        catch (error) {
+          const code = error instanceof Error ? error.message : "desktop_open_failed";
+          const status = code === "invalid_session_id" ? 400 : code === "session_missing" ? 404 : code === "desktop_open_busy" || code === "first_turn_owned" ? 409 : 503;
+          throw new HttpError(status, ["invalid_session_id", "session_missing", "desktop_open_busy", "first_turn_owned", "desktop_open_unavailable"].includes(code) ? code : "desktop_open_failed");
+        }
+        return json({ status: "open_requested" });
+      }
       const history = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/history$/);
       if (history && method === "GET") {
         const source = deps.sources[history[1] as "codex" | "dsh"]; if (!source) throw new HttpError(503, "source_unavailable");
