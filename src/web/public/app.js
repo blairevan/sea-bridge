@@ -845,6 +845,12 @@ function renderOverview(status, sessions, continuation, cached = false) {
   }
   if (!sessions.items.length) recent.append(node("p", sessions.partial ? "暂时无法读取会话，恢复后会自动更新" : "暂无会话，可在会话页创建任务", "overview-empty muted"));
 }
+/** Keep distinct filter changes independent while suppressing duplicate reads of one selection. */
+function reloadSessionFilters() {
+  syncCreationFilter();
+  const key = JSON.stringify([el("source-filter").value, el("creation-client-filter").value, el("activity-filter").value, el("session-search").value]);
+  return run("sessions-filter-" + key, () => loadSessions(false));
+}
 /** Load a bounded session page, preserving target identity and current draft. */
 async function loadSessions(more) {
   const viewEpoch = state.viewEpoch;
@@ -886,11 +892,12 @@ async function loadSessions(more) {
   }
   if (state.selected) {
     let live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
-    if (!live && !paused && state.selected.creationPending) {
-      const selectedId = state.selected.id;
-      const synced = await api(`/api/sessions?source=codex&sessionId=${encodeURIComponent(selectedId)}&limit=1`);
-      if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== selectedId || state.selected.source !== "codex") return;
-      live = synced.items.find((item) => item.id === selectedId && item.source === "codex");
+    if (!live && !paused) {
+      const selectedId = state.selected.id; const selectedSource = state.selected.source;
+      const synced = await api(`/api/sessions?source=${encodeURIComponent(selectedSource)}&sessionId=${encodeURIComponent(selectedId)}&limit=1`);
+      if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== selectedId || state.selected.source !== selectedSource) return;
+      live = synced.items.find((item) => item.id === selectedId && item.source === selectedSource);
+      if (!live) state.selected = { ...state.selected, sendEnabled: false };
     }
     if (live) state.selected = live;
     el("session-title").textContent = state.selected.title; renderSessionStatus();
@@ -1409,11 +1416,11 @@ el("catalog-retry").onclick = () => run("retry", retryConnection);
 el("close-catalog").onclick = () => el("catalog-dialog").close();
 el("catalog-new").onclick = () => run("overview-action", async () => { const source = state.catalogContext?.source; if (!source) return; el("catalog-dialog").close(); await openOverviewCreate(source); });
 el("refresh-status").onclick = () => run("refresh", refresh);
-el("activity-filter").onchange = () => run("sessions", () => loadSessions(false));
-el("source-filter").onchange = () => { syncCreationFilter(); run("sessions", () => loadSessions(false)); };
-el("creation-client-filter").onchange = () => run("sessions", () => loadSessions(false));
+el("activity-filter").onchange = reloadSessionFilters;
+el("source-filter").onchange = reloadSessionFilters;
+el("creation-client-filter").onchange = reloadSessionFilters;
 let searchTimer;
-el("session-search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run("sessions", () => loadSessions(false)), 300); };
+el("session-search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(reloadSessionFilters, 300); };
 el("more-sessions").onclick = () => run("sessions", () => loadSessions(true));
 el("more-history").onclick = () => run("history", () => loadHistory(true));
 el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");

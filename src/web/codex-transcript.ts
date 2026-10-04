@@ -37,10 +37,8 @@ function visibleMessage(line: string, offset: number): WebMessage | null {
   return text ? { id: `rollout-${offset}`, role, text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null } : null;
 }
 
-/** Read bounded 256 KiB windows from a confined file, skipping nonvisible records. */
-export async function readCodexTranscript(path: string, roots: readonly string[], cursor: string | null, limit: number, observe?: (line: string, offset: number) => void): Promise<WebHistory> {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("history_cursor_invalid");
-  if (cursor !== null && !/^\d+$/.test(cursor)) throw new Error("history_cursor_invalid");
+/** Open a regular rollout only after root confinement and inode identity checks. */
+async function openConfinedRollout(path: string, roots: readonly string[]) {
   const actual = await realpath(path).catch(() => { throw new Error("history_unavailable"); });
   const allowedRoots = await Promise.all(roots.map((root) => realpath(root).catch(() => null)));
   if (!allowedRoots.some((root) => {
@@ -57,6 +55,39 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
   try {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.ino !== fileStat.ino || opened.dev !== fileStat.dev) throw new Error("history_unavailable");
+    return { handle, opened };
+  } catch (error) { await handle.close(); throw error; }
+}
+
+/** Read one complete native record by its byte identity, with the same confinement as history. */
+export async function readCodexMessage(path: string, roots: readonly string[], messageId: string): Promise<WebMessage | null> {
+  const match = /^rollout-(0|[1-9]\d*)$/.exec(messageId);
+  if (!match) throw new Error("attachment_missing");
+  const offset = Number(match[1]);
+  if (!Number.isSafeInteger(offset)) throw new Error("attachment_missing");
+  const { handle, opened } = await openConfinedRollout(path, roots);
+  try {
+    if (offset >= opened.size) throw new Error("attachment_missing");
+    if (offset > 0) {
+      const previous = Buffer.alloc(1);
+      const prior = await handle.read(previous, 0, 1, offset - 1);
+      if (prior.bytesRead !== 1 || previous[0] !== 10) throw new Error("attachment_missing");
+    }
+    const buffer = Buffer.alloc(Math.min(READ_WINDOW_BYTES, opened.size - offset));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    const bytes = buffer.subarray(0, bytesRead);
+    const newline = bytes.indexOf(10);
+    if (newline < 0 && offset + bytesRead !== opened.size) throw new Error("attachment_missing");
+    return visibleMessage(bytes.subarray(0, newline < 0 ? bytesRead : newline).toString("utf8"), offset);
+  } finally { await handle.close(); }
+}
+
+/** Read bounded 256 KiB windows from a confined file, skipping nonvisible records. */
+export async function readCodexTranscript(path: string, roots: readonly string[], cursor: string | null, limit: number, observe?: (line: string, offset: number) => void): Promise<WebHistory> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("history_cursor_invalid");
+  if (cursor !== null && !/^\d+$/.test(cursor)) throw new Error("history_cursor_invalid");
+  const { handle, opened } = await openConfinedRollout(path, roots);
+  try {
     const end = cursor === null ? opened.size : Number(cursor);
     if (!Number.isSafeInteger(end) || end < 0 || end > opened.size) throw new Error("history_cursor_invalid");
     const timings: TurnTimingRecord[] = [];

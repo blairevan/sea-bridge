@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexThreadStore } from "../src/desktop/codex-thread-store.ts";
@@ -84,4 +84,16 @@ test("missing required visibility columns fail instead of exposing a broader nat
     db.exec("ALTER TABLE threads DROP COLUMN thread_source");
     expect(() => store.listActive()).toThrow();
   } finally { db.close(); rmSync(root, {recursive:true,force:true}); }
+});
+
+
+test("native reads never create a missing Codex database", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-thread-missing-"));
+  try {
+    for (const method of ["listActive", "getThread"] as const) {
+      const path = join(root, `${method}.sqlite`); const store = new CodexThreadStore(path);
+      expect(() => method === "listActive" ? store.listActive() : store.getThread("missing")).toThrow();
+      expect(existsSync(path)).toBe(false);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readCodexTranscript } from "../src/web/codex-transcript.ts";
+import { readCodexMessage, readCodexTranscript } from "../src/web/codex-transcript.ts";
 
 test("environment-only records are hidden while mixed questions, examples and byte cursors survive", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-environment-context-"));
@@ -120,5 +120,29 @@ test("history replies include native start-to-completion duration", async () => 
       { timestamp: "2026-10-03T10:00:12Z", type: "event_msg", payload: { type: "task_complete", turn_id: "a" } },
     ].map((row) => JSON.stringify(row)).join("\n"));
     expect((await readCodexTranscript(file, [root], null, 30)).messages[0]?.durationMs).toBe(12000);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("exact native message reads enforce confinement, record boundaries and size bounds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-exact-message-"));
+  try {
+    const sessions = join(root, "sessions"); mkdirSync(sessions);
+    const file = join(sessions, "fixture.jsonl");
+    const line = JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "exact" }] } });
+    writeFileSync(file, "{}\n" + line);
+    expect((await readCodexMessage(file, [sessions], "rollout-3"))?.text).toBe("exact");
+    expect(await readCodexMessage(file, [sessions], "rollout-0")).toBeNull();
+    await expect(readCodexMessage(file, [sessions], "rollout-4")).rejects.toThrow();
+    await expect(readCodexMessage(file, [sessions], "rollout-03")).rejects.toThrow();
+    await expect(readCodexMessage(file, [sessions], "rollout-99999")).rejects.toThrow();
+    const outside = join(root, "outside.jsonl"); writeFileSync(outside, line);
+    symlinkSync(outside, join(sessions, "escape"));
+    await expect(readCodexMessage(outside, [sessions], "rollout-0")).rejects.toThrow();
+    await expect(readCodexMessage(join(sessions, "escape"), [sessions], "rollout-0")).rejects.toThrow();
+    writeFileSync(file, line.slice(0, -3));
+    expect(await readCodexMessage(file, [sessions], "rollout-0")).toBeNull();
+    writeFileSync(file, "x".repeat(256 * 1024 + 1));
+    await expect(readCodexMessage(file, [sessions], "rollout-0")).rejects.toThrow();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -408,3 +408,39 @@ test("newly created provenance syncs from native metadata outside the current li
   expect(controller.state.selected).not.toHaveProperty("creationPending");
   expect(ui.element("session-meta").textContent).toBe("Codex · Sea-Bridge 创建 · 空闲");
 });
+
+test("changing creation filters during an in-flight UI action loads the latest choice", async () => {
+  const first = deferred<{ items: unknown[]; cursor: null; capabilities: object }>();
+  const paths: string[] = [];
+  const ui = await fixture({ read: (path: string) => {
+    paths.push(path);
+    return paths.length === 1 ? first.promise : Promise.resolve({ items: [{ id: "cli", source: "codex", title: "CLI" }], cursor: null, capabilities: {} });
+  } }, '\napi = read;\n');
+  const bindings = ui.script.slice(ui.script.indexOf('el("activity-filter").onchange'), ui.script.indexOf('let searchTimer;'));
+  const controller = ui.evaluate(bindings + '\n({state, change: () => el("creation-client-filter").onchange()})') as {
+    state: { paused: boolean; sessions: Array<{ id: string }> }; change(): Promise<void>;
+  };
+  controller.state.paused = false;
+  ui.element("creation-client-filter").value = "desktop";
+  const previous = controller.change();
+  ui.element("creation-client-filter").value = "cli";
+  await controller.change();
+  first.resolve({ items: [{ id: "desktop", source: "codex", title: "Desktop" }], cursor: null, capabilities: {} });
+  await previous;
+  expect(paths).toHaveLength(2);
+  expect(controller.state.sessions.map((item) => item.id)).toEqual(["cli"]);
+});
+
+test("recovery refreshes a selected session outside the active list filter", async () => {
+  const live = { source: "codex", id: "selected", title: "Selected", state: "idle", sendEnabled: true };
+  const ui = await fixture({ read: async (path: string) => ({ items: path.includes("sessionId=selected") ? [live] : [], cursor: null, capabilities: {} }) }, '\napi = read;\n');
+  const controller = ui.evaluate('({state,loadSessions})') as {
+    state: { paused: boolean; selected: typeof live }; loadSessions(more: boolean): Promise<void>;
+  };
+  controller.state.paused = false;
+  controller.state.selected = { ...live, sendEnabled: false };
+  ui.element("creation-client-filter").value = "desktop";
+  await controller.loadSessions(false);
+  expect(controller.state.selected.sendEnabled).toBe(true);
+  expect(ui.element("send-button").disabled).toBe(false);
+});

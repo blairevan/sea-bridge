@@ -3,7 +3,7 @@ import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../deskt
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
-import { readCodexTranscript, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
+import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
 import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
@@ -138,8 +138,8 @@ export class CodexWebSource implements WebSource {
   async attachment(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }> {
     const thread = this.deps.threads.getThread?.(id);
     if (!thread) throw new Error("attachment_missing");
-    const history = await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, null, 100);
-    return readCodexAttachment(id, messageId, index, history);
+    const message = await readCodexMessage(thread.rolloutPath, this.deps.sessionRoots, messageId);
+    return readCodexAttachment(id, messageId, index, { messages: message ? [message] : [], cursor: null, completeUserHistory: false });
   }
 
   /** Start a raw Web prompt with explicit request-local model selection. */

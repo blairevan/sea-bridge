@@ -51,7 +51,7 @@ export class CodexThreadStore implements CodexThreadReader {
 
   /** Resolve any known thread for diagnostics with the same display-title fallback. */
   getThread(threadId: string): CodexThread | null {
-    const db = new Database(this.path, { strict: true });
+    const db = new Database(this.path, { strict: true, readonly: true });
     try {
       const row = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE id=?`,
@@ -71,7 +71,7 @@ export class CodexThreadStore implements CodexThreadReader {
 
   /** List nonarchived ordinary threads, excluding internal subagent records by provenance. */
   listActive(): CodexThread[] {
-    const db = new Database(this.path, { strict: true });
+    const db = new Database(this.path, { strict: true, readonly: true });
     try {
       const rows = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE archived=0 AND COALESCE(thread_source, '')<>'subagent' ORDER BY recency_at_ms ASC`,
