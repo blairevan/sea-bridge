@@ -7,6 +7,8 @@ const labels = { queued: "已入队，正在确认是否执行", accepted: "来�
 const reads = new Map();
 const messageViews = new Map();
 let historyTools;
+let creationProjects = { source: null, items: [] };
+let projectSearchTimer = null;
 
 /** Apply a visual preference without storing account or conversation data. */
 function applyTheme(theme) {
@@ -362,7 +364,7 @@ function hideConnectionNotice() { state.connectionDetail = ""; clearNotice(); }
 /** Disable server-mutating controls while disconnected, while keeping navigation available. */
 function setConnectionControls(disabled) {
   for (const button of el("device-items")?.querySelectorAll?.("button") ?? []) button.disabled = disabled || button.dataset?.revoked === "true";
-  for (const id of ["create-source", "create-project", "create-model"]) { const control = el(id); if (control) control.disabled = disabled; }
+  for (const id of ["create-source", "create-project-search", "create-project", "create-model"]) { const control = el(id); if (control) control.disabled = disabled; }
   const overviewCreate = el("overview-new-session"); if (overviewCreate) overviewCreate.disabled = disabled;
   const catalogCreate = el("catalog-new"); if (catalogCreate) catalogCreate.disabled = disabled || !state.caps[state.catalogContext?.source]?.createEnabled;
   const catalogRetry = el("catalog-retry"); if (catalogRetry) catalogRetry.hidden = !disabled;
@@ -374,7 +376,7 @@ function setConnectionControls(disabled) {
   const reconcile = el("reconcile"); if (reconcile) reconcile.disabled = disabled;
   const createReconcile = el("create-reconcile"); if (createReconcile) createReconcile.disabled = disabled;
   const createSubmit = el("create-submit");
-  if (createSubmit) createSubmit.disabled = disabled || !state.caps[el("create-source")?.value]?.createEnabled;
+  if (createSubmit) createSubmit.disabled = disabled || Boolean(state.pending) || !el("create-project").value || !state.caps[el("create-source")?.value]?.createEnabled;
   const settingsSubmit = el("redaction-form")?.querySelector?.('button[type="submit"]');
   if (settingsSubmit) settingsSubmit.disabled = disabled;
 }
@@ -385,11 +387,12 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
+  resetProjectSearch(); creationProjects = { source: null, items: [] };
   if (state.device?.id) clearOverviewCache();
   closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
   state.viewEpoch++; reads.clear();
-  for (const id of ["record-items", "log-items", "device-items", "create-project", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
+  for (const id of ["record-items", "log-items", "device-items", "create-project", "create-project-options", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
   clearRecordSuggestions(); state.recordChoice = null; if (el("record-session")) el("record-session").value = "";
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   for (const id of ["overview-session-count", "overview-running-count", "overview-approval-count"]) { const value = el(id); if (value) value.textContent = "—"; }
@@ -1056,6 +1059,68 @@ async function loadSettings() {
     button.onclick = () => run("revoke", async () => { await api("/api/devices/" + device.id, "DELETE"); if (device.id === devices.currentDeviceId) showLogin(); else await loadSettings(); }); row.append(button); el("device-items").append(row);
   }
 }
+/** Cancel delayed filtering and clear the query at source or privacy boundaries. */
+function resetProjectSearch() {
+  if (projectSearchTimer !== null) clearTimeout(projectSearchTimer);
+  projectSearchTimer = null;
+  el("create-project-search").value = "";
+  closeProjectOptions();
+}
+/** Close the project menu while preserving the selected project. */
+function closeProjectOptions() {
+  if (projectSearchTimer !== null) clearTimeout(projectSearchTimer); projectSearchTimer = null;
+  el("create-project-options").hidden = true;
+  el("create-project-search").setAttribute?.("aria-expanded", "false");
+}
+/** Filter loaded project names while retaining a selection that still matches. */
+function renderCreationProjects(selection = el("create-project").value) {
+  if (creationProjects.source !== el("create-source").value) return;
+  const query = el("create-project-search").value.trim().toLocaleLowerCase();
+  const items = creationProjects.items.filter((project) => project.name.toLocaleLowerCase().includes(query));
+  const select = el("create-project"); select.replaceChildren();
+  for (const project of items) { const option = node("option", project.name); option.value = project.id; select.append(option); }
+  select.value = items.some((project) => project.id === selection) ? selection : items[0]?.id ?? "";
+  const list = el("create-project-options"); list.replaceChildren();
+  for (const project of items) {
+    const option = node("button", project.name, "record-suggestion"); option.type = "button";
+    option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(select.value === project.id));
+    option.onclick = () => {
+      if (state.paused || creationProjects.source !== el("create-source").value) return;
+      if (projectSearchTimer !== null) clearTimeout(projectSearchTimer); projectSearchTimer = null;
+      select.value = project.id; el("create-project-search").value = project.name; closeProjectOptions();
+      el("create-submit").disabled = Boolean(state.pending) || !state.caps[creationProjects.source]?.createEnabled;
+    };
+    list.append(option);
+  }
+  if (!items.length) list.append(node("p", "没有匹配的项目"));
+  if (!list.hidden) el("create-project-search").setAttribute("aria-expanded", "true");
+  el("create-submit").disabled = state.paused || Boolean(state.pending) || !state.caps[creationProjects.source]?.createEnabled || !items.length;
+}
+/** Apply only the latest query after 500ms of inactivity without refetching catalogs. */
+function scheduleProjectSearch() {
+  if (projectSearchTimer !== null) clearTimeout(projectSearchTimer);
+  el("create-project").value = ""; el("create-submit").disabled = true;
+  el("create-project-options").replaceChildren(node("p", "正在筛选…")); el("create-project-options").hidden = false;
+  projectSearchTimer = setTimeout(() => {
+    projectSearchTimer = null; renderCreationProjects(); el("create-project").value = ""; el("create-submit").disabled = true;
+    el("create-project-options").hidden = false; el("create-project-search").setAttribute("aria-expanded", "true");
+  }, 500);
+}
+/** Open all projects from the single editable project control. */
+function openProjectOptions() {
+  if (state.paused) return;
+  el("create-project-search").value = ""; el("create-project-options").hidden = false; renderCreationProjects();
+}
+/** Restore the selected label on dismissal; let keyboard users enter the options. */
+function projectSearchKeydown(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (projectSearchTimer !== null) clearTimeout(projectSearchTimer); projectSearchTimer = null;
+    closeProjectOptions();
+    el("create-project-search").value = creationProjects.items.find((project) => project.id === el("create-project").value)?.name ?? "";
+  } else if (event.key === "ArrowDown") { event.preventDefault(); el("create-project-options").querySelector("button")?.focus(); }
+  else if (event.key === "Enter" && !el("create-project-options").hidden) { event.preventDefault(); el("create-project-options").querySelector("button")?.click(); }
+}
 /** Discover source-specific catalogs without storing a global default model. */
 async function loadCatalogs() {
   const viewEpoch = state.viewEpoch;
@@ -1068,14 +1133,13 @@ async function loadCatalogs() {
   if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
   await loadSessions(false);
   if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
-  el("create-project").replaceChildren();
+  creationProjects = { source, items: projects.items };
   el("create-model").replaceChildren(node("option", "使用来源默认模型")); el("create-model").firstChild.value = "";
-  for (const project of projects.items) { const option = node("option", project.name); option.value = project.id; el("create-project").append(option); }
+  renderCreationProjects(projectSelection);
+  closeProjectOptions(); el("create-project-search").value = creationProjects.items.find((project) => project.id === el("create-project").value)?.name ?? "";
   for (const model of models.items) { const option = node("option", model.name); option.value = model.id; el("create-model").append(option); }
-  if (projects.items.some((project) => project.id === projectSelection)) el("create-project").value = projectSelection;
   if (models.items.some((model) => model.id === modelSelection)) el("create-model").value = modelSelection;
   const allowed = state.caps[source]?.createEnabled;
-  el("create-submit").disabled = state.paused || Boolean(state.pending) || !allowed || !projects.items.length;
   el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
 /** Keep the composer reserved for the current submission or a delivery problem needing attention. */
@@ -1167,7 +1231,7 @@ async function reconcilePending() {
     state.pending = null; setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
     notice("未找到提交记录。请核对任务后再手动提交。", { sticky: true, kind: "warning" });
   }
-  if (el("create-dialog").open && !state.pending) el("create-submit").disabled = state.paused || !state.caps[el("create-source").value]?.createEnabled;
+  if (el("create-dialog").open && !state.pending) el("create-submit").disabled = state.paused || !el("create-project").value || !state.caps[el("create-source").value]?.createEnabled;
   await refresh();
 }
 
@@ -1301,8 +1365,12 @@ el("more-history").onclick = () => run("history", () => loadHistory(true));
 el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
-el("create-source").onchange = () => run("catalog-" + el("create-source").value, loadCatalogs);
-el("create-form").onsubmit = (event) => { event.preventDefault(); run("write", () => submitWrite(true)); };
+el("create-source").onchange = () => { resetProjectSearch(); el("create-project").replaceChildren(); run("catalog-" + el("create-source").value, loadCatalogs); };
+el("create-project-search").oninput = scheduleProjectSearch;
+el("create-project-search").onfocus = openProjectOptions;
+el("create-project-search").onkeydown = projectSearchKeydown;
+document.addEventListener("pointerdown", (event) => { if (!el("create-project-field").contains(event.target)) closeProjectOptions(); });
+el("create-form").onsubmit = (event) => { event.preventDefault(); if (!el("create-project").value) { notice("请先选择一个项目"); return; } run("write", () => submitWrite(true)); };
 el("send-form").onsubmit = (event) => { event.preventDefault(); run("write", () => submitWrite(false)); };
 el("record-session").oninput = scheduleRecordSuggestions;
 el("record-session").onkeydown = recordSuggestionKeydown;

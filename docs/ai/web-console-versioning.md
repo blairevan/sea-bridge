@@ -1,5 +1,18 @@
 # Sea-Bridge 版本规则
 
+## v0.14.1
+
+- 将额外项目搜索框改为单个可编辑项目下拉控件，点击展开、输入筛选、500ms 防抖、点击选择；输入期间必须重新选择，避免误提交旧项目。保留键盘下箭头/Enter 选择和 Escape 关闭。
+- `bun test` 345 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。
+- 已部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.14.1-20261004-170828`；本机与 https://code.example.com 页面版本及 JS/CSS 字节核验一致。账号及会话保留，SQLite 健康；iPhone 交互待用户刷新验收。
+
+## v0.14.0
+
+- 新建会话项目列表增加名称搜索，500ms 防抖、忽略大小写；本地筛选已加载目录，保留仍匹配的选择，无匹配时禁用创建，切换来源清空搜索。
+- `bun test` 345 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。
+- 已部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.14.0-20261004-170221`，7310 仅监听 127.0.0.1；本机与 https://code.example.com 页面均为 v0.14.0，JS/CSS 与发布文件逐字节一致。
+- 启动配置与 SQLite 一致性备份位于发布目录 rollback/；数据库健康，账号和会话凭据保留。iPhone 实际搜索体验待用户刷新验收。
+
 应用版本以 package.json 的 version 为唯一来源，使用主版本.次版本.补丁版本。
 
 - 不兼容变更递增主版本；新功能递增次版本；问题修复递增补丁版本。

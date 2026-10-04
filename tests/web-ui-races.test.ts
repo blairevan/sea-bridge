@@ -16,6 +16,7 @@ class RaceElement {
   scrollHeight = 100;
   clientHeight = 50;
   onchange?: () => void;
+  onclick?: () => void;
   classList = { remove() {}, add() {}, contains() { return false; } };
   /** Preserve child structure without parsing source-derived HTML. */
   append(...children: RaceElement[]): void { this.children.push(...children); }
@@ -75,6 +76,47 @@ async function fixture(extra: Record<string, unknown> = {}, appended = "") {
 
 /** Drain asynchronous response-body reads and their dependent UI continuations. */
 async function settle(): Promise<void> { await new Promise<void>((resolve) => setImmediate(resolve)); }
+
+test("project search debounces for 500ms, preserves matching selection and handles no results", async () => {
+  let nextId = 0;
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  const ui = await fixture({
+    setTimeout(callback: () => void, delay: number) { const id = ++nextId; timers.set(id, { callback, delay }); return id; },
+    clearTimeout(id: number) { timers.delete(id); },
+  }, '\ncreationProjects = { source: "codex", items: [{ id: "one", name: "SEA Bridge" }, { id: "two", name: "数字人创课" }] };\n');
+  const helpers = ui.evaluate("({ state, renderCreationProjects, scheduleProjectSearch, resetProjectSearch })") as {
+    state: { paused: boolean; caps: Record<string, { createEnabled: boolean }> };
+    renderCreationProjects(selection?: string): void; scheduleProjectSearch(): void; resetProjectSearch(): void;
+  };
+  helpers.state.paused = false; helpers.state.caps = { codex: { createEnabled: true } };
+  ui.element("create-source").value = "codex"; helpers.renderCreationProjects("two");
+  expect(ui.element("create-project").value).toBe("two");
+  ui.element("create-project-search").value = "missing"; helpers.scheduleProjectSearch();
+  ui.element("create-project-search").value = "  sea  "; helpers.scheduleProjectSearch();
+  expect(timers.size).toBe(1); expect(ui.element("create-project").children).toHaveLength(2);
+  const timer = [...timers.values()][0]; if (!timer) throw new Error("search timer missing");
+  expect(timer.delay).toBe(500); timers.clear(); timer.callback();
+  expect(ui.element("create-project").children.map((option) => option.textContent)).toEqual(["SEA Bridge"]);
+  expect(ui.element("create-project").value).toBe("");
+  expect(ui.element("create-submit").disabled).toBe(true);
+  const choice = ui.element("create-project-options").children[0];
+  if (!choice?.onclick) throw new Error("project choice missing");
+  choice.onclick();
+  expect(ui.element("create-project").value).toBe("one");
+  expect(ui.element("create-project-search").value).toBe("SEA Bridge");
+  expect(ui.element("create-project-options").hidden).toBe(true);
+  ui.element("create-project-search").value = "不存在"; helpers.renderCreationProjects();
+  expect(ui.element("create-project").value).toBe(""); expect(ui.element("create-submit").disabled).toBe(true);
+  expect(ui.element("create-project-options").children[0]?.textContent).toBe("没有匹配的项目");
+  ui.element("create-project-search").value = ""; helpers.renderCreationProjects();
+  expect(ui.element("create-project").children).toHaveLength(2); expect(ui.element("create-submit").disabled).toBe(false);
+  ui.element("create-project-search").value = "创课"; helpers.renderCreationProjects("two");
+  expect(ui.element("create-project").value).toBe("two");
+  helpers.scheduleProjectSearch(); helpers.resetProjectSearch();
+  expect(timers.size).toBe(0); expect(ui.element("create-project-search").value).toBe("");
+  ui.element("create-source").value = "dsh"; helpers.renderCreationProjects();
+  expect(ui.element("create-project").value).toBe("");
+});
 
 test("a previous identity cannot block the same action after reauthentication", async () => {
   const ui = await fixture(); const held = deferred<void>(); let actions = 0;

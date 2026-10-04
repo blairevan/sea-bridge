@@ -142,3 +142,5 @@ header .header-actions button { margin-left: 0; white-space: nowrap; }
 .session-detail .session-heading .session-status-line #session-meta { flex: 0 0 auto; width: auto; white-space: nowrap; }
 .session-status-line .execution-timer { display: inline; width: auto; margin: 0; text-align: left; white-space: nowrap; font-size: 11px; line-height: 1.3; }
 @media(max-width:360px) { .session-status-line { gap: 5px; } .session-status-line .execution-timer { font-size: 10px; } }
+[hidden]{display:none!important}
+.project-field{position:relative}.project-options{top:100%;z-index:10}
