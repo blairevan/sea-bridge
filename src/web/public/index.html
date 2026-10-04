@@ -47,6 +47,7 @@
         <section id="sessions" class="page" hidden>
           <aside class="session-list"><div class="section-heading"><h2>会话</h2><button id="new-session">＋ 新建</button></div>
             <label for="source-filter">执行来源</label><select id="source-filter"><option value="">全部</option><option value="codex">Codex</option><option value="dsh">dsh</option></select>
+            <label id="creation-client-label" for="creation-client-filter">创建来源</label><select id="creation-client-filter"><option value="">全部创建来源</option><option value="desktop">Desktop</option><option value="cli">CLI</option><option value="sea_bridge">Sea-Bridge</option><option value="exec">Exec</option><option value="unknown">未知</option></select>
             <label for="activity-filter">执行状态</label><select id="activity-filter"><option value="">全部状态</option><option value="running">运行中</option><option value="waiting_external_approval">等待审批</option><option value="unknown">状态未知</option></select>
             <label for="session-search">搜索会话</label><input id="session-search" type="search" placeholder="搜索标题" maxlength="200">
             <div id="session-items"></div><button id="more-sessions" class="quiet" hidden>加载更多</button>

@@ -1,3 +1,4 @@
+import type { CreationClient } from "../../desktop/codex-provenance.ts";
 import type { OperationState } from "../store.ts";
 
 /** Independent capability flags prevent a partial source appearing fully available. */
@@ -10,6 +11,7 @@ export interface WebSourceCapabilities {
 /** Source-owned identity plus evidence-based display metadata. */
 export interface WebSession {
   source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
+  creationClient?: CreationClient;
   state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
 }
 /** Executed conversation and explicitly marked native queue inputs share safe message fields. */

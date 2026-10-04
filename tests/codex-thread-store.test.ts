@@ -45,3 +45,43 @@ test("list and point lookup share trimmed name, title and short identity fallbac
     expect(store.getThread("missing")).toBeNull();
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+
+for (const profile of [0, 1, 2, 3]) {
+  test(`creation provenance supports optional schema profile ${profile}`, () => {
+    const { root, db, store } = fixture();
+    try {
+      if (profile & 1) db.exec("ALTER TABLE threads ADD COLUMN source TEXT");
+      if (profile & 2) db.exec("ALTER TABLE threads ADD COLUMN originator TEXT");
+      db.exec("INSERT INTO threads(id,rollout_path,title,recency_at_ms,archived) VALUES('one','/fixture/one','one',1,0)");
+      if (profile & 1) db.exec("UPDATE threads SET source='cli'");
+      if (profile & 2) db.exec("UPDATE threads SET originator='Codex Desktop'");
+      const expected = profile & 2 ? "desktop" : profile & 1 ? "cli" : "unknown";
+      expect(store.listActive()[0]?.creationClient?.kind).toBe(expected);
+      expect(store.getThread("one")?.creationClient?.kind).toBe(expected);
+      expect(store.listActive()[0]).not.toHaveProperty("originator");
+      expect(store.listActive()[0]).not.toHaveProperty("source");
+    } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("optional schema changes are observed without restarting the store", () => {
+  const { root, db, store } = fixture();
+  try {
+    db.exec("INSERT INTO threads(id,rollout_path,title,recency_at_ms,archived) VALUES('one','/fixture','one',1,0)");
+    expect(store.listActive()[0]?.creationClient?.kind).toBe("unknown");
+    db.exec("ALTER TABLE threads ADD COLUMN originator TEXT");
+    db.exec("UPDATE threads SET originator='Codex Desktop'");
+    expect(store.listActive()[0]?.creationClient?.kind).toBe("desktop");
+    db.exec("ALTER TABLE threads DROP COLUMN originator");
+    expect(store.listActive()[0]?.creationClient?.kind).toBe("unknown");
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("missing required visibility columns fail instead of exposing a broader native list", () => {
+  const {root, db, store} = fixture();
+  try {
+    db.exec("ALTER TABLE threads DROP COLUMN thread_source");
+    expect(() => store.listActive()).toThrow();
+  } finally { db.close(); rmSync(root, {recursive:true,force:true}); }
+});

@@ -101,7 +101,7 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   ui.state.paused = false; ui.state.selected = { id: "thread", source: "codex" };
   await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history", "q2", "q1"]);
-  expect(nodes.get("session-meta")?.textContent).toBe("codex · 执行中");
+  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 创建来源未知 · 执行中");
   const root = nodes.get("messages")!;
   expect(flatten(root).filter((node) => node.textContent === "↳ 排队中")).toHaveLength(2);
   queued[0]!.text = "edited second"; await ui.loadHistory(false);
@@ -111,7 +111,7 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   expect(flatten(root).filter((node) => node.textContent === "排队状态待确认")).toHaveLength(2);
   unavailable = false; queued = []; sessionState = "idle"; await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history"]);
-  expect(nodes.get("session-meta")?.textContent).toBe("codex · 空闲");
+  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 创建来源未知 · 空闲");
   expect(flatten(root).some((node) => node.textContent.includes("排队"))).toBe(false);
 });
 
@@ -532,7 +532,7 @@ test("offline overview browsing preserves messages and never submits or loads an
   ui.state.paused = true; ui.state.messages = [{ text: "retained reply" }];
   ui.state.overviewSessions = [{ id: "active", source: "codex", title: "active", state: "running" }, { id: "other", source: "dsh", title: "other", state: "unknown" }];
   await ui.openOverviewSessions("codex", "running"); await ui.openOverviewCreate("codex"); await ui.openOverviewCatalog("codex", "projects");
-  expect(nodes.get("session-items")?.children.map((item) => item.textContent)).toEqual(["active"]);
+  expect(nodes.get("session-items")?.children.map((item) => item.children[0]?.textContent)).toEqual(["active"]);
   expect(ui.state.messages[0]?.text).toBe("retained reply"); expect(requests).toEqual([]); expect(notices).toHaveLength(2);
 });
 
@@ -691,7 +691,7 @@ test("running timer counts from native timestamp and hides on completion or miss
   let now = 100000;
   const state: { selected: { source: string; state: string; startedAt?: number } } = { selected: { source: "codex", state: "running", startedAt: 100000 } };
   const nodes = new Map<string, { hidden: boolean; textContent: string; title: string }>();
-  const ui = runInNewContext(script.slice(start, end) + "\n({renderSessionStatus, formatRunningDuration})", {
+  const ui = runInNewContext(script.slice(script.indexOf("/** Keep platform labels"), script.indexOf("/** Apply a visual preference")) + "\n" + script.slice(start, end) + "\n({renderSessionStatus, formatRunningDuration})", {
     state, labels: { running: "执行中", idle: "空闲" }, Date: { now: () => now },
     el: (id: string) => { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "", title: "" }); return nodes.get(id); },
   });
@@ -728,7 +728,7 @@ test("continuation card rebuilds after privacy clearing even with unchanged iden
   const start = script.indexOf("function renderContinueSession(session)");
   const end = script.indexOf("/** Render a bounded overview", start);
   const button = { hidden: true, dataset: { sessionSignature: "" }, childElementCount: 0, replaceChildren(...items: unknown[]) { this.childElementCount = items.length; } };
-  const render = runInNewContext(script.slice(start, end) + "\nrenderContinueSession", {
+  const render = runInNewContext(script.slice(script.indexOf("/** Keep platform labels"), script.indexOf("/** Apply a visual preference")) + "\n" + script.slice(start, end) + "\nrenderContinueSession", {
     el: () => button, labels: { idle: "空闲" }, overviewTime: () => "fixture",
     node: () => ({ append() {} }),
   });

@@ -1,5 +1,5 @@
 "use strict";
-const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
+const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -9,6 +9,39 @@ const messageViews = new Map();
 let historyTools;
 let creationProjects = { source: null, items: [] };
 let projectSearchTimer = null;
+
+/** Keep platform labels independent of the original client. */
+function sourceDisplayName(source) {
+  return source === "codex" ? "Codex" : source === "dsh" ? "dsh" : "未知来源";
+}
+/** Display normalized creation evidence; pending is browser-only for a newly created session. */
+function sessionSourceLabel(session) {
+  if (session.source !== "codex") return sourceDisplayName(session.source);
+  const names = { desktop: "Desktop 创建", cli: "CLI 创建", sea_bridge: "Sea-Bridge 创建", exec: "Exec 创建", unknown: "创建来源未知" };
+  return `Codex · ${session.creationPending ? "创建来源待同步" : (Object.hasOwn(names, session.creationClient?.kind ?? "unknown") ? names[session.creationClient?.kind ?? "unknown"] : names.unknown)}`;
+}
+/** Match creation filters identically for loaded and server-projected sessions. */
+function matchesCreationClient(session, kind) {
+  return !kind || session.source === "codex" && (session.creationClient?.kind ?? "unknown") === kind;
+}
+/** Clear the Codex-only creation filter when browsing dsh. */
+function syncCreationFilter() {
+  const filter = el("creation-client-filter");
+  if (!filter) return;
+  const hidden = el("source-filter").value === "dsh";
+  filter.hidden = hidden;
+  if (el("creation-client-label")) el("creation-client-label").hidden = hidden;
+  if (hidden) filter.value = "";
+}
+/** Merge bounded in-memory rows while moving refreshed identities to the newest position. */
+function mergeSessionCache(...groups) {
+  const merged = new Map();
+  for (const group of groups) for (const session of group) {
+    const key = JSON.stringify([session.source, session.id]);
+    merged.delete(key); merged.set(key, session);
+  }
+  return [...merged.values()].slice(-300);
+}
 
 /** Apply a visual preference without storing account or conversation data. */
 function applyTheme(theme) {
@@ -399,7 +432,7 @@ function clearSensitive() {
   el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
   el("messages").replaceChildren(historyTools ?? el("history-tools"));
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
-  state.messages = []; state.sessions = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
+  state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
   if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false };
 }
 /** Read the double-submit cookie; keep it only in the current request. */
@@ -648,15 +681,16 @@ function overviewTime(value) {
 }
 /** Route overview actions to a clean list, retaining cached content during an outage. */
 async function openOverviewSessions(source = "", activity = "") {
-  el("source-filter").value = source; el("activity-filter").value = activity; el("session-search").value = "";
+  el("source-filter").value = source; if (el("creation-client-filter")) el("creation-client-filter").value = ""; syncCreationFilter(); el("activity-filter").value = activity; el("session-search").value = "";
   state.sessionCursor = null;
   el("sessions").classList.remove("detail-open"); el("sessions").classList.add("browse-only");
   if (state.paused) {
-    const cached = [...new Map([...state.overviewSessions, ...state.sessions].map((session) => [session.source + session.id, session])).values()];
-    const items = cached.filter((session) => (!source || session.source === source) && (!activity || session.state === activity));
+    const cached = mergeSessionCache(state.overviewSessions, state.sessionCache, state.sessions);
+    const items = cached.filter((session) => (!source || session.source === source) && (!activity || session.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
     const list = el("session-items"); list.replaceChildren();
     for (const session of items) {
-      const button = node("button", session.title, "session-row"); button.type = "button";
+      const button = node("button", "", "session-row"); button.type = "button";
+      button.append(node("span", session.title), node("small", sessionSourceLabel(session), "muted"));
       button.onclick = () => run("select", async () => {
         if (state.selected?.id === session.id && state.selected.source === session.source) {
           el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions");
@@ -685,7 +719,7 @@ async function openOverviewCatalog(source, kind) {
   const result = await api(`/api/sources/${source}/${kind}`);
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   state.catalogContext = { source, kind };
-  el("catalog-title").textContent = `${source === "codex" ? "Codex" : "dsh"} · ${kind === "projects" ? "项目目录" : "模型目录"}`;
+  el("catalog-title").textContent = `${sourceDisplayName(source)} · ${kind === "projects" ? "项目目录" : "模型目录"}`;
   const list = el("catalog-items"); list.replaceChildren();
   for (const item of result.items) list.append(node("div", item.name, "catalog-row"));
   if (!result.items.length) list.append(node("p", "来源当前未提供目录项", "muted"));
@@ -703,7 +737,7 @@ async function openOverviewCapability(source, capability) {
 function sourceStatusCard(name, source) {
   const card = node("article", "", "status-card source-card");
   const heading = node("div", "", "source-heading");
-  heading.append(node("h3", name === "codex" ? "Codex" : "dsh"), node("span", !source ? "未接入" : source.state === "limited" ? "已采样" : "暂不可用", "status-badge"));
+  heading.append(node("h3", sourceDisplayName(name)), node("span", !source ? "未接入" : source.state === "limited" ? "已采样" : "暂不可用", "status-badge"));
   card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : "Host 会话与消息桥接", "muted"));
   const capabilities = node("div", "", "capability-grid");
   for (const [key, label] of [["sessionsReadable", "会话读取"], ["historyReadable", "历史读取"], ["projectsReadable", "项目目录"], ["modelsReadable", "模型目录"], ["createEnabled", "新建会话"], ["sendEnabled", "发送消息"]]) {
@@ -747,7 +781,7 @@ async function continueSessionTarget(sessions) {
 /** Route a single deliberate click directly into the selected conversation. */
 async function openContinueSession(session) {
   if (state.paused) { showConnectionNotice("恢复连接后可继续会话"); return; }
-  el("source-filter").value = session.source; el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
+  el("source-filter").value = session.source; el("creation-client-filter").value = ""; syncCreationFilter(); el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
   state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
   el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open");
   await showPage("sessions");
@@ -758,12 +792,12 @@ function renderContinueSession(session) {
   const button = el("continue-session"); if (!button) return;
   button.hidden = !session;
   if (!session) { button.replaceChildren(); button.onclick = null; return; }
-  const signature = JSON.stringify([session.source, session.id, session.title, session.state, session.updatedAt]);
+  const signature = JSON.stringify([session.source, session.id, session.title, session.state, session.updatedAt, session.creationClient, session.creationPending]);
   if (button.dataset?.sessionSignature !== signature || !button.childElementCount) {
     if (button.dataset) button.dataset.sessionSignature = signature;
     const heading = node("span", "", "continue-heading"); heading.append(node("small", "继续会话"), node("span", "进入 →", "continue-arrow"));
     const title = node("strong", session.title, "continue-title"); title.title = session.title;
-    button.replaceChildren(heading, title, node("small", `${session.source === "codex" ? "Codex" : "DSH"} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
+    button.replaceChildren(heading, title, node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
   }
   button.onclick = () => run("continue-session", () => openContinueSession(session));
 }
@@ -800,11 +834,11 @@ function renderOverview(status, sessions, continuation, cached = false) {
   const recent = el("recent-sessions"); recent.replaceChildren();
   for (const session of sessions.items.slice(0, 6)) {
     const button = node("button", "", "session-row overview-session"); button.type = "button";
-    const text = node("span", "", "overview-session-text"); text.append(node("strong", session.title), node("small", `${session.source} · ${overviewTime(session.updatedAt)}`, "muted"));
+    const text = node("span", "", "overview-session-text"); text.append(node("strong", session.title), node("small", `${sessionSourceLabel(session)} · ${overviewTime(session.updatedAt)}`, "muted"));
     button.append(text, node("small", labels[session.state] ?? "状态未知", "status-badge"));
     button.onclick = () => run("select", async () => {
       if (state.paused && (state.selected?.id !== session.id || state.selected?.source !== session.source)) { showConnectionNotice("该会话消息尚未加载，恢复连接后可打开。已加载页面内容继续保留。"); return; }
-      el("source-filter").value = session.source; el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
+      el("source-filter").value = session.source; el("creation-client-filter").value = ""; syncCreationFilter(); el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
       if (!state.paused) { state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true; }
       el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions");
     }); recent.append(button);
@@ -814,22 +848,35 @@ function renderOverview(status, sessions, continuation, cached = false) {
 /** Load a bounded session page, preserving target identity and current draft. */
 async function loadSessions(more) {
   const viewEpoch = state.viewEpoch;
+  syncCreationFilter();
+  const creationKind = el("creation-client-filter")?.value || "";
   const params = new URLSearchParams({ source: el("source-filter").value, q: el("session-search").value, limit: "30" });
   const activity = el("activity-filter")?.value || ""; if (activity) params.set("activity", activity);
+  if (creationKind) params.set("creationClient", creationKind);
   if (more && state.sessionCursor) params.set("cursor", state.sessionCursor);
-  const result = await api("/api/sessions?" + params);
-  if (state.paused || viewEpoch !== state.viewEpoch) return;
+  const paused = state.paused;
+  if (paused) state.sessionCache = mergeSessionCache(state.overviewSessions, state.sessionCache, state.sessions);
+  const result = paused ? { items: mergeSessionCache(state.overviewSessions, state.sessionCache, state.sessions)
+    .filter((item) => (!params.get("source") || item.source === params.get("source")) && item.title.toLowerCase().includes(params.get("q").toLowerCase()) && (!activity || item.state === activity) && matchesCreationClient(item, creationKind))
+    .sort((a, b) => b.updatedAt - a.updatedAt), cursor: null, capabilities: state.caps, partial: false } : await api("/api/sessions?" + params);
+  if (paused !== state.paused || viewEpoch !== state.viewEpoch) return;
   state.caps = result.capabilities;
-  if (params.get("source") !== el("source-filter").value || params.get("q") !== el("session-search").value || (params.get("activity") || "") !== (el("activity-filter")?.value || "")) return;
-  state.sessions = more ? [...state.sessions, ...result.items] : result.items; state.sessionCursor = result.cursor;
+  if (creationKind !== (el("creation-client-filter")?.value || "") || params.get("source") !== el("source-filter").value || params.get("q") !== el("session-search").value || (params.get("activity") || "") !== (el("activity-filter")?.value || "")) return;
+  if (!paused) state.sessionCache = mergeSessionCache(state.sessionCache, result.items);
+  state.sessions = more && !paused ? [...state.sessions, ...result.items] : result.items; state.sessionCursor = result.cursor;
   el("more-sessions").hidden = !result.cursor;
   for (const target of ["session-items"]) {
     const container = el(target); container.replaceChildren();
     for (const session of state.sessions) {
       const button = node("button", "", "session-row"); button.type = "button";
-      button.append(node("span", session.title), node("small", `${session.source} · ${labels[session.state] ?? "未知"}`, "muted"));
+      button.append(node("span", session.title), node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "未知"}`, "muted"));
       button.onclick = () => run("select", async () => {
-        if (state.paused) return;
+        if (state.paused) {
+          if (state.selected?.id === session.id && state.selected.source === session.source) {
+            el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions");
+          } else showConnectionNotice("恢复连接后可打开会话");
+          return;
+        }
         state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
         el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions");
       });
@@ -838,11 +885,17 @@ async function loadSessions(more) {
     if (!container.childElementCount) container.append(node("p", result.partial ? "部分来源暂不可用" : "暂无会话", "muted"));
   }
   if (state.selected) {
-    const live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
+    let live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
+    if (!live && !paused && state.selected.creationPending) {
+      const selectedId = state.selected.id;
+      const synced = await api(`/api/sessions?source=codex&sessionId=${encodeURIComponent(selectedId)}&limit=1`);
+      if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== selectedId || state.selected.source !== "codex") return;
+      live = synced.items.find((item) => item.id === selectedId && item.source === "codex");
+    }
     if (live) state.selected = live;
     el("session-title").textContent = state.selected.title; renderSessionStatus();
     el("open-desktop").hidden = state.selected.source !== "codex" || !state.caps.codex?.desktopOpenEnabled;
-    el("send-button").disabled = !state.selected.sendEnabled || Boolean(state.pending);
+    el("send-button").disabled = state.paused || !state.selected.sendEnabled || Boolean(state.pending);
   }
 }
 /** Show the floating shortcut only when the selected conversation is away from its end. */
@@ -970,7 +1023,7 @@ async function loadRecordSuggestions() {
   for (const [index, session] of result.items.entries()) {
     const button = node("button", "", "record-suggestion"); button.type = "button"; button.id = "record-option-" + index; button.tabIndex = -1;
     button.setAttribute("role", "option"); button.setAttribute("aria-selected", "false");
-    button.append(node("strong", session.title), node("small", `${session.source}${session.updatedAt ? " · " + overviewTime(session.updatedAt) : ""}`));
+    button.append(node("strong", session.title), node("small", `${sessionSourceLabel(session)}${session.updatedAt ? " · " + overviewTime(session.updatedAt) : ""}`));
     button.onclick = () => chooseRecordSession(index); list.append(button);
   }
   if (!result.items.length) list.append(node("p", state.paused ? "已加载数据中没有匹配会话，恢复连接后可查找" : result.partial ? "部分来源不可用，当前未找到匹配会话" : "未找到匹配会话", "muted"));
@@ -982,7 +1035,7 @@ function chooseRecordSession(index) {
   const session = state.recordSuggestions[index]; if (!session) return;
   state.recordChoice = { id: session.id, source: session.source, title: session.title };
   el("record-session").value = session.title; el("record-source").value = session.source;
-  clearRecordSuggestions(); el("record-session-hint").textContent = `已选择 ${session.source} 会话`;
+  clearRecordSuggestions(); el("record-session-hint").textContent = `已选择 ${sessionSourceLabel(session)} 会话`;
   if (!state.paused) run("records", () => loadRecords(false));
 }
 /** Navigate the title combobox without accidentally submitting an unselected search string. */
@@ -1030,7 +1083,7 @@ async function loadRecords(more) {
   for (const item of state.records) {
     const cached = [...state.sessions, ...state.overviewSessions].find((session) => session.id === item.sessionId && session.source === item.source);
     const title = item.sessionTitle ?? cached?.title ?? (state.recordChoice && state.recordChoice.id === item.sessionId && state.recordChoice.source === item.source ? state.recordChoice.title : null);
-    const row = node("div", "", "record-row"); row.append(node("small", `${new Date(item.createdAt).toLocaleString()} · ${item.transport} → ${item.source} · ${labels[item.state] ?? item.state}`, "muted"), node("span", title ?? (item.sessionId ? "会话标题暂不可用" : "尚未关联会话"), "record-title"));
+    const row = node("div", "", "record-row"); row.append(node("small", `${new Date(item.createdAt).toLocaleString()} · ${item.transport} → ${sourceDisplayName(item.source)} · ${labels[item.state] ?? item.state}`, "muted"), node("span", title ?? (item.sessionId ? "会话标题暂不可用" : "尚未关联会话"), "record-title"));
     if (item.errorCode) row.append(node("span", item.errorCode, "muted")); el("record-items").append(row);
   }
   if (more || !hadRecords || !result.cursor) state.recordCursor = result.cursor;
@@ -1198,7 +1251,7 @@ async function submitWrite(create) {
         draft.value = "";
         if (!create) draft.style.height = "";
       }
-      if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
+      if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false, creationPending: source === "codex" }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     showOperation(operation); await refresh();
@@ -1278,7 +1331,7 @@ function renderSessionStatus() {
   const knownStart = Number.isFinite(session.startedAt) && session.startedAt > 0;
   const elapsed = session.state === "running" && knownStart
     ? ` · 已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
-  const text = `${session.source} · ${labels[session.state] ?? "未知"}`;
+  const text = `${sessionSourceLabel(session)} · ${labels[session.state] ?? "未知"}`;
   el("session-meta").textContent = text;
   el("session-meta").title = text;
   const timer = el("execution-timer");
@@ -1357,7 +1410,8 @@ el("close-catalog").onclick = () => el("catalog-dialog").close();
 el("catalog-new").onclick = () => run("overview-action", async () => { const source = state.catalogContext?.source; if (!source) return; el("catalog-dialog").close(); await openOverviewCreate(source); });
 el("refresh-status").onclick = () => run("refresh", refresh);
 el("activity-filter").onchange = () => run("sessions", () => loadSessions(false));
-el("source-filter").onchange = () => run("sessions", () => loadSessions(false));
+el("source-filter").onchange = () => { syncCreationFilter(); run("sessions", () => loadSessions(false)); };
+el("creation-client-filter").onchange = () => run("sessions", () => loadSessions(false));
 let searchTimer;
 el("session-search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run("sessions", () => loadSessions(false)), 300); };
 el("more-sessions").onclick = () => run("sessions", () => loadSessions(true));

@@ -1,0 +1,123 @@
+{
+  "date": "2026-10-04",
+  "codexVersion": "codex-cli 0.160.0",
+  "schemaColumns": [
+    "id",
+    "rollout_path",
+    "created_at",
+    "updated_at",
+    "source",
+    "model_provider",
+    "cwd",
+    "title",
+    "sandbox_policy",
+    "approval_mode",
+    "tokens_used",
+    "has_user_event",
+    "archived",
+    "archived_at",
+    "git_sha",
+    "git_branch",
+    "git_origin_url",
+    "cli_version",
+    "first_user_message",
+    "agent_nickname",
+    "agent_role",
+    "memory_mode",
+    "model",
+    "reasoning_effort",
+    "agent_path",
+    "created_at_ms",
+    "updated_at_ms",
+    "thread_source",
+    "preview",
+    "recency_at",
+    "recency_at_ms",
+    "history_mode",
+    "name",
+    "is_pinned",
+    "thread_section_id",
+    "section_position",
+    "section_entered_at_ms",
+    "project_id",
+    "originator",
+    "daybreak_enabled",
+    "creator_user_id",
+    "creator_account_id"
+  ],
+  "combinations": [
+    {
+      "source": "cli",
+      "originator": null,
+      "thread_source": null,
+      "count": 18
+    },
+    {
+      "source": "cli",
+      "originator": null,
+      "thread_source": "[redacted]",
+      "count": 2
+    },
+    {
+      "source": "exec",
+      "originator": null,
+      "thread_source": null,
+      "count": 1
+    },
+    {
+      "source": "exec",
+      "originator": null,
+      "thread_source": "[redacted]",
+      "count": 2
+    },
+    {
+      "source": "vscode",
+      "originator": null,
+      "thread_source": null,
+      "count": 19
+    },
+    {
+      "source": "vscode",
+      "originator": null,
+      "thread_source": "subagent",
+      "count": 1
+    },
+    {
+      "source": "vscode",
+      "originator": null,
+      "thread_source": "[redacted]",
+      "count": 392
+    },
+    {
+      "source": "vscode",
+      "originator": "Codex Desktop",
+      "thread_source": null,
+      "count": 5
+    },
+    {
+      "source": "vscode",
+      "originator": "Codex Desktop",
+      "thread_source": "[redacted]",
+      "count": 2
+    },
+    {
+      "source": "vscode",
+      "originator": "Codex Desktop",
+      "thread_source": "[redacted]",
+      "count": 103
+    },
+    {
+      "source": "vscode",
+      "originator": "codex-tui",
+      "thread_source": "[redacted]",
+      "count": 3
+    },
+    {
+      "source": "vscode",
+      "originator": "sea-bridge",
+      "thread_source": null,
+      "count": 2
+    }
+  ],
+  "omittedStructuredSubagentSources": true
+}

@@ -309,3 +309,102 @@ test("switching creation source during loading starts the final source catalog r
   expect(calls).toContain("/api/sources/dsh/models");
   expect(ui.element("create-submit").disabled).toBe(false);
 });
+
+test("creation labels keep platform identity and pending provenance transient", async () => {
+  const ui = await fixture();
+  const result = ui.evaluate(`({
+    platform: sourceDisplayName("codex"),
+    desktop: sessionSourceLabel({source:"codex",creationClient:{kind:"desktop"}}),
+    legacy: sessionSourceLabel({source:"codex"}),
+    pending: sessionSourceLabel({source:"codex",creationPending:true}),
+    dsh: sessionSourceLabel({source:"dsh",creationClient:{kind:"desktop"}}),
+    dshExcluded: matchesCreationClient({source:"dsh"}, "unknown"),
+    legacyUnknown: matchesCreationClient({source:"codex"}, "unknown")
+  })`);
+  expect(result).toEqual({ platform: "Codex", desktop: "Codex · Desktop 创建", legacy: "Codex · 创建来源未知",
+    pending: "Codex · 创建来源待同步", dsh: "dsh", dshExcluded: false, legacyUnknown: true });
+});
+
+test("paused session browsing filters cached provenance and clears it on switching to dsh", async () => {
+  const ui = await fixture({}, '\napi = async () => { throw new Error("offline must not fetch"); };\n');
+  const controller = ui.evaluate(`({state, loadSessions, syncCreationFilter})`) as {
+    state: { paused: boolean; sessions: Array<{source:string;id:string;title:string;updatedAt:number;state:string;creationClient?:{kind:string}}> };
+    loadSessions(more: boolean): Promise<void>; syncCreationFilter(): void;
+  };
+  controller.state.paused = true;
+  controller.state.sessions = [
+    { source: "dsh", id: "dsh", title: "dsh", updatedAt: 9, state: "unknown" },
+    { source: "codex", id: "legacy", title: "legacy", updatedAt: 8, state: "unknown" },
+    { source: "codex", id: "desktop", title: "desktop", updatedAt: 7, state: "running", creationClient: {kind:"desktop"} },
+  ];
+  ui.element("creation-client-filter").value = "unknown";
+  await controller.loadSessions(false);
+  expect(controller.state.sessions.map((item) => item.id)).toEqual(["legacy"]);
+  // Previously loaded rows remain available when an offline filter changes.
+  ui.element("source-filter").value = "dsh";
+  controller.syncCreationFilter();
+  expect(ui.element("creation-client-filter").value).toBe("");
+  expect(ui.element("creation-client-filter").hidden).toBe(true);
+  await controller.loadSessions(false);
+  expect(controller.state.sessions.map((item) => item.id)).toEqual(["dsh"]);
+});
+
+test("offline overview browsing includes previously loaded session-cache rows", async () => {
+  const ui = await fixture({}, '\napi = async () => { throw new Error("offline must not fetch"); }; showPage = async () => {};\n');
+  const controller = ui.evaluate(`({state,openOverviewSessions})`) as {
+    state: { paused: boolean; sessionCache: Array<{source:string;id:string;title:string;updatedAt:number;state:string}>; sessions: Array<{source:string;id:string;title:string;updatedAt:number;state:string}>; overviewSessions: unknown[] };
+    openOverviewSessions(source?: string, activity?: string): Promise<void>;
+  };
+  controller.state.paused = true;
+  controller.state.sessionCache = [{ source: "codex", id: "cached", title: "cached", updatedAt: 1, state: "idle" }];
+  controller.state.sessions = [{ source: "codex", id: "current", title: "current", updatedAt: 2, state: "running" }];
+  controller.state.overviewSessions = [];
+  await controller.openOverviewSessions("codex", "");
+  expect(ui.element("session-items").children.map((row) => row.children[0]?.textContent)).toEqual(["current", "cached"]);
+});
+
+test("direct session navigation clears a stale creation-source filter", async () => {
+  const ui = await fixture({}, '\nshowPage = async () => {};\n');
+  const controller = ui.evaluate(`({state,openContinueSession})`) as {
+    state: { paused: boolean; selected: {id:string}|null };
+    openContinueSession(session: {source:string;id:string;title:string;state:string}): Promise<void>;
+  };
+  controller.state.paused = false;
+  ui.element("creation-client-filter").value = "desktop";
+  await controller.openContinueSession({ source: "codex", id: "cli", title: "CLI", state: "idle" });
+  expect(ui.element("creation-client-filter").value).toBe("");
+  expect(controller.state.selected?.id).toBe("cli");
+});
+
+test("online provenance filter discards a stale response after the filter changes", async () => {
+  const response = deferred<{items:unknown[];cursor:null;capabilities:object}>();
+  let requested = "";
+  const ui = await fixture({ read: (path: string) => { requested = path; return response.promise; } }, '\napi = read;\n');
+  const controller = ui.evaluate(`({state,loadSessions})`) as {state:{paused:boolean;sessions:unknown[]};loadSessions(more:boolean):Promise<void>};
+  controller.state.paused = false;
+  ui.element("creation-client-filter").value = "desktop";
+  const load = controller.loadSessions(false);
+  expect(requested).toContain("creationClient=desktop");
+  ui.element("creation-client-filter").value = "cli";
+  response.resolve({items:[{source:"codex",id:"stale"}],cursor:null,capabilities:{}});
+  await load;
+  expect(controller.state.sessions).toEqual([]);
+});
+
+test("newly created provenance syncs from native metadata outside the current list filter", async () => {
+  const paths: string[] = [];
+  const native = {source:"codex",id:"created",title:"native",state:"idle",creationClient:{kind:"sea_bridge",evidence:"originator"}};
+  const ui = await fixture({ read: async (path: string) => {
+    paths.push(path);
+    return {items:path.includes("sessionId=created") ? [native] : [],cursor:null,capabilities:{}};
+  } }, '\napi = read;\n');
+  const controller = ui.evaluate(`({state,loadSessions})`) as {state:{paused:boolean;selected:object};loadSessions(more:boolean):Promise<void>};
+  controller.state.paused = false;
+  controller.state.selected = {source:"codex",id:"created",title:"new",state:"unknown",creationPending:true};
+  ui.element("creation-client-filter").value = "desktop";
+  await controller.loadSessions(false);
+  expect(paths).toHaveLength(2);
+  expect(controller.state.selected).toEqual(native);
+  expect(controller.state.selected).not.toHaveProperty("creationPending");
+  expect(ui.element("session-meta").textContent).toBe("Codex · Sea-Bridge 创建 · 空闲");
+});

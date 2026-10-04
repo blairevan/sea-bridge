@@ -141,3 +141,19 @@ test("selected history provides native runtime state without hooks and updates s
     expect(await source.sessions()).toMatchObject([{ state: "idle" }]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Codex adapter forwards only normalized creation metadata without changing source identity", async () => {
+  const source = new CodexWebSource({
+    threads: { listActive: () => [
+      { id: "desktop", title: "fixture", updatedAtMs: 1, rolloutPath: "/fixture", creationClient: {kind:"desktop",evidence:"originator"} },
+      { id: "legacy", title: "fixture", updatedAtMs: 2, rolloutPath: "/fixture" },
+    ] },
+    appServer: { async listProjects() { return []; }, async listModels() { return []; }, async startThreadAndTurn(): Promise<never> { throw new Error("unused"); } },
+    queue: { async queue(): Promise<never> { throw new Error("unused"); } },
+    sessionRoots: [], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+  const items = await source.sessions();
+  expect(items.find((item) => item.id === "desktop")).toMatchObject({source:"codex",creationClient:{kind:"desktop",evidence:"originator"}});
+  expect(items.find((item) => item.id === "legacy")).not.toHaveProperty("creationClient");
+  expect(source.capabilities().sessionsReadable).toBe(true);
+});

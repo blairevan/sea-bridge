@@ -148,3 +148,46 @@ test("remote password login requires HTTPS and emits Secure host-only cookies", 
     } finally { events.close(); db.close(); }
   }
 });
+
+
+test("creation client filtering excludes dsh, matches legacy unknown, and precedes pagination", async () => {
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+  const auth = new WebAuth(store); const paired = await loginFixture(auth);
+  if (!paired) throw new Error("fixture failed");
+  const caps = { sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true,
+    completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: false, sendEnabled: false, approvalTransport: null } as const;
+  const base = { title: "fixture", projectId: null, state: "unknown", sendEnabled: false } as const;
+  const codex: WebSource = { capabilities: () => caps,
+    sessions: async () => [
+      { ...base, source: "codex", id: "legacy", updatedAt: 5 },
+      { ...base, source: "codex", id: "desktop1", updatedAt: 4, creationClient: { kind: "desktop", evidence: "originator" } },
+      { ...base, source: "codex", id: "desktop2", updatedAt: 3, creationClient: { kind: "desktop", evidence: "originator" } },
+      { ...base, source: "codex", id: "unknown", updatedAt: 2, creationClient: { kind: "unknown", evidence: "none" } },
+    ], projects: async () => [], models: async () => [],
+    history: async () => ({ messages: [], cursor: null, completeUserHistory: false }),
+    create: async () => { throw new Error("unused"); }, send: async () => { throw new Error("unused"); },
+  };
+  const dsh: WebSource = { ...codex, sessions: async () => { throw new Error("dsh unavailable"); } };
+  const handler = createWebHandler({ store, auth, events: new WebEvents(store), sources: { codex, dsh },
+    pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null,
+    telegramStatus: () => ({ stopped: false, lastPollSuccessAt: null, pollFailed: false }) });
+  const read = (query: string) => handler(new Request("http://127.0.0.1:7310/api/sessions?" + query, {
+    headers: { Cookie: `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}` },
+  }), "127.0.0.1");
+  try {
+    const first = (await (await read("creationClient=desktop&limit=1")).json()).data;
+    expect(first.items.map((item: { id: string }) => item.id)).toEqual(["desktop1"]);
+    expect(first.cursor).toBe("1");
+    const second = (await (await read("creationClient=desktop&limit=1&cursor=1")).json()).data;
+    expect(second.items.map((item: { id: string }) => item.id)).toEqual(["desktop2"]);
+    expect(second.cursor).toBeNull();
+    const unknown = (await (await read("creationClient=unknown")).json()).data;
+    expect(unknown.items.map((item: { id: string }) => item.id)).toEqual(["legacy", "unknown"]);
+    expect(unknown.partial).toBe(false);
+    expect((await (await read("source=dsh&creationClient=unknown")).json()).data.items).toEqual([]);
+    expect((await read("source=all&creationClient=desktop")).status).toBe(400);
+    expect((await read("creationClient=vscode")).status).toBe(400);
+    expect((await read("creationClient=pending")).status).toBe(400);
+    expect((await read("creationClient=")).status).toBe(400);
+  } finally { db.close(); }
+});

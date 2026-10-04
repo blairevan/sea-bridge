@@ -70,7 +70,7 @@ export class CodexWebSource implements WebSource {
         const cached = this.nativeActivity.get(thread.id);
         const activity = cached && Date.now() - cached.readAt < 10_000 ? cached.activity : this.deps.activity?.(thread.id) ?? null;
         return {
-          source: "codex" as const, id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
+          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
           state: approval ? "waiting_external_approval" as const
             : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
           ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
