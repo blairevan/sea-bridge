@@ -137,10 +137,31 @@ function userAttachmentEnvelope(text) {
   return { names, body };
 }
 
+/** Hide complete assistant memory citations outside fenced examples without changing source history. */
+function messageDisplayText(message) {
+  if (message.role !== "assistant") return message.text;
+  const output = []; let metadata = null; let fence = null; let removed = false;
+  for (const line of message.text.split("\n")) {
+    if (metadata) {
+      metadata.push(line);
+      if (/^\s*<\/oai-mem-citation>\s*$/.test(line)) { metadata = null; removed = true; }
+      continue;
+    }
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+    } else if (marker) fence = marker[1];
+    else if (/^\s*<oai-mem-citation>\s*$/.test(line)) { metadata = [line]; continue; }
+    output.push(line);
+  }
+  if (metadata) output.push(...metadata);
+  return removed ? output.join("\n").trimEnd() : message.text;
+}
+
 /** Copy the displayed message body, excluding metadata and native attachment paths. */
 function messageCopyText(message) {
   const envelope = message.role === "user" ? userAttachmentEnvelope(message.text) : null;
-  return envelope ? [envelope.body, `附件：${envelope.names.join("、")}`].filter(Boolean).join("\n\n") : message.text;
+  return envelope ? [envelope.body, `附件：${envelope.names.join("、")}`].filter(Boolean).join("\n\n") : messageDisplayText(message);
 }
 
 /** Support clipboard writes on secure pages and selection-based copying on Tailnet HTTP. */
@@ -247,7 +268,7 @@ function cancelNoticeTimer() {
   if (state.noticeState.timer !== null && typeof clearTimeout === "function") clearTimeout(state.noticeState.timer);
   state.noticeState.timer = null;
 }
-/** Clear both authenticated and pairing notices without touching persistent operation state. */
+/** Clear both authenticated and login notices without touching persistent operation state. */
 function clearNotice() {
   cancelNoticeTimer(); state.noticeState.seq++; state.noticeState.expanded = false; state.noticeState.connection = false;
   const bar = el("notice-bar"); if (bar) { bar.hidden = true; bar.className = "notice-bar notice-info"; }
@@ -255,7 +276,7 @@ function clearNotice() {
   const toggle = el("notice-toggle"); if (toggle) { toggle.hidden = true; toggle.textContent = "展开"; }
   const retry = el("notice-retry"); if (retry) { retry.hidden = true; retry.disabled = false; retry.textContent = "立即重试"; }
   const close = el("notice-close"); if (close) close.hidden = false;
-  const pairing = el("pairing-notice"); if (pairing) pairing.textContent = "";
+  const login = el("login-notice"); if (login) login.textContent = "";
 }
 /** Start a fresh full-duration timer after rendering or collapsing a transient notice. */
 function scheduleNoticeHide(durationMs) {
@@ -278,12 +299,12 @@ function refreshNoticeLayout(seq, explicitDuration) {
   state.noticeState.durationMs = duration;
   scheduleNoticeHide(duration);
 }
-/** Show an inline authenticated notice, or an inline pairing status before login. */
+/** Show an inline authenticated notice, or an inline login status before login. */
 function notice(text, options = {}) {
   if (!text) { clearNotice(); return; }
   if (state.noticeState.connection) return;
-  if (el("console").hidden) { el("pairing-notice").textContent = text; return; }
-  el("pairing-notice").textContent = "";
+  if (el("console").hidden) { el("login-notice").textContent = text; return; }
+  el("login-notice").textContent = "";
   cancelNoticeTimer();
   const seq = ++state.noticeState.seq;
   state.noticeState.sticky = Boolean(options.sticky); state.noticeState.expanded = false; state.noticeState.connection = false;
@@ -323,7 +344,7 @@ function showConnectionNotice(detail = "服务暂不可达，已保留页面数�
     const retry = el("catalog-retry"); retry.hidden = false; retry.disabled = state.recovering;
   }
   if (el("console").hidden) {
-    el("pairing-notice").textContent = text;
+    el("login-notice").textContent = text;
     return;
   }
   cancelNoticeTimer();
@@ -414,9 +435,9 @@ async function requestApi(path, method = "GET", body) {
     }
     clearSensitive(); state.version = version;
   }
-  if (response.status === 401 && path !== "/api/auth/pair") { showPairing(); throw clientError("auth_required", "设备登录已失效，请重新配对"); }
+  if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ pair_failed: "配对未成功，检查配对码或稍后重试", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -443,8 +464,8 @@ async function run(key, work) {
     else if (!["auth_required", "auth_changed", "settings_stale", "connection_unverified"].includes(error?.code)) notice(error?.message || "操作失败", { sticky: true, kind: "error" });
   } finally { state.busy.delete(busyKey); }
 }
-/** Stop retry machinery and return to the explicit pairing boundary. */
-function showPairing() {
+/** Stop retry machinery and return to the explicit login boundary. */
+function showLogin() {
   clearOverviewCache();
   state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.selected = null;
   state.recoverySeq++; state.version = 0; state.device = null; state.settings = null; state.caps = {};
@@ -452,7 +473,7 @@ function showPairing() {
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
   state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
   if (el("auth-loading")) el("auth-loading").hidden = true;
-  el("console").hidden = true; el("pairing").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
+  el("console").hidden = true; el("login").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
 }
 let loginStage = "page";
 let loginStageStartedAt = Date.now();
@@ -471,7 +492,7 @@ function setLoginStage(stage, text, detail, failed = false) {
 function showLoginFailure(error) {
   const phase = loginStage === "settings" ? "显示设置" : "设备登录";
   const timeout = error?.code === "network_timeout";
-  setLoginStage(loginStage, timeout ? `${phase}请求超时` : `暂时无法确认${phase}`, timeout ? "服务未在8秒内返回。可立即重试；手机远程访问请确认 Tailscale 已连接。" : "服务连接或响应异常。保留现有登录信息，恢复后会重新验证。", true);
+  setLoginStage(loginStage, timeout ? `${phase}请求超时` : `暂时无法确认${phase}`, timeout ? "服务未在8秒内返回。可立即重试；远程访问请确认 HTTPS 域名和 Tunnel 可达。" : "服务连接或响应异常。保留现有登录信息，恢复后会重新验证。", true);
 }
 /** Count elapsed time for the visible startup request without inventing percentage progress. */
 function updateLoginElapsed() {
@@ -492,7 +513,7 @@ async function validateConnection() {
   state.device = session.device; state.settings = settings;
   state.version = Math.max(state.version, session.settings?.version ?? 0, settings.version ?? 0);
   if (el("auth-loading")) el("auth-loading").hidden = true;
-  el("pairing").hidden = true; el("console").hidden = false;
+  el("login").hidden = true; el("console").hidden = false;
   if (!state.overviewSessions.length) restoreOverviewCache();
 }
 /** Schedule bounded exponential recovery attempts without replaying writes. */
@@ -556,7 +577,7 @@ async function bootstrap() {
   await validateConnection();
   if (!state.stream) connectEvents();
 }
-/** Keep the pairing form hidden until the server explicitly rejects the existing login cookie. */
+/** Keep the login form hidden until the server explicitly rejects the existing login cookie. */
 async function checkInitialLogin() {
   const gate = el("auth-loading"); const retry = el("auth-loading-retry");
   if (retry) retry.hidden = true;
@@ -593,7 +614,7 @@ function connectEvents() {
     run("reconnect-" + streamSeq, () => finishRecovery(stream));
   };
   stream.onerror = () => { if (state.stream === stream) enterDisconnected(); };
-  stream.addEventListener("session_revoked", () => { if (state.stream !== stream) return; showPairing(); notice("设备已被撤销，请重新配对"); });
+  stream.addEventListener("session_revoked", () => { if (state.stream !== stream) return; showLogin(); notice("设备已被撤销，请重新登录"); });
   stream.addEventListener("settings_version", (event) => {
     if (state.stream !== stream) return;
     const version = JSON.parse(event.data).version;
@@ -899,7 +920,7 @@ async function loadHistory(older) {
         const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · ${formatTurnDuration(message.durationMs)}` : "";
         const meta = node("div", "", "message-meta");
         meta.append(node("small", `${message.role === "user" ? "用户" : "助手"} · ${time}${duration}`), messageCopyButton(message));
-        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderMarkdown(message.text));
+        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderMarkdown(messageDisplayText(message)));
         view = { signature, item }; messageViews.set(key, view);
       }
       items.push(view.item);
@@ -1030,9 +1051,9 @@ async function loadSettings() {
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   el("device-items").replaceChildren();
   for (const device of devices.items) {
-    const row = node("div", "", "device-row"); row.append(node("span", `${device.name}${device.id === devices.currentDeviceId ? "（当前设备）" : ""}\n配对：${new Date(device.pairedAt).toLocaleString()} · 活跃：${new Date(device.lastActiveAt).toLocaleString()}`));
+    const row = node("div", "", "device-row"); row.append(node("span", `${device.name}${device.id === devices.currentDeviceId ? "（当前设备）" : ""}\n登录：${new Date(device.pairedAt).toLocaleString()} · 活跃：${new Date(device.lastActiveAt).toLocaleString()}`));
     const button = node("button", device.revokedAt ? "已撤销" : "撤销", "quiet"); button.disabled = state.paused || Boolean(device.revokedAt); button.dataset.revoked = String(Boolean(device.revokedAt));
-    button.onclick = () => run("revoke", async () => { await api("/api/devices/" + device.id, "DELETE"); if (device.id === devices.currentDeviceId) showPairing(); else await loadSettings(); }); row.append(button); el("device-items").append(row);
+    button.onclick = () => run("revoke", async () => { await api("/api/devices/" + device.id, "DELETE"); if (device.id === devices.currentDeviceId) showLogin(); else await loadSettings(); }); row.append(button); el("device-items").append(row);
   }
 }
 /** Discover source-specific catalogs without storing a global default model. */
@@ -1221,9 +1242,9 @@ function formatTurnDuration(milliseconds) {
 
 /** Revoke the login only after the user confirms the logout action. */
 async function confirmLogout() {
-  if (!confirm("确认退出登录？再次访问需要重新配对。")) return;
+  if (!confirm("确认退出登录？再次访问需要重新登录。")) return;
   await api("/api/auth/logout", "POST");
-  showPairing();
+  showLogin();
 }
 
 document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
@@ -1245,18 +1266,21 @@ window.visualViewport?.addEventListener("scroll", syncViewport);
 window.addEventListener("resize", syncViewport);
 syncViewport();
 
-/** Validate explicitly so mobile native form validation cannot silently block pairing. */
-async function pairDevice() {
-  const code = el("pair-code").value.trim();
-  if (!/^[0-9]{8}$/.test(code)) { notice("请输入 8 位数字配对码"); return; }
-  notice("正在配对…"); el("pair-submit").disabled = true;
+/** Validate explicitly while preserving password whitespace and mobile autofill. */
+async function loginDevice() {
+  if (location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+    el("login-password").value = ""; notice("请使用 HTTPS 地址登录"); return;
+  }
+  const username = el("login-username").value.trim();
+  const password = el("login-password").value;
+  if (!username || !password) { notice("请输入账号和密码"); return; }
+  notice("正在登录…"); el("login-submit").disabled = true;
   try {
-    await api("/api/auth/pair", "POST", { code, name: el("device-name").value || null });
-    notice("配对已接受，正在确认登录…"); el("pair-code").value = ""; await bootstrap();
-  } finally { el("pair-submit").disabled = false; }
+    await api("/api/auth/login", "POST", { username, password, name: el("device-name").value || null });
+    notice("正在确认登录…"); await bootstrap();
+  } finally { el("login-password").value = ""; el("login-submit").disabled = false; }
 }
-el("pair-submit").onclick = () => run("pair", pairDevice);
-el("pair-form").onsubmit = (event) => { event.preventDefault(); run("pair", pairDevice); };
+el("login-form").onsubmit = (event) => { event.preventDefault(); run("login", loginDevice); };
 el("logout").onclick = () => run("logout", confirmLogout);
 el("overview-all-sessions").onclick = () => run("overview-action", () => openOverviewSessions());
 el("overview-total").onclick = () => run("overview-action", () => openOverviewSessions());

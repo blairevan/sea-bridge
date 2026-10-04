@@ -7,6 +7,14 @@ import type { WebHistory, WebMessage } from "./sources/types.ts";
 const READ_WINDOW_BYTES = 256 * 1024;
 const MAX_LATEST_SCAN_BYTES = 16 * 1024 * 1024;
 
+/** Remove complete leading runtime envelopes, preserving questions and quoted examples. */
+function userMessageText(text: string): string {
+  let visible = text;
+  const envelope = /^\s*<environment_context>[\s\S]*?<\/environment_context>\s*/;
+  while (envelope.test(visible)) visible = visible.replace(envelope, "");
+  return visible;
+}
+
 /** Parse only fixture-backed response-item user and final-answer records. */
 function visibleMessage(line: string, offset: number): WebMessage | null {
   let record: unknown;
@@ -19,11 +27,12 @@ function visibleMessage(line: string, offset: number): WebMessage | null {
   const role = payload.role;
   if (role !== "user" && !(role === "assistant" && payload.phase === "final_answer")) return null;
   const kind = role === "user" ? "input_text" : "output_text";
-  const text = payload.content.flatMap((part: unknown) => {
+  const rawText = payload.content.flatMap((part: unknown) => {
     if (!part || typeof part !== "object") return [];
     const item = part as Record<string, unknown>;
     return item.type === kind && typeof item.text === "string" ? [item.text] : [];
   }).join("");
+  const text = role === "user" ? userMessageText(rawText) : rawText;
   const parsedTime = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
   return text ? { id: `rollout-${offset}`, role, text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null } : null;
 }

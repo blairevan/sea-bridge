@@ -3,14 +3,14 @@ import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { WebAuth } from "./auth.ts";
 
-/** Local-only pairing endpoint with ownership-aware socket cleanup. */
+/** Local-only administrator provisioning with ownership-aware socket cleanup. */
 export class WebControlServer {
   private server: Server | null = null;
   private inode: number | null = null;
   private readonly sockets = new Set<Socket>();
 
   /** The socket path is operator configuration, never browser input. */
-  constructor(private readonly path: string, private readonly auth: WebAuth) {}
+  constructor(private readonly path: string, private readonly auth: WebAuth, private readonly accountChanged: () => void = () => {}) {}
 
   /** Bind a private socket, removing only a proven stale owner-private socket. */
   async start(): Promise<void> {
@@ -39,10 +39,16 @@ export class WebControlServer {
         try {
           const parsed: unknown = JSON.parse(text.trim());
           if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
-              Object.keys(parsed).length !== 1 || (parsed as Record<string, unknown>).op !== "pair.create") {
+              Object.keys(parsed).sort().join(",") !== "op,passwordHash,username") {
             socket.end('{"error":"invalid_request"}\n'); return;
           }
-          socket.end(JSON.stringify(this.auth.createPairCode()) + "\n");
+          const row = parsed as Record<string, unknown>;
+          if (row.op !== "account.set" || typeof row.username !== "string" || typeof row.passwordHash !== "string") {
+            socket.end('{"error":"invalid_request"}\n'); return;
+          }
+          this.auth.setAccount(row.username, row.passwordHash);
+          this.accountChanged();
+          socket.end('{"updated":true}\n');
         } catch { socket.end('{"error":"invalid_request"}\n'); }
       });
     });

@@ -37,7 +37,7 @@ export class WebRuntime implements WebService {
     const sources = this.options.sourceFactory(store);
     const handler = createWebHandler({ store, auth, events: this.events, redaction, pepper, sources, port: config.port,
       remoteOrigin: config.remoteOrigin, telegramStatus: this.options.telegramStatus });
-    this.control = new WebControlServer(config.controlSocketPath, auth); await this.control.start();
+    this.control = new WebControlServer(config.controlSocketPath, auth, () => this.events?.revokeAll()); await this.control.start();
     this.server = new WebServer({ config, handler, staticRoot: this.options.staticRoot ?? await resolveWebStaticRoot() }); await this.server.start();
     this.cleanup = setInterval(() => { try { store.cleanup(Date.now()); } catch { /* Retention failure cannot stop the existing bridge. */ } }, 60000);
     this.cleanup.unref();

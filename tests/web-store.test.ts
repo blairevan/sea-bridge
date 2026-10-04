@@ -9,6 +9,19 @@ import { WebStore } from "../src/web/store.ts";
 import { operationDigest, loadOperationPepper, tokenHash } from "../src/web/crypto.ts";
 
 describe("Web isolated persistence", () => {
+  test("password migration revokes old pairing sessions exactly once", () => {
+    const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+    try {
+      db.exec("DROP TABLE web_admin_account; DELETE FROM web_schema_migrations WHERE version=2");
+      store.createDevice({ id: "old", name: "old", sessionHash: tokenHash("old-token"), csrfHash: tokenHash("old-csrf"), pairedAt: 1, expiresAt: Date.now() + 86400000 });
+      migrateWeb(db);
+      expect(store.findDevice(tokenHash("old-token"), Date.now())).toBeNull();
+      expect(store.getDevice("old")?.revokedAt).not.toBeNull();
+      store.createDevice({ id: "new", name: "new", sessionHash: tokenHash("new-token"), csrfHash: tokenHash("new-csrf"), pairedAt: 2, expiresAt: Date.now() + 86400000 });
+      migrateWeb(db);
+      expect(store.findDevice(tokenHash("new-token"), Date.now())?.id).toBe("new");
+    } finally { db.close(); }
+  });
   test("accepted prompt snapshots retain the latest bounded window in display order", () => {
     const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
     try {
@@ -40,7 +53,7 @@ describe("Web isolated persistence", () => {
       expect(db.query("SELECT thread_id FROM desktop_message_links").get()).toEqual({ thread_id: "thread" });
       expect(db.query("SELECT cursor FROM dsh_observer_state").get()).toEqual({ cursor: 1 });
       expect(new WebStore(db).getSettings()).toEqual({ redactionEnabled: true, version: 1 });
-      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 1 });
+      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 2 });
       db.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

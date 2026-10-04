@@ -26,7 +26,7 @@ test("empty proxy responses surface a generic service-unavailable state", async 
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ api })", {
     document: { cookie: "" }, fetch: async () => new Response("", { status: 503 }), URLSearchParams,
   }) as { api: (path: string, method: string, body: unknown) => Promise<unknown> };
-  await expect(harness.api("/api/auth/pair", "POST", { code: "fixture" })).rejects.toThrow("服务暂不可达");
+  await expect(harness.api("/api/auth/login", "POST", { code: "fixture" })).rejects.toThrow("服务暂不可达");
 });
 
 test("request timeout is bounded and does not diagnose a specific tunnel or plugin", async () => {
@@ -111,18 +111,25 @@ refresh = async () => { calls.refresh++; };
   expect(harness.state.paused).toBe(false);
 });
 
-test("mobile pairing explicitly validates digits and always releases its button", async () => {
+test("mobile login validates fields, preserves password whitespace and releases its button", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
-  const start = script.indexOf("async function pairDevice()");
-  const end = script.indexOf('\nel("pair-submit").onclick', start);
-  if (start < 0 || end < 0) throw new Error("pair handler missing");
-  const nodes: Record<string, { value: string; disabled: boolean }> = { "pair-code": { value: "bad", disabled: false }, "pair-submit": { value: "", disabled: false }, "device-name": { value: "", disabled: false } };
+  const start = script.indexOf("async function loginDevice()");
+  const end = script.indexOf('\nel("login-form").onsubmit', start);
+  if (start < 0 || end < 0) throw new Error("login handler missing");
+  const nodes: Record<string, { value: string; disabled: boolean }> = { "login-username": { value: "", disabled: false }, "login-password": { value: "", disabled: false }, "login-submit": { value: "", disabled: false }, "device-name": { value: "", disabled: false } };
   let calls = 0; const notices: string[] = [];
-  const pair = runInNewContext(script.slice(start, end) + "\npairDevice", { el: (id: string) => nodes[id], notice: (text: string) => notices.push(text), api: async () => { calls++; throw new Error("fixture transport failure"); } }) as () => Promise<void>;
-  await pair(); expect(calls).toBe(0); expect(notices).toContain("请输入 8 位数字配对码");
-  nodes["pair-code"]!.value = " 12345678 ";
-  await expect(pair()).rejects.toThrow("fixture transport failure");
-  expect(calls).toBe(1); expect(notices).toContain("正在配对…"); expect(nodes["pair-submit"]!.disabled).toBe(false);
+  const location = { protocol: "http:", hostname: "127.0.0.1" };
+  const login = runInNewContext(script.slice(start, end) + "\nloginDevice", { location, el: (id: string) => nodes[id], notice: (text: string) => notices.push(text), api: async (_path: string, _method: string, body: { username: string; password: string }) => {
+    calls++; expect(body.username).toBe("fixture-admin"); expect(body.password).toBe(" fixture-password "); throw new Error("fixture transport failure");
+  } }) as () => Promise<void>;
+  await login(); expect(calls).toBe(0); expect(notices).toContain("请输入账号和密码");
+  nodes["login-username"]!.value = " fixture-admin "; nodes["login-password"]!.value = " fixture-password ";
+  await expect(login()).rejects.toThrow("fixture transport failure");
+  expect(calls).toBe(1); expect(notices).toContain("正在登录…"); expect(nodes["login-submit"]!.disabled).toBe(false);
+  expect(nodes["login-password"]!.value).toBe("");
+  location.hostname = "100.100.100.100"; nodes["login-password"]!.value = "fixture-password";
+  await login(); expect(calls).toBe(1); expect(notices).toContain("请使用 HTTPS 地址登录");
+  expect(nodes["login-password"]!.value).toBe("");
 });
 
 test("request timeout remains active while reading the response body", async () => {

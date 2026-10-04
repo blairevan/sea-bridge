@@ -1,3 +1,4 @@
+import { LOGIN_FIXTURE, LOGIN_HASH } from "./helpers/web-login.ts";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, symlinkSync } from "node:fs";
@@ -8,6 +9,7 @@ import { migrateWeb } from "../src/web/migrations.ts";
 import { WebStore } from "../src/web/store.ts";
 import { WebAuth } from "../src/web/auth.ts";
 import { WebControlServer } from "../src/web/control-server.ts";
+import { WebEvents } from "../src/web/events.ts";
 
 /** Send a single local control request and collect its bounded response. */
 function request(path: string, text: string): Promise<string> {
@@ -36,7 +38,26 @@ test("control shutdown closes an unfinished client without waiting for idle time
   } finally { await server.stop(); db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("private control socket allows only bounded pair.create and rejects live collisions", async () => {
+test("local credential reset immediately revokes active event streams and rejects malformed hashes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-control-reset-"));
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+  const auth = new WebAuth(store); const events = new WebEvents(store);
+  const path = join(root, "control.sock"); const server = new WebControlServer(path, auth, () => events.revokeAll());
+  try {
+    await server.start(); auth.setAccount(LOGIN_FIXTURE.username, LOGIN_HASH);
+    const session = await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "local", "fixture");
+    if (!session) throw new Error("fixture login failed");
+    const reader = events.open(session.device.id, new AbortController().signal).getReader(); await reader.read();
+    const invalid = await request(path, JSON.stringify({ op: "account.set", username: LOGIN_FIXTURE.username, passwordHash: "plaintext" }));
+    expect(invalid).toContain("invalid_request"); expect(auth.authenticate(session.sessionToken)).not.toBeNull();
+    const result = await request(path, JSON.stringify({ op: "account.set", username: LOGIN_FIXTURE.username, passwordHash: LOGIN_HASH }));
+    expect(JSON.parse(result).updated).toBe(true); expect(auth.authenticate(session.sessionToken)).toBeNull();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("session_revoked");
+    expect((await reader.read()).done).toBe(true);
+  } finally { await server.stop(); events.close(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("private control socket allows only bounded account.set and rejects live collisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-control-"));
   const db = new Database(":memory:"); migrateWeb(db);
   const path = join(root, "private", "control.sock");
@@ -45,8 +66,11 @@ test("private control socket allows only bounded pair.create and rejects live co
     await server.start();
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(join(root, "private")).mode & 0o777).toBe(0o700);
-    const result = JSON.parse(await request(path, '{"op":"pair.create"}\n')) as { code: string };
-    expect(result.code).toMatch(/^\d{8}$/);
+    const command = JSON.stringify({ op: "account.set", username: LOGIN_FIXTURE.username, passwordHash: LOGIN_HASH });
+    const result = JSON.parse(await request(path, command)) as { updated: boolean };
+    expect(result.updated).toBe(true);
+    expect(await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "local", "fixture")).not.toBeNull();
+    expect(await request(path, '{"op":"pair.create"}')).toContain("invalid_request");
     expect(await request(path, '{"op":"unknown"}\n')).not.toContain("code");
     expect(await request(path, '{"op":"pair.create"}\n{"op":"pair.create"}\n')).not.toContain("code");
     expect(await request(path, "x".repeat(2048))).not.toContain("code");
@@ -71,6 +95,6 @@ test("control startup rejects ordinary files and safely recovers a private stale
     const child = Bun.spawnSync(["python3", "-c", "import socket,os,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); os.chmod(sys.argv[1],0o600)", path]);
     expect(child.exitCode).toBe(0);
     await server.start();
-    expect(JSON.parse(await request(path, '{"op":"pair.create"}\n')).code).toMatch(/^\d{8}$/);
+    expect(JSON.parse(await request(path, JSON.stringify({ op: "account.set", username: LOGIN_FIXTURE.username, passwordHash: LOGIN_HASH }))).updated).toBe(true);
   } finally { await server.stop(); db.close(); rmSync(root, { recursive: true, force: true }); }
 });

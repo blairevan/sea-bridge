@@ -33,6 +33,15 @@ export function migrateWeb(db: Database, beforeCommit?: () => void): void {
       CREATE INDEX IF NOT EXISTS web_logs_time ON web_logs(created_at);
       INSERT OR IGNORE INTO web_schema_migrations VALUES(1);
     `);
+    if (!db.query("SELECT version FROM web_schema_migrations WHERE version=2").get()) {
+      db.exec(`
+        CREATE TABLE web_admin_account(
+          id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL,
+          password_hash TEXT NOT NULL, revision INTEGER NOT NULL);
+        UPDATE web_device_sessions SET revoked_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE revoked_at IS NULL;
+        INSERT INTO web_schema_migrations VALUES(2);
+      `);
+    }
     beforeCommit?.();
   })();
 }

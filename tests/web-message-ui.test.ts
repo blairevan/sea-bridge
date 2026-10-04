@@ -56,6 +56,33 @@ class ElementFixture {
 /** Flatten the fixture tree for structural security and formatting assertions. */
 function flatten(root: ElementFixture): ElementFixture[] { return [root, ...root.children.flatMap(flatten)]; }
 
+test("assistant memory citations disappear from display and copy while examples and raw history remain", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const ui = runInNewContext(script.slice(0, end) + "\n({ messageDisplayText, messageCopyText, renderMarkdown })", {
+    document: {
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode(text: string) { const element = new ElementFixture("#text"); element.textContent = text; return element; },
+    },
+  }) as { messageDisplayText(message: { role: string; text: string }): string; messageCopyText(message: { role: string; text: string }): string; renderMarkdown(text: string): ElementFixture };
+  const citation = "<oai-mem-citation>\n<citation_entries>\nMEMORY.md:1-2|note=[fixture]\n</citation_entries>\n<rollout_ids>\nfixture-id\n</rollout_ids>\n</oai-mem-citation>";
+  const text = "# 已配置\n\n正文 **保留**\n\n" + citation;
+  const message = { role: "assistant", text };
+  expect(ui.messageDisplayText(message)).toBe("# 已配置\n\n正文 **保留**");
+  expect(ui.messageCopyText(message)).toBe(ui.messageDisplayText(message));
+  expect(flatten(ui.renderMarkdown(ui.messageDisplayText(message))).map((node) => node.textContent).join(" ")).not.toContain("MEMORY.md");
+  expect(message.text).toBe(text);
+  expect(ui.messageDisplayText({ role: "user", text })).toBe(text);
+  for (const fence of ["```xml", "~~~xml"]) {
+    const example = fence + "\n" + citation + "\n" + fence.slice(0, 3);
+    expect(ui.messageDisplayText({ role: "assistant", text: example })).toBe(example);
+    expect(ui.messageCopyText({ role: "assistant", text: example })).toBe(example);
+  }
+  const incomplete = "正文\n<oai-mem-citation>\n不完整引用";
+  expect(ui.messageDisplayText({ role: "assistant", text: incomplete })).toBe(incomplete);
+  expect(ui.messageDisplayText({ role: "assistant", text: "before\n" + citation + "\nafter\n" + citation })).toBe("before\nafter");
+});
+
 test("queued bubbles refresh by identity, preserve queue order and disappear when consumed", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -651,7 +678,7 @@ test("logout cancellation preserves pairing and confirmation revokes exactly onc
   const logout = runInNewContext(script.slice(start, end) + "\nconfirmLogout", {
     confirm: () => accepted,
     api: async (path: string, method: string) => { expect(path).toBe("/api/auth/logout"); expect(method).toBe("POST"); writes++; },
-    showPairing: () => { resets++; },
+    showLogin: () => { resets++; },
   });
   await logout(); expect(writes).toBe(0); expect(resets).toBe(0);
   accepted = true; await logout(); expect(writes).toBe(1); expect(resets).toBe(1);
@@ -875,6 +902,7 @@ test("startup reports login versus settings requests and names the timed-out sta
   release({ device: { id: "test" }, settings: { version: 0 } }); await expect(checking).rejects.toThrow("timeout");
   expect(get("auth-step-session").className).toBe("complete"); expect(get("auth-step-settings").className).toBe("active");
   ui.showLoginFailure({ code: "network_timeout" }); expect(get("auth-loading-text").textContent).toBe("显示设置请求超时");
+  expect(get("auth-loading-detail").textContent).toContain("HTTPS 域名和 Tunnel"); expect(get("auth-loading-detail").textContent).not.toContain("Tailscale");
   expect(get("auth-loading-spinner").hidden).toBe(true); expect(get("auth-loading-retry").hidden).toBe(false);
   expect(get("auth-loading").hidden).toBe(false); expect(get("auth-step-settings").className).toBe("failed");
 });

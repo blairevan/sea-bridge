@@ -3,8 +3,9 @@ import { Database } from "bun:sqlite";
 import { migrateWeb } from "../src/web/migrations.ts";
 import { WebStore } from "../src/web/store.ts";
 import { WebAuth, classifyRequest } from "../src/web/auth.ts";
+import { LOGIN_FIXTURE, LOGIN_HASH, loginFixture } from "./helpers/web-login.ts";
 
-/** Build isolated auth with an injectable clock and no real credentials. */
+/** Isolate persisted credentials and inject time for rate and expiry checks. */
 function setup() {
   const db = new Database(":memory:"); migrateWeb(db);
   let now = 1000;
@@ -12,69 +13,67 @@ function setup() {
   return { db, store, auth: new WebAuth(store, () => now), advance: (ms: number) => { now += ms; } };
 }
 
-describe("Web pairing", () => {
-  test("eight-digit code is memory-only, one-time, expiring, and restart-invalidated", () => {
+describe("Web password login", () => {
+  test("fails closed without an account; salted hashes survive restart and sessions expire", async () => {
     const { db, store, auth, advance } = setup();
     try {
-      const first = auth.createPairCode(); expect(first.code).toMatch(/^\d{8}$/);
-      expect(first.expiresAt).toBe(301000);
-      expect(JSON.stringify(db.query("SELECT name FROM sqlite_master").all())).not.toContain("pair_code");
-      const second = auth.createPairCode();
-      if (first.code !== second.code) expect(auth.pair(first.code, "local", "test")).toBeNull();
-      const paired = auth.pair(second.code, "local", "test"); expect(paired).not.toBeNull();
-      expect(auth.pair(second.code, "local", "test")).toBeNull();
-      expect(JSON.stringify(db.query("SELECT * FROM web_device_sessions").all())).not.toContain(paired?.sessionToken ?? "unexpected");
-      expect(auth.authenticate(paired?.sessionToken ?? "")?.name).toBe("test");
-      expect(auth.verifyCsrf(paired?.device.id ?? "", paired?.csrfToken ?? "", paired?.csrfToken ?? "")).toBe(true);
-      expect(auth.verifyCsrf(paired?.device.id ?? "", paired?.csrfToken ?? "", "wrong")).toBe(false);
-      const third = auth.createPairCode(); advance(300000);
-      expect(auth.pair(third.code, "local", "test")).toBeNull();
-      const fourth = auth.createPairCode();
-      expect(new WebAuth(store).pair(fourth.code, "local", "test")).toBeNull();
+      expect(await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "local", "test")).toBeNull();
+      const session = await loginFixture(auth, "test");
+      expect(auth.authenticate(session.sessionToken)?.name).toBe("test");
+      expect(JSON.stringify(db.query("SELECT * FROM web_admin_account").all())).not.toContain(LOGIN_FIXTURE.password);
+      expect(JSON.stringify(db.query("SELECT * FROM web_device_sessions").all())).not.toContain(session.sessionToken);
+      expect(await new WebAuth(store).login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "local", "restart")).not.toBeNull();
+      expect(auth.verifyCsrf(session.device.id, session.csrfToken, session.csrfToken)).toBe(true);
+      expect(auth.verifyCsrf(session.device.id, session.csrfToken, "wrong")).toBe(false);
       advance(30 * 86400000);
-      expect(auth.authenticate(paired?.sessionToken ?? "")).toBeNull();
+      expect(auth.authenticate(session.sessionToken)).toBeNull();
     } finally { db.close(); }
   });
 
-  test("limits per bucket and invalidates after ten wrong guesses", () => {
+  test("caps attempts per source and globally, including concurrent attempts", async () => {
     const { db, auth, advance } = setup();
+    auth.setAccount(LOGIN_FIXTURE.username, LOGIN_HASH);
     try {
-      const pair = auth.createPairCode();
-      const wrong = pair.code === "00000000" ? "11111111" : "00000000";
-      for (let i = 0; i < 5; i++) expect(auth.pair(wrong, "same", "test")).toBeNull();
-      expect(auth.pair(pair.code, "same", "test")).toBeNull();
+      for (let i = 0; i < 5; i++) expect(await auth.login("unknown", LOGIN_FIXTURE.password, "same", "test")).toBeNull();
+      expect(await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "same", "test")).toBeNull();
       advance(60001);
-      for (let i = 0; i < 5; i++) expect(auth.pair(wrong, "other", "test")).toBeNull();
-      expect(auth.pair(pair.code, "new", "test")).toBeNull();
+      for (let i = 0; i < 30; i++) expect(await auth.login(LOGIN_FIXTURE.username, "wrong", "bucket" + i, "test")).toBeNull();
+      expect(await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "fresh", "test")).toBeNull();
+      advance(60001);
+      const sessions = await Promise.all(Array.from({ length: 8 }, (_, i) => auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "parallel" + i, "test")));
+      expect(sessions.filter(Boolean).length).toBeLessThanOrEqual(2);
+      expect(sessions.some(Boolean)).toBe(true);
     } finally { db.close(); }
   });
 
-  test("global failure ceiling survives fresh code generation until its window expires", () => {
-    const { db, auth, advance } = setup();
+  test("reset revokes all sessions and refuses an in-flight old credential verification", async () => {
+    const { db, auth } = setup();
     try {
-      for (let i = 0; i < 30; i++) {
-        const code = auth.createPairCode().code;
-        const wrong = code === "00000000" ? "11111111" : "00000000";
-        expect(auth.pair(wrong, "bucket" + i, "test")).toBeNull();
-      }
-      const code = auth.createPairCode().code;
-      expect(auth.pair(code, "fresh", "test")).toBeNull();
-      advance(60001);
-      expect(auth.pair(code, "fresh", "test")).not.toBeNull();
+      const session = await loginFixture(auth);
+      const pending = auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "other", "test");
+      auth.setAccount("changed-admin", LOGIN_HASH);
+      expect(await pending).toBeNull();
+      expect(auth.authenticate(session.sessionToken)).toBeNull();
+      expect(auth.verifyCsrf(session.device.id, session.csrfToken, session.csrfToken)).toBe(false);
+      expect(await auth.login(LOGIN_FIXTURE.username, LOGIN_FIXTURE.password, "other", "test")).toBeNull();
+      expect(await auth.login("changed-admin", LOGIN_FIXTURE.password, "other", "test")).not.toBeNull();
+      const passwordHash = await Bun.password.hash("changed-fixture-password", { algorithm: "argon2id", memoryCost: 19456, timeCost: 2 });
+      auth.setAccount("changed-admin", passwordHash);
+      expect(await auth.login("changed-admin", LOGIN_FIXTURE.password, "reset", "test")).toBeNull();
+      expect(await auth.login("changed-admin", "changed-fixture-password", "reset", "test")).not.toBeNull();
+      expect(() => auth.setAccount("changed-admin", "plaintext")).toThrow();
     } finally { db.close(); }
   });
 
-  test("revocation blocks session and CSRF immediately", () => {
+  test("device revocation blocks auth and cookies remain host-only", async () => {
     const { db, store, auth } = setup();
     try {
-      const paired = auth.pair(auth.createPairCode().code, "local", "test");
-      if (!paired) throw new Error("fixture pairing failed");
-      store.revokeDevice(paired.device.id, 1001);
-      expect(auth.authenticate(paired.sessionToken)).toBeNull();
-      expect(auth.verifyCsrf(paired.device.id, paired.csrfToken, paired.csrfToken)).toBe(false);
-      expect(auth.cookies(paired, true).every((cookie) => cookie.includes("Secure"))).toBe(true);
-      expect(auth.cookies(paired, false)[0]).toContain("HttpOnly; SameSite=Strict");
-      expect(auth.cookies(paired, false)[0]).not.toContain("Domain=");
+      const session = await loginFixture(auth);
+      store.revokeDevice(session.device.id, 1001);
+      expect(auth.authenticate(session.sessionToken)).toBeNull();
+      expect(auth.cookies(session, true).every((cookie) => cookie.includes("Secure"))).toBe(true);
+      expect(auth.cookies(session, false)[0]).toContain("HttpOnly; SameSite=Strict");
+      expect(auth.cookies(session, false)[0]).not.toContain("Domain=");
     } finally { db.close(); }
   });
 });
@@ -85,9 +84,9 @@ describe("request trust", () => {
     expect(classifyRequest(new Request("http://127.0.0.1:7310/", { headers: { Origin: "http://127.0.0.1:7310" } }), options, true)?.remote).toBe(false);
     const alice = classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test", "Tailscale-User-Login": "alice@example.test" } }), options, true);
     const bob = classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test", "Tailscale-User-Login": "bob@example.test" } }), options, true);
-    expect(alice?.remote).toBe(true); expect(alice?.bucket).toMatch(/^serve:[0-9a-f]{24}$/);
-    expect(bob?.bucket).toMatch(/^serve:[0-9a-f]{24}$/); expect(bob?.bucket).not.toBe(alice?.bucket);
-    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test" } }), options, true)?.bucket).toBe("serve:anonymous");
+    expect(alice?.remote).toBe(true); expect(alice?.bucket).toBe("remote");
+    expect(bob?.bucket).toBe("remote"); expect(bob?.bucket).toBe(alice?.bucket);
+    expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://machine.example.test" } }), options, true)?.bucket).toBe("remote");
     expect(classifyRequest(new Request("https://machine.example.test/", { headers: { Origin: "https://evil.test", "X-Forwarded-Host": "machine.example.test", "Tailscale-User-Login": "alice@example.test" } }), options, true)).toBeNull();
     expect(classifyRequest(new Request("http://evil.test/", { headers: { "X-Forwarded-Host": "machine.example.test" } }), options, false)).toBeNull();
     expect(classifyRequest(new Request("https://machine.example.test/"), { ...options, peer: "100.1.2.3" }, false)).toBeNull();
@@ -97,5 +96,5 @@ describe("request trust", () => {
 test("TCP Serve IP requests never trust client-supplied identity buckets", () => {
   const origin = "http://100.112.22.85:7310";
   const context = classifyRequest(new Request(origin, { headers: { Origin: origin, "Tailscale-User-Login": "spoof@example.test" } }), { port: 7310, remoteOrigin: origin, peer: "127.0.0.1" }, true);
-  expect(context?.bucket).toBe("serve:anonymous");
+  expect(context?.bucket).toBe("remote");
 });

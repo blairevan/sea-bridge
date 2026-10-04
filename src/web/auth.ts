@@ -1,9 +1,10 @@
-import { createHash, createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { randomToken, safeEqual, tokenHash } from "./crypto.ts";
+import { validUsername, validPasswordHash } from "./password.ts";
 import { WebStore, type WebDevice } from "./store.ts";
 
 /** Credentials exist only while issuing a response; persistence contains hashes. */
-export interface PairedDevice { device: WebDevice; sessionToken: string; csrfToken: string; }
+export interface LoggedInDevice { device: WebDevice; sessionToken: string; csrfToken: string; }
 /** Trusted request context derived from configured hosts and the observed backend peer. */
 export interface RequestContext { remote: boolean; origin: string; bucket: string; }
 
@@ -21,57 +22,54 @@ export function classifyRequest(
     .find((candidate) => new URL(candidate).host === host);
   if (!origin || (write && request.headers.get("origin") !== origin)) return null;
   const remote = origin === options.remoteOrigin;
-  // Tailscale Serve strips spoofed identity headers before adding its own. We only consult the
-  // login after the configured remote Host and loopback backend gates above have passed, and use
-  // a digest solely to keep pairing-failure buckets independent without retaining user identity.
-  const tailscaleLogin = remote && origin.startsWith("https://") ? request.headers.get("Tailscale-User-Login")?.trim() : null;
-  const bucket = remote
-    ? tailscaleLogin ? `serve:${createHash("sha256").update(tailscaleLogin).digest("hex").slice(0, 24)}` : "serve:anonymous"
-    : "loopback";
+  // All remote attempts share a bound: forwarded identity/IP headers are not trusted.
+  const bucket = remote ? "remote" : "loopback";
   return { remote, origin, bucket };
 }
 
-/** Memory-only pairing plus durable device authentication and CSRF verification. */
+/** Password authentication plus durable device sessions and CSRF verification. */
 export class WebAuth {
-  private readonly pairKey = randomBytes(32);
-  private active: { mac: string; expiresAt: number; failures: number } | null = null;
-  private readonly buckets = new Map<string, { start: number; failures: number }>();
-  private global = { start: 0, failures: 0 };
+  private readonly buckets = new Map<string, { start: number; attempts: number }>();
+  private global = { start: 0, attempts: 0 };
+  private pending = 0;
 
   /** Inject time for deterministic expiry and rate-limit tests. */
   constructor(private readonly store: WebStore, private readonly now: () => number = Date.now) {}
 
-  /** Replace the current one-time pairing code; never persist or log it. */
-  createPairCode(): { code: string; expiresAt: number } {
-    const code = randomInt(0, 100000000).toString().padStart(8, "0");
-    const expiresAt = this.now() + 300000;
-    this.active = { mac: this.codeMac(code), expiresAt, failures: 0 };
-    return { code, expiresAt };
+  /** Report provisioning state only to trusted local callers. */
+  accountConfigured(): boolean { return this.store.getAccount() !== null; }
+
+  /** Install an operator-supplied hash and invalidate existing logins atomically. */
+  setAccount(username: string, passwordHash: string): void {
+    if (!validUsername(username) || !validPasswordHash(passwordHash)) throw new Error("web_account_invalid");
+    this.store.setAccount(username, passwordHash, this.now());
+    // Deliberately retain attempt counters across credential changes.
   }
 
-  /** Apply bounded counters before comparing the code, returning generic failure. */
-  pair(code: string, bucket: string, name: string): PairedDevice | null {
+  /** Reserve attempts before asynchronous verification and fence concurrent resets. */
+  async login(username: string, password: string, bucket: string, name: string): Promise<LoggedInDevice | null> {
     const now = this.now();
     for (const [key, value] of this.buckets) if (now - value.start >= 60000) this.buckets.delete(key);
-    if (this.buckets.size > 1000) return null;
+    if (now - this.global.start >= 60000) this.global = { start: now, attempts: 0 };
+    if (this.buckets.size >= 1000 || this.global.attempts >= 30 || this.pending >= 2) return null;
     let counter = this.buckets.get(bucket);
-    if (!counter) { counter = { start: now, failures: 0 }; this.buckets.set(bucket, counter); }
-    if (now - this.global.start >= 60000) this.global = { start: now, failures: 0 };
-    if (counter.failures >= 5 || this.global.failures >= 30) return null;
-    const active = this.active;
-    if (!active || active.expiresAt <= now || active.failures >= 10 ||
-        !/^\d{8}$/.test(code) || !safeEqual(this.codeMac(code), active.mac)) {
-      counter.failures++; this.global.failures++;
-      if (active) { active.failures++; if (active.failures >= 10 || active.expiresAt <= now) this.active = null; }
-      return null;
-    }
-    this.active = null;
+    if (!counter) { counter = { start: now, attempts: 0 }; this.buckets.set(bucket, counter); }
+    if (counter.attempts >= 5) return null;
+    counter.attempts++; this.global.attempts++;
+    const account = this.store.getAccount();
+    if (!account || username.length > 64 || !password || password.length > 256 || /\u0000/.test(password)) return null;
+    this.pending++;
+    let verified = false;
+    try { verified = await Bun.password.verify(password, account.passwordHash, "argon2id"); }
+    catch { return null; }
+    finally { this.pending--; }
+    if (!verified || !safeEqual(username, account.username) || this.store.getAccount()?.revision !== account.revision) return null;
+    const issuedAt = this.now();
     const sessionToken = randomToken(); const csrfToken = randomToken(); const id = randomUUID();
     const deviceName = name.trim().slice(0, 80).replace(/[\u0000-\u001f\u007f]/g, "") || "设备";
-    this.store.createDevice({ id, name: deviceName, sessionHash: tokenHash(sessionToken), csrfHash: tokenHash(csrfToken), pairedAt: now, expiresAt: now + 30 * 86400000 });
-    const device = this.store.findDevice(tokenHash(sessionToken), now);
+    this.store.createDevice({ id, name: deviceName, sessionHash: tokenHash(sessionToken), csrfHash: tokenHash(csrfToken), pairedAt: issuedAt, expiresAt: issuedAt + 30 * 86400000 });
+    const device = this.store.findDevice(tokenHash(sessionToken), issuedAt);
     if (!device) throw new Error("web_device_creation_failed");
-    counter.failures = 0;
     return { device, sessionToken, csrfToken };
   }
 
@@ -89,11 +87,9 @@ export class WebAuth {
   }
 
   /** Emit host-only cookies; remote HTTPS always adds Secure. */
-  cookies(paired: PairedDevice, secure: boolean): string[] {
+  cookies(session: LoggedInDevice, secure: boolean): string[] {
     const flags = `SameSite=Strict; Path=/; Max-Age=2592000${secure ? "; Secure" : ""}`;
-    return [ `sea_session=${paired.sessionToken}; HttpOnly; ${flags}`, `sea_csrf=${paired.csrfToken}; ${flags}` ];
+    return [ `sea_session=${session.sessionToken}; HttpOnly; ${flags}`, `sea_csrf=${session.csrfToken}; ${flags}` ];
   }
 
-  /** MAC low-entropy codes with a process-only random key. */
-  private codeMac(code: string): string { return createHmac("sha256", this.pairKey).update(code).digest("hex"); }
 }

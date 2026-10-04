@@ -11,7 +11,8 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   const script = await Bun.file("src/web/public/app.js").text();
   const css = await Bun.file("src/web/public/app.css").text();
   expect(html).toContain(`src="/app.js?v=${APP_VERSION}"`); expect(html).toContain(`href="/app.css?v=${APP_VERSION}"`);
-  expect(html).toContain('<main id="pairing" class="pairing" hidden>');
+  expect(html).toContain('<main id="login" class="login" hidden>');
+  expect(html).toContain('<form id="login-form" class="card" method="post" action="/api/auth/login" novalidate>');
   expect(html).toContain('id="auth-loading"');
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");

@@ -87,14 +87,16 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       const context = classifyRequest(request, { port: deps.port, remoteOrigin: deps.remoteOrigin, peer }, write);
       if (!context) throw new HttpError(403, "origin_denied");
       if (url.searchParams.has("token") || url.searchParams.has("sessionToken")) throw new HttpError(400, "url_credential_denied");
-      if (path === "/api/auth/pair" && method === "POST") {
-        const body = await readJson(request, 1024);
-        const paired = deps.auth.pair(text(body.code, 8) ?? "", context.bucket, deps.redaction.storage(text(body.name, 80, true) ?? "设备"));
-        if (!paired) throw new HttpError(401, "pair_failed");
-        const response = json({ paired: true });
+      if (path === "/api/auth/login" && method === "POST") {
+        const body = await readJson(request, 2048);
+        if (context.remote && !context.origin.startsWith("https://")) throw new HttpError(403, "https_required");
+        const paired = await deps.auth.login(text(body.username, 64) ?? "", text(body.password, 256) ?? "", context.bucket, deps.redaction.storage(text(body.name, 80, true) ?? "设备"));
+        if (!paired) throw new HttpError(401, "login_failed");
+        const response = json({ loggedIn: true });
         for (const cookie of deps.auth.cookies(paired, context.origin.startsWith("https://"))) response.headers.append("Set-Cookie", cookie);
         return response;
       }
+      if (path === "/api/auth/pair") throw new HttpError(404, "not_found");
       const cookie = cookies(request); const device = deps.auth.authenticate(cookie.sea_session ?? "");
       if (!device) throw new HttpError(401, "unauthorized"); authenticated = true;
       if (write && !deps.auth.verifyCsrf(device.id, cookie.sea_csrf ?? "", request.headers.get("X-Sea-Bridge-CSRF") ?? "")) throw new HttpError(403, "csrf_denied");

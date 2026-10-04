@@ -4,6 +4,28 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readCodexTranscript } from "../src/web/codex-transcript.ts";
 
+test("environment-only records are hidden while mixed questions, examples and byte cursors survive", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-environment-context-"));
+  const file = join(root, "fixture.jsonl");
+  const environment = "<environment_context>\n<current_date>2026-10-04</current_date>\n<timezone>Asia/Shanghai</timezone>\n<filesystem><workspace_roots><root>/fixture</root></workspace_roots></filesystem>\n</environment_context>";
+  const example = "```xml\n" + environment + "\n```";
+  const incomplete = "<environment_context>\nunfinished";
+  /** Construct a source record without changing its persisted original text. */
+  const record = (text: string, role = "user") => ({ type: "response_item", payload: { type: "message", role, phase: "final_answer", content: [{ type: role === "user" ? "input_text" : "output_text", text }] } });
+  const raw = [record("first"), record(environment), record(environment + "\n\n真实提问"), record(example), record(incomplete), record(environment, "assistant")].map((item) => JSON.stringify(item)).join("\n") + "\n";
+  try {
+    writeFileSync(file, raw);
+    const messages = []; let cursor: string | null = null;
+    do {
+      const page = await readCodexTranscript(file, [root], cursor, 2);
+      messages.unshift(...page.messages); cursor = page.cursor;
+    } while (cursor);
+    expect(messages.map((message) => message.text)).toEqual(["first", "真实提问", example, incomplete, environment]);
+    expect(new Set(messages.map((message) => message.id)).size).toBe(5);
+    expect(await Bun.file(file).text()).toBe(raw);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("bounded Codex reader accepts verified text and rejects path escapes", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-rollout-"));
   try {

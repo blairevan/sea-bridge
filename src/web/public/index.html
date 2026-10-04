@@ -11,14 +11,15 @@
   <main id="auth-loading" class="auth-loading" aria-label="检查登录状态">
     <div class="auth-loading-card"><div class="eyebrow">SEA-BRIDGE</div><div id="auth-loading-spinner" class="auth-spinner" aria-hidden="true"></div><p id="auth-loading-text" role="status" aria-live="polite">正在加载页面…</p><p id="auth-loading-detail" class="auth-loading-detail">页面资源加载完成后，将检查设备登录和显示设置。</p><ol class="auth-steps" aria-label="连接步骤"><li id="auth-step-page" class="active">加载页面</li><li id="auth-step-session">验证登录</li><li id="auth-step-settings">读取设置</li></ol><p id="auth-loading-elapsed" class="muted"></p><button id="auth-loading-retry" type="button" class="quiet" hidden>立即重试</button><a class="auth-reload" href="/">重新加载页面</a></div>
   </main>
-  <main id="pairing" class="pairing" hidden>
-    <form id="pair-form" class="card" novalidate>
-      <div class="eyebrow">SEA-BRIDGE</div><h1>连接你的设备</h1>
-      <p>在本机运行配对命令，输入一次性配对码。</p><p id="client-version" class="muted">Sea-Bridge v__SEA_BRIDGE_VERSION__</p>
-      <p id="pairing-notice" class="pairing-notice" role="status" aria-live="polite"></p>
-      <label for="pair-code">配对码</label><input id="pair-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="card" method="post" action="/api/auth/login" novalidate>
+      <div class="eyebrow">SEA-BRIDGE</div><h1>登录控制台</h1>
+      <p>使用管理员账号和密码登录。</p><p id="client-version" class="muted">Sea-Bridge v__SEA_BRIDGE_VERSION__</p>
+      <p id="login-notice" class="login-notice" role="status" aria-live="polite"></p>
+      <label for="login-username">账号</label><input id="login-username" name="username" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="login-password">密码</label><input id="login-password" name="password" type="password" maxlength="256" autocomplete="current-password" required>
       <label for="device-name">设备名称（可选）</label><input id="device-name" maxlength="80" autocomplete="off" placeholder="例如：手机">
-      <button id="pair-submit" type="button">配对设备</button><p class="muted">配对码有效期 5 分钟，仅可使用一次。</p>
+      <button id="login-submit" type="submit">登录</button>
     </form>
   </main>
   <div id="console" hidden>
@@ -60,7 +61,7 @@
           <form id="record-filter" class="filters"><label>执行来源<select id="record-source"><option value="">全部</option><option value="codex">Codex</option><option value="dsh">dsh</option></select></label><div id="record-session-field" class="record-session-field"><label for="record-session">会话标题</label><input id="record-session" type="search" maxlength="200" placeholder="输入标题查找会话" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="record-suggestions" aria-describedby="record-session-hint"><div id="record-suggestions" class="record-suggestions" role="listbox" aria-label="匹配会话" hidden></div><small id="record-session-hint" class="muted">输入后停顿 500ms 显示匹配会话</small></div><label>状态<select id="record-state"><option value="">全部</option><option value="queued">已入队</option><option value="accepted">已接受</option><option value="failed">失败</option><option value="delivery_unknown">待确认</option></select></label><label>开始时间<input id="record-from" type="datetime-local"></label><label>结束时间<input id="record-to" type="datetime-local"></label><button type="submit" class="record-filter-submit">筛选</button></form>
           <div id="record-items"></div><button id="more-records" class="quiet" hidden>加载更多</button><h2>运行日志</h2><div id="log-items"></div>
         </section>
-        <section id="settings" class="page" hidden><h1>设置</h1><form id="redaction-form" class="card"><h2>全局脱敏</h2><label class="toggle"><input id="redaction-enabled" type="checkbox">隐藏可识别的邮箱、手机号、IP 和本机路径</label><p class="muted">所有已配对设备同步生效。密钥、密码和 Token 始终过滤。自动识别无法覆盖任意个人信息；已查看、复制的内容无法撤回。</p><button type="submit">保存设置</button></form><h2>已配对设备</h2><div id="device-items"></div></section>
+        <section id="settings" class="page" hidden><h1>设置</h1><form id="redaction-form" class="card"><h2>全局脱敏</h2><label class="toggle"><input id="redaction-enabled" type="checkbox">隐藏可识别的邮箱、手机号、IP 和本机路径</label><p class="muted">所有已登录设备同步生效。密钥、密码和 Token 始终过滤。自动识别无法覆盖任意个人信息；已查看、复制的内容无法撤回。</p><button type="submit">保存设置</button></form><h2>已登录设备</h2><div id="device-items"></div></section>
       </main>
     </div>
   </div>

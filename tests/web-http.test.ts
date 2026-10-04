@@ -1,3 +1,4 @@
+import { LOGIN_FIXTURE, LOGIN_HASH, loginFixture } from "./helpers/web-login.ts";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -36,9 +37,11 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   }), "127.0.0.1");
   try {
     expect((await request("/api/status")).status).toBe(401);
-    expect((await request("/api/auth/pair", "POST", { code: auth.createPairCode().code, name: "fixture-secret" })).status).toBe(200);
+    auth.setAccount(LOGIN_FIXTURE.username, LOGIN_HASH);
+    expect((await request("/api/auth/pair", "POST", { code: "12345678" })).status).toBe(404);
+    expect((await request("/api/auth/login", "POST", { ...LOGIN_FIXTURE, name: "fixture-secret" })).status).toBe(200);
     expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
-    const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
+    const paired = await loginFixture(auth); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
     const imagePath = "/api/sessions/codex/thread/attachments/rollout-1/0";
     expect((await request(imagePath)).status).toBe(401);
@@ -83,10 +86,10 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   } finally { events.close(); db.close(); }
 });
 
-test("pairing body is streaming-bounded before materialization", async () => {
+test("login body is streaming-bounded before materialization", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const events = new WebEvents(store);
   const handler = createWebHandler({ store, auth: new WebAuth(store), events, sources: {}, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
-  const response = await handler(new Request("http://127.0.0.1:7310/api/auth/pair", { method: "POST", headers: { Origin: "http://127.0.0.1:7310", "Content-Type": "application/json" }, body: "x".repeat(4096) }), "127.0.0.1");
+  const response = await handler(new Request("http://127.0.0.1:7310/api/auth/login", { method: "POST", headers: { Origin: "http://127.0.0.1:7310", "Content-Type": "application/json" }, body: "x".repeat(4096) }), "127.0.0.1");
   expect(response.status).toBe(413); expect(response.headers.get("Cache-Control")).toBe("no-store");
   events.close(); db.close();
 });
@@ -95,7 +98,7 @@ test("revocation during body upload prevents settings and source writes", async 
   for (const path of ["/api/settings/redaction", "/api/sessions"]) {
     const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
     const auth = new WebAuth(store); const events = new WebEvents(store);
-    const paired = auth.pair(auth.createPairCode().code, "local", "fixture");
+    const paired = await loginFixture(auth);
     if (!paired) throw new Error("fixture failed");
     let writes = 0;
     const source: WebSource = {
@@ -123,13 +126,15 @@ test("revocation during body upload prevents settings and source writes", async 
   }
 });
 
-test("Tailnet HTTP pairing emits usable host-only cookies while HTTPS remains Secure", async () => {
+test("remote password login requires HTTPS and emits Secure host-only cookies", async () => {
   for (const origin of ["http://100.112.22.85:7310", "https://machine.example.test"]) {
     const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
     const auth = new WebAuth(store); const events = new WebEvents(store);
     const handler = createWebHandler({ store, auth, events, sources: {}, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: origin, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
     try {
-      const response = await handler(new Request(origin + "/api/auth/pair", { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ code: auth.createPairCode().code }) }), "127.0.0.1");
+      auth.setAccount(LOGIN_FIXTURE.username, LOGIN_HASH);
+      const response = await handler(new Request(origin + "/api/auth/login", { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify(LOGIN_FIXTURE) }), "127.0.0.1");
+      if (origin.startsWith("http:")) { expect(response.status).toBe(403); expect(response.headers.get("Set-Cookie")).toBeNull(); continue; }
       expect(response.status).toBe(200);
       expect(response.headers.get("Set-Cookie")?.includes("Secure")).toBe(origin.startsWith("https:"));
       expect(response.headers.get("Set-Cookie")).toContain("HttpOnly");

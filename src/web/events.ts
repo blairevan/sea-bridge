@@ -48,6 +48,9 @@ export class WebEvents {
     }
   }
 
+  /** Notify every connected browser when administrator credentials rotate. */
+  revokeAll(): void { for (const connection of [...this.connections]) this.revoke(connection.deviceId); }
+
   /** Stop all streams before closing the underlying database. */
   close(): void { for (const connection of [...this.connections]) connection.dispose(); }
 

@@ -78,9 +78,9 @@ async function settle(): Promise<void> { await new Promise<void>((resolve) => se
 
 test("a previous identity cannot block the same action after reauthentication", async () => {
   const ui = await fixture(); const held = deferred<void>(); let actions = 0;
-  const helpers = ui.evaluate("({ run, showPairing })") as { run: (key: string, work: () => Promise<void>) => Promise<void>; showPairing: () => void };
+  const helpers = ui.evaluate("({ run, showLogin })") as { run: (key: string, work: () => Promise<void>) => Promise<void>; showLogin: () => void };
   const previous = helpers.run("write", () => held.promise);
-  helpers.showPairing();
+  helpers.showLogin();
   await helpers.run("write", async () => { actions++; });
   held.resolve(); await previous; expect(actions).toBe(1);
 });
@@ -88,10 +88,10 @@ test("a previous identity cannot block the same action after reauthentication", 
 test("an old read cannot delete or reuse a new identity's coalesced request", async () => {
   const oldRead = deferred<Response>(); const newRead = deferred<Response>(); let requests = 0;
   const ui = await fixture({ fetch: () => ++requests === 1 ? oldRead.promise : newRead.promise });
-  const helpers = ui.evaluate("({ state, api, showPairing })") as { state: { paused: boolean; version: number }; api: (path: string) => Promise<unknown>; showPairing: () => void };
+  const helpers = ui.evaluate("({ state, api, showLogin })") as { state: { paused: boolean; version: number }; api: (path: string) => Promise<unknown>; showLogin: () => void };
   helpers.state.paused = false; helpers.state.version = 1;
   const previous = helpers.api("/api/operations/op").catch((error: unknown) => error);
-  helpers.showPairing(); helpers.state.paused = false; helpers.state.version = 1;
+  helpers.showLogin(); helpers.state.paused = false; helpers.state.version = 1;
   const current = helpers.api("/api/operations/op");
   oldRead.resolve(Response.json({ data: {} }, { status: 401, headers: { "X-Sea-Bridge-Settings-Version": "1" } }));
   await previous;
@@ -166,12 +166,12 @@ test("catalog rendering rejects policy invalidation between the API and its call
 test("reauthentication cannot adopt a response requested by the previous identity", async () => {
   const read = deferred<Response>();
   const ui = await fixture({ fetch: () => read.promise });
-  const helpers = ui.evaluate("({ state, api, showPairing })") as {
-    state: { paused: boolean }; api: (path: string) => Promise<unknown>; showPairing: () => void;
+  const helpers = ui.evaluate("({ state, api, showLogin })") as {
+    state: { paused: boolean }; api: (path: string) => Promise<unknown>; showLogin: () => void;
   };
   helpers.state.paused = false;
   const outcome = helpers.api("/api/operations").then(() => "accepted", () => "rejected");
-  helpers.showPairing();
+  helpers.showLogin();
   // A new pairing and validated SSE connection have now unpaused the same shell.
   helpers.state.paused = false; ui.element("console").hidden = false;
   read.resolve(Response.json({ data: { items: [{ id: "previous-identity-record" }] } }, { headers: { "X-Sea-Bridge-Settings-Version": "0" } }));

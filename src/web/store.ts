@@ -5,6 +5,8 @@ import { safeEqual } from "./crypto.ts";
 export interface WebSettings { redactionEnabled: boolean; version: number; }
 /** Device identity with no raw credential material. */
 export interface WebDevice { id: string; name: string; pairedAt: number; lastActiveAt: number; expiresAt: number; revokedAt: number | null; }
+/** Single administrator credential; never include this projection in HTTP responses. */
+export interface WebAccount { username: string; passwordHash: string; revision: number; }
 /** State vocabulary separates submission acceptance from source execution. */
 export type OperationState = "received" | "dispatching" | "queued" | "accepted" | "failed" | "delivery_unknown";
 /** Immutable request identity supplied to the atomic operation claim. */
@@ -25,6 +27,21 @@ const OP_COLUMNS = "id,kind,source,device_id AS deviceId,target_id AS targetId,p
 export class WebStore {
   /** Use the core database connection after isolated Web migration succeeds. */
   constructor(readonly db: Database) {}
+
+  /** Read the current administrator credential for verification and revision fencing. */
+  getAccount(): WebAccount | null {
+    return this.db.query("SELECT username,password_hash AS passwordHash,revision FROM web_admin_account WHERE id=1").get() as WebAccount | null;
+  }
+
+  /** Atomically rotate credentials and revoke every prior browser session. */
+  setAccount(username: string, passwordHash: string, now: number): void {
+    this.db.transaction(() => {
+      this.db.query(`INSERT INTO web_admin_account VALUES(1,?,?,1)
+        ON CONFLICT(id) DO UPDATE SET username=excluded.username,password_hash=excluded.password_hash,revision=revision+1`).run(username, passwordHash);
+      this.db.query("UPDATE web_device_sessions SET revoked_at=? WHERE revoked_at IS NULL").run(now);
+      this.audit("local-admin", "account_changed", "{}", now);
+    })();
+  }
 
   /** Read a complete singleton display policy snapshot. */
   getSettings(): WebSettings {

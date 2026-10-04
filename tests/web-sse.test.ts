@@ -1,3 +1,4 @@
+import { LOGIN_FIXTURE, LOGIN_HASH, loginFixture } from "./helpers/web-login.ts";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { migrateWeb } from "../src/web/migrations.ts";
@@ -7,7 +8,7 @@ import { WebEvents } from "../src/web/events.ts";
 
 test("heartbeat buffering closes a slow client within the same event bound", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const auth = new WebAuth(store);
-  const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
+  const paired = await loginFixture(auth); if (!paired) throw new Error("fixture failed");
   let tick: (() => void) | undefined;
   const events = new WebEvents(store, (callback) => { tick = callback; return setInterval(() => {}, 15000); });
   try {
@@ -21,7 +22,7 @@ test("heartbeat buffering closes a slow client within the same event bound", asy
 
 test("SSE sends version-only controls and revocation closes the device stream", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const auth = new WebAuth(store);
-  const paired = auth.pair(auth.createPairCode().code, "local", "fixture"); if (!paired) throw new Error("fixture failed");
+  const paired = await loginFixture(auth); if (!paired) throw new Error("fixture failed");
   const events = new WebEvents(store);
   const stream = events.open(paired.device.id, new AbortController().signal);
   const reader = stream.getReader(); await reader.read();

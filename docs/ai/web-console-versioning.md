@@ -217,3 +217,42 @@
 - 快照上限128000字符、24小时有效期，设备或显示设置版本不匹配、损坏/过期均拒绝；退出登录和认证失效清除，已知设备的显示策略失效清除。存储不可用时继续正常在线读取。
 - 335项测试、typecheck、JS语法、build及diff通过；部署sea-bridge-v0.12.0-20261004-075644，两端版本/JS/CSS字节与版本资源Cache-Control验证通过。首次访问无快照仍需加载在线数据，未绕过认证，iPhone实际提速待实机确认。
 - 提交范围包括v0.11.1启动阶段提示、v0.11.2同排状态读秒以及v0.12.0缓存；沿用feature/web-console与既有作者，无新增依赖或配置产物。内置语义复核关注缓存认证/策略/过期边界和资源版本失效，未发现阻断项。
+
+## v0.13.0
+
+- 配对码入口改为单管理员账号密码登录，本机 `bun run web:account` 隐藏输入并确认密码，SQLite 仅保存 Argon2id 哈希；无默认密码或公开注册。
+- 升级撤销旧配对会话，重置凭据原子撤销全部设备会话并通知实时流；保留 30 天登录、退出、逐设备撤销与 CSRF。
+- 密码登录增加尝试限流与并发上限，在途验证以凭据修订号阻止重置后的旧密码登录；远程 HTTP 页面禁止发送密码，远程接口要求 HTTPS。
+- 340 项测试、typecheck、JS 语法、build 和 diff 检查通过。v0.13.0 已部署，页面/资源匹配、旧接口 404、未认证接口 401、数据库健康；真实账号设置与 Cloudflare 子域名/iPhone 验收待完成。见 [账号密码登录记录](2026-10-04-password-login.md)。
+
+## v0.13.1
+
+- 登录表单显式使用 POST，防止 JS 异常时默认 GET 将账号密码带入 URL；远程连接故障提示改为检查 HTTPS 域名和 Tunnel。
+- 340 项测试、typecheck、JS 语法、build、diff 检查通过；7310 已部署 v0.13.1，页面与资源包含复审补丁，账号及会话状态保留。未 commit/push，Cloudflare 与 iPhone 实机未验收。
+
+## v0.13.2
+
+- 助手消息展示和复制共用 messageDisplayText，过滤围栏代码之外的完整 oai-mem-citation 引用元数据块；保留用户消息、代码示例、不完整块及原始历史正文。
+- 回归测试先失败复现缺少过滤，再通过；覆盖展示、复制、原始消息不变、反引号/波浪线围栏、多引用块及不完整块。
+- `bun test` 341 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。无 lint/format 脚本。
+- 部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.13.2-20261004-160549`，PID 50045，仅监听 127.0.0.1:7310。原启动配置及 SQLite 一致性备份位于发布目录 rollback/。
+- curl 检查本机和 https://code.example.com：页面 v0.13.2，JS/CSS 与发布文件逐字节一致；引用过滤调用已在发布 JS 中确认。运行数据库健康，管理员凭据与设备会话保留。
+- 未 commit/push。iPhone 实机刷新后的历史消息展示及复制待用户验收；不修改 Codex 原始会话记录。
+
+## v0.13.3
+
+- Codex 历史读取过滤用户记录开头的完整 environment_context 包装；纯环境记录不生成气泡，同条中的真实问题保留。不修改原始 rollout 文件，不过滤助手文本或围栏代码中的示例。
+- 回归覆盖纯环境记录、混合正文、代码示例、不完整块、分页身份与原始文件不变。测试先失败再修复，`bun test` 342 pass / 0 fail，`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。无 lint/format 脚本。
+- 只读运行真实当前会话的 readCodexTranscript：24 条可见消息，纯环境气泡 0 条，截图中真实问题保留。
+- 部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.13.3-20261004-161153`，LaunchAgent running，PID 58248；发布 main.js 与构建一致且包含过滤函数，本机与 https://code.example.com 页面均为 v0.13.3，JS/CSS 字节匹配。
+- 原启动配置与数据库一致性备份保存于发布目录 rollback/；数据库健康，凭据与会话状态保留。未 commit/push，iPhone 刷新后视觉结果待用户确认。
+
+## v0.13.4
+
+- CodexThreadStore.listActive 按 thread_source 排除内部 subagent，不按标题或 has_user_event 猜测用户会话身份。普通空标题会话保留，使用“未命名会话 · ID 后八位”；名称、标题去除首尾空白后依次选择。
+- getThread 保留内部任务的诊断点查，并与列表共用标题规则；不修改 Codex 原始标题或删除任务。
+- 新测试先复现有名/无名子代理混入及空白标题，修复后覆盖普通空会话、归档、名称优先、空白/null 回退、点查一致和源数据保留。
+- `bun test` 344 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。无 lint/format 脚本。
+- 真实 Codex 数据库只读核验：547 条普通未归档会话，子代理混入 0，空标题 0。截图中的 4 条空白记录均有明确 subagent 来源。
+- 部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.13.4-20261004-163702`，LaunchAgent running，PID 90289，仅监听 127.0.0.1:7310。发布 main.js 与构建一致且包含来源过滤；本机与 https://code.example.com 为 v0.13.4，JS/CSS 字节匹配。
+- 启动配置与数据库一致性备份保存于发布目录 rollback/；数据库健康，账号及会话保留。未 commit/push，iPhone 刷新后视觉验收待用户确认。
