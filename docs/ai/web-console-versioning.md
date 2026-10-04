@@ -269,3 +269,9 @@
 - 真实 Codex 数据库只读核验：547 条普通未归档会话，子代理混入 0，空标题 0。截图中的 4 条空白记录均有明确 subagent 来源。
 - 部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.13.4-20261004-163702`，LaunchAgent running，PID 90289，仅监听 127.0.0.1:7310。发布 main.js 与构建一致且包含来源过滤；本机与 https://code.example.com 为 v0.13.4，JS/CSS 字节匹配。
 - 启动配置与数据库一致性备份保存于发布目录 rollback/；数据库健康，账号及会话保留。未 commit/push，iPhone 刷新后视觉验收待用户确认。
+
+## v0.14.3
+
+- 修复快速切换筛选时请求被拦截、筛选外选中会话断线恢复后不能发送、较早历史附件无法读取，以及原生数据库路径错误会创建空数据库的问题。
+- `bun test` 366 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。
+- 已部署，LaunchAgent running，仅监听 127.0.0.1:7310；本机和 HTTPS 域名页面、JS/CSS 与发布快照一致，未认证接口 401，SQLite 健康，账号和已有设备会话保留。iPhone 人工交互验收待完成。
