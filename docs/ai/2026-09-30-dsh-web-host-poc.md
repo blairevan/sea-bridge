@@ -43,7 +43,7 @@ The installed Session Controller declarations are available from the dsh CLI's b
 | Node import | Passed | Current Node parsed/imported `index.mjs`; `apply()` was not called. |
 | Overlay composition | Passed | `--dump-config` baseline had 182 entries; adding the PoC patch produced 183, with only the appended `file:` connector entry. This does **not** prove import or mount. |
 | Schema/import diagnostics | No connector-specific error | Both clean temporary-profile schema runs exited 1 with identical two warnings and four pre-existing Loader tree-carrier errors; PoC entry had `status: absent` because no config schema is declared. This does **not** prove runtime mount. |
-| Isolated health-socket unit test | Passed | `node --test poc/dsh-web-connector/index.test.mjs` proved authenticated health, rejection of `session.prompt`, private directory/socket/token modes, and disposal cleanup with a fake Cordis context. No real Host service was used. |
+| Isolated health-socket unit test | Passed | `node --test connectors/dsh/index.test.mjs` proved authenticated health, rejection of `session.prompt`, private directory/socket/token modes, and disposal cleanup with a fake Cordis context. No real Host service was used. |
 
 ## Task 0A runtime acceptance and rollback
 
@@ -145,7 +145,7 @@ A follow-up review found three issues that matter only after promoting the conne
 
 At this earlier read-only review checkpoint, these changes existed only in the feature worktree. They did **not** automatically modify the then-installed snapshot under `~/.dsh/connectors/sea-bridge/`; an explicit install and controlled Web Host restart were still required. The later 0.4.0 deployment is recorded below.
 
-Verification after this review: `node --test poc/dsh-web-connector/index.test.mjs` passed 6/6; focused dsh observer/client tests passed; full `bun test` passed 116/116; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. No real Telegram message, prompt, session creation, connector reinstall, or Host restart was performed during this review.
+Verification after this review: `node --test connectors/dsh/index.test.mjs` passed 6/6; focused dsh observer/client tests passed; full `bun test` passed 116/116; `./node_modules/.bin/tsc --noEmit`, `bun run build`, and `git diff --check` passed. No real Telegram message, prompt, session creation, connector reinstall, or Host restart was performed during this review.
 
 
 ## Read-only runtime wiring and connector update path

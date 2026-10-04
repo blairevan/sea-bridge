@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_DIR="$PROJECT_ROOT/poc/dsh-web-connector"
+SOURCE_DIR="$PROJECT_ROOT/connectors/dsh"
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 CONNECTORS_DIR="$DSH_HOME_DIR/connectors"
 DEST_DIR="$CONNECTORS_DIR/sea-bridge"

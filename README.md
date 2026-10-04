@@ -174,7 +174,7 @@ bun run web:account
 - `src/web/`：Web 服务、认证、来源适配与浏览器界面。
 - `src/desktop/`：Codex 桌面会话与消息桥接。
 - `src/telegram/`：Telegram 交互与通知。
-- `src/dsh/`、`poc/dsh-web-connector/`：可选 dsh 桥接。
+- `src/dsh/`、[`connectors/dsh/`](connectors/dsh/README.md)：可选 dsh 桥接；`scripts/dsh/` 提供诊断工具。
 - `scripts/`：启动、构建、本机账号和连接器管理。
 - `tests/`：认证、消息、来源和界面回归测试。
 

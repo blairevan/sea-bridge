@@ -30,7 +30,7 @@
 | File | Responsibility |
 |---|---|
 | `docs/ai/2026-09-30-dsh-web-host-poc.md` | Sanitized version, transport, operation, event, and failure evidence from Task 0. |
-| `poc/dsh-web-connector/` | Canonical tracked source for connector `0.4.0`: fixed metadata/history reads, bounded exact-turn assistant-text projection, fixed write allowlist, local auth, probes, and contract tests. The live Host uses a reviewed snapshot copied to `~/.dsh/connectors/sea-bridge/`; repository and installed snapshot must be hash/version-checked before deployment. |
+| `connectors/dsh/` | Canonical tracked source for connector `0.4.0`: fixed metadata/history reads, bounded exact-turn assistant-text projection, fixed write allowlist, local auth, probes, and contract tests. The live Host uses a reviewed snapshot copied to `~/.dsh/connectors/sea-bridge/`; repository and installed snapshot must be hash/version-checked before deployment. |
 | `scripts/install-dsh-connector.sh` | Atomic install/check of the tracked connector snapshot; never restarts the Host by itself. |
 | `src/dsh/read-only-bridge.ts` | Telegram-facing read-only facade for health, projects, models, and exact dsh message-link recognition. |
 | `src/dsh/types.ts` | dsh Web Host domain types and capability/result contracts derived from PoC evidence. |
@@ -98,9 +98,9 @@ Expected: report contains enough information to implement typed adapters without
 ## Task 0A: In-Profile Read-Only Connector PoC
 
 **Files:**
-- Create: `poc/dsh-web-connector/index.mjs` — small ESM Cordis plugin loaded only for the PoC; no installed TypeScript loader assumed.
-- Create: `poc/dsh-web-connector/package.json` — only `name`, `version`, `private`, and `type: module`; no dependencies or install.
-- Create: `poc/dsh-web-connector/cordis.patch.yml` — temporary overlay that appends the connector to the active Web profile.
+- Create: `connectors/dsh/index.mjs` — small ESM Cordis plugin loaded only for the PoC; no installed TypeScript loader assumed.
+- Create: `connectors/dsh/package.json` — only `name`, `version`, `private`, and `type: module`; no dependencies or install.
+- Create: `connectors/dsh/cordis.patch.yml` — temporary overlay that appends the connector to the active Web profile.
 - Modify: `docs/ai/2026-09-30-dsh-web-host-poc.md` and `tests/fixtures/dsh-web/README.md` — record exact verified contracts and sanitized fixture shapes.
 
 **Interfaces and safety boundary:**

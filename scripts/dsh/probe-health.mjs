@@ -4,7 +4,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { CONNECTOR_VERSION } from './host-operations.mjs'
+import { CONNECTOR_VERSION } from '../../connectors/dsh/host-operations.mjs'
 
 const runDir = join(homedir(), '.dsh', 'run')
 const socketPath = join(runDir, 'sea-bridge.sock')
