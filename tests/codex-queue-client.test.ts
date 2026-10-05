@@ -40,6 +40,25 @@ describe("ProcessCodexQueueClient", () => {
       expect(await client.queue("thread", "prompt")).toMatchObject({ status: "delivery_unknown", exitCode: null, errorCode: "codex_queue_timeout" });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  test("passes CODEX_HOME to the queue subprocess and fails closed when admission is disabled", async () => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    let calls = 0;
+    const client = new ProcessCodexQueueClient("/codex", async (_command, _args, _timeout, env) => {
+      calls += 1; capturedEnv = env;
+      return { exitCode: 0, signal: null, stderr: "" };
+    }, 15_000, undefined, "/target/codex", () => true);
+    expect(await client.queue("thread", "hello")).toMatchObject({ status: "delivered" });
+    expect(capturedEnv?.CODEX_HOME).toBe("/target/codex");
+
+    const blocked = new ProcessCodexQueueClient("/codex", async () => {
+      calls += 1; return { exitCode: 0, signal: null, stderr: "" };
+    }, 15_000, undefined, "/target/codex", () => false);
+    expect(await blocked.queue("thread", "hello")).toEqual({
+      status: "failed", exitCode: null, errorCode: "codex_environment_reinitialize_required",
+    });
+    expect(calls).toBe(1);
+  });
+
   test("passes thread and message as separate arguments", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const client = new ProcessCodexQueueClient("/codex", async (command, args) => {

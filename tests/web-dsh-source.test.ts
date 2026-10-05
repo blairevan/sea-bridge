@@ -80,6 +80,26 @@ test("dsh capabilities track sessions, projects, models, and history independent
   expect(source.capabilities().historyReadable).toBe(true);
 });
 
+test("dsh overview capability probe samples catalogs and history without prior navigation", async () => {
+  const host: Pick<DshWebHostClient, "health" | "listSessions" | "listProjects" | "listModels" | "followSnapshot" | "pageHistory" | "getTurnSummary" | "createSession" | "selectModel" | "submitPrompt"> = {
+    async health() { return { status: "mounted" as const, protocol: 1, connectorVersion: "0.4.0" }; },
+    async listSessions() { return [{ sessionId: "session", running: false, blank: false, updatedAt: 1 }]; },
+    async listProjects() { return [{ id: "project", title: "project", sessionCount: 1 }]; },
+    async listModels() { return { default: { provider: "provider", model: "model" }, failureCount: 0, groups: [{ id: "provider", name: "fixture", models: [{ id: "model", name: "fixture" }] }] }; },
+    async followSnapshot() { return { cursor: -1, hasMore: false, truncated: false, events: [] }; },
+    async pageHistory() { return { hasMore: false, truncated: false, events: [] }; },
+    async getTurnSummary() { return { turn: 0, assistantSeq: null, assistantText: null }; },
+    async createSession() { throw new Error("unused"); },
+    async selectModel() { throw new Error("unused"); },
+    async submitPrompt() { throw new Error("unused"); },
+  };
+  const source = new DshWebSource(host, true, true);
+
+  expect(source.capabilities()).toMatchObject({ projectsReadable: false, modelsReadable: false, historyReadable: false, createEnabled: false });
+  await source.probeCapabilities();
+  expect(source.capabilities()).toMatchObject({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, finalReplyReadable: true, createEnabled: true, sendEnabled: true });
+});
+
 test("dsh create preflight failures are definite and do not dispatch", async () => {
   let creates = 0;
   const host = {

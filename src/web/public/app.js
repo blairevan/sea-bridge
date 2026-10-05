@@ -737,7 +737,13 @@ async function openOverviewCapability(source, capability) {
 function sourceStatusCard(name, source) {
   const card = node("article", "", "status-card source-card");
   const heading = node("div", "", "source-heading");
-  heading.append(node("h3", sourceDisplayName(name)), node("span", !source ? "未接入" : source.state === "limited" ? "已采样" : "暂不可用", "status-badge"));
+  const sourceStateLabel = !source ? "未接入"
+    : source.state === "limited" ? "已采样"
+      : source.state === "stale" ? "缓存数据"
+        : source.state === "reinitialize_required" ? "需重新初始化"
+          : source.state === "protocol_incompatible" ? "协议不兼容"
+            : "暂不可用";
+  heading.append(node("h3", sourceDisplayName(name)), node("span", sourceStateLabel, "status-badge"));
   card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : "Host 会话与消息桥接", "muted"));
   const capabilities = node("div", "", "capability-grid");
   for (const [key, label] of [["sessionsReadable", "会话读取"], ["historyReadable", "历史读取"], ["projectsReadable", "项目目录"], ["modelsReadable", "模型目录"], ["createEnabled", "新建会话"], ["sendEnabled", "发送消息"]]) {
@@ -806,7 +812,13 @@ async function loadStatus() {
 /** Render live or explicitly stale dashboard data without fetching conversation bodies. */
 function renderOverview(status, sessions, continuation, cached = false) {
   renderContinueSession(continuation);
-  state.overviewSessions = sessions.items; if (!cached) state.caps = sessions.capabilities ?? state.caps;
+  state.overviewSessions = sessions.items;
+  if (!cached) {
+    state.caps = sessions.capabilities ?? state.caps;
+    for (const [name, source] of Object.entries(status.sources ?? {})) {
+      if (source?.capabilities) state.caps[name] = source.capabilities;
+    }
+  }
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   el("overview-observed").textContent = `来源采样 ${overviewTime(status.observedAt)}`;
   el("overview-privacy").textContent = state.settings?.redactionEnabled === true ? "隐私脱敏已开启" : state.settings?.redactionEnabled === false ? "隐私脱敏已关闭" : "脱敏状态未确认";

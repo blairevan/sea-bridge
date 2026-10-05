@@ -26,7 +26,11 @@ export interface StartedThread {
   model: string | null;
 }
 
-type ProcessSpawner = (command: string, args: string[]) => ChildProcessWithoutNullStreams;
+export type ProcessSpawner = (
+  command: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+) => ChildProcessWithoutNullStreams;
 
 export type AppServerRequestId = number | string;
 
@@ -92,6 +96,15 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+const MAX_PENDING_REQUESTS = 64;
+const DEFAULT_MAX_STDOUT_BUFFER_CHARS = 8 * 1024 * 1024;
+const DEFAULT_MAX_JSON_LINE_CHARS = 8 * 1024 * 1024;
+
+export interface AppServerSessionLimits {
+  maxStdoutBufferChars?: number;
+  maxJsonLineChars?: number;
+}
+
 interface NotificationWaiter {
   predicate: (message: RpcMessage) => boolean;
   resolve: (message: RpcMessage) => void;
@@ -111,14 +124,19 @@ export class CodexAppServerRpcError extends Error {
   }
 }
 
-function defaultSpawner(command: string, args: string[]): ChildProcessWithoutNullStreams {
+export function spawnAppServerProcess(
+  command: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): ChildProcessWithoutNullStreams {
   return spawn(command, args, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    ...(env ? { env } : {}),
   });
 }
 
-class AppServerSession {
+export class AppServerSession {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationWaiters = new Set<NotificationWaiter>();
   private readonly recentNotifications: RpcMessage[] = [];
@@ -128,11 +146,19 @@ class AppServerSession {
   private closed = false;
   private closing = false;
 
+  private readonly maxStdoutBufferChars: number;
+  private readonly maxJsonLineChars: number;
+
   constructor(
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly requestTimeoutMs: number,
     private readonly inboundRequestHandler?: AppServerInboundRequestHandler,
+    limits: AppServerSessionLimits = {},
   ) {
+    this.maxStdoutBufferChars = limits.maxStdoutBufferChars ?? DEFAULT_MAX_STDOUT_BUFFER_CHARS;
+    this.maxJsonLineChars = limits.maxJsonLineChars ?? DEFAULT_MAX_JSON_LINE_CHARS;
+    if (!Number.isSafeInteger(this.maxStdoutBufferChars) || this.maxStdoutBufferChars < 1) throw new Error("app_server_stdout_buffer_limit_invalid");
+    if (!Number.isSafeInteger(this.maxJsonLineChars) || this.maxJsonLineChars < 1) throw new Error("app_server_message_size_limit_invalid");
     child.stdout.setEncoding?.("utf8");
     child.stderr.setEncoding?.("utf8");
     child.stdout.on("data", (chunk: Buffer | string) => this.onData(chunk.toString()));
@@ -148,7 +174,7 @@ class AppServerSession {
       if (!this.closing) {
         this.fail(new Error(`app_server_closed(code=${String(code)},signal=${String(signal)})${suffix}`));
       } else {
-        this.rejectWaiters(new Error("app_server_session_closed"));
+        this.fail(new Error("app_server_session_closed"));
       }
     });
   }
@@ -163,6 +189,7 @@ class AppServerSession {
 
   request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     if (this.closed) return Promise.reject(new Error("app_server_session_closed"));
+    if (this.pending.size >= MAX_PENDING_REQUESTS) return Promise.reject(new Error("app_server_pending_limit"));
     const id = this.nextRequestId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -276,15 +303,22 @@ class AppServerSession {
 
   private onData(chunk: string): void {
     this.buffer += chunk;
-    const lines = this.buffer.split(/\r?\n/);
-    this.buffer = lines.pop() ?? "";
-    for (const line of lines) {
+    while (true) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) break;
+      let line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
       if (!line.trim()) continue;
+      if (line.length > this.maxJsonLineChars) {
+        this.abortProtocol(new Error("app_server_message_size_limit"));
+        return;
+      }
       let message: RpcMessage;
       try {
         message = JSON.parse(line) as RpcMessage;
       } catch {
-        this.fail(new Error("app_server_invalid_json"));
+        this.abortProtocol(new Error("app_server_invalid_json"));
         return;
       }
 
@@ -317,6 +351,9 @@ class AppServerSession {
           pending.resolve(message.result);
         }
       }
+    }
+    if (this.buffer.length > this.maxStdoutBufferChars) {
+      this.abortProtocol(new Error("app_server_stdout_buffer_limit"));
     }
   }
 
@@ -364,6 +401,12 @@ class AppServerSession {
     }
   }
 
+  private abortProtocol(error: Error): void {
+    this.fail(error);
+    this.closing = true;
+    try { this.child.kill("SIGTERM"); } catch { /* Process may already be gone. */ }
+  }
+
   private fail(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -387,6 +430,7 @@ export class CodexAppServerClient {
   private readonly sessions = new Set<AppServerSession>();
   private readonly releases = new Map<AppServerSession, Promise<boolean>>();
   private readonly permissionsResolver: () => ResolvedDesktopPermissions;
+  private readonly codexHome: string | undefined;
 
   constructor(
     private readonly codexCliPath: string,
@@ -394,8 +438,9 @@ export class CodexAppServerClient {
   ) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
     this.turnLifetimeTimeoutMs = options.turnLifetimeTimeoutMs ?? null;
-    this.spawner = options.spawner ?? defaultSpawner;
+    this.spawner = options.spawner ?? spawnAppServerProcess;
     this.inboundRequestHandler = options.inboundRequestHandler;
+    this.codexHome = options.codexHome;
     this.permissionsResolver = options.permissionsResolver ?? (() => resolveDesktopPermissions(options.codexHome));
   }
 
@@ -564,7 +609,11 @@ export class CodexAppServerClient {
   }
 
   private async openSession(): Promise<AppServerSession> {
-    const child = this.spawner(this.codexCliPath, ["app-server", "--stdio"]);
+    const child = this.spawner(
+      this.codexCliPath,
+      ["app-server", "--stdio"],
+      this.codexHome ? { ...process.env, CODEX_HOME: this.codexHome } : process.env,
+    );
     const session = new AppServerSession(child, this.requestTimeoutMs, this.inboundRequestHandler);
     this.sessions.add(session);
     try {

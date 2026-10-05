@@ -215,6 +215,74 @@ export class StateDb {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS desktop_codex_catalog_meta (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+        codex_home_identity TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        full_reconciled_at INTEGER,
+        completeness TEXT NOT NULL CHECK(completeness IN ('full','partial')),
+        observed_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS desktop_codex_catalog (
+        thread_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        rollout_path TEXT,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        recency_at_ms INTEGER,
+        creation_client_kind TEXT NOT NULL,
+        creation_client_evidence TEXT NOT NULL,
+        observed_at INTEGER NOT NULL,
+        missing_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_desktop_codex_catalog_updated
+        ON desktop_codex_catalog(updated_at_ms DESC, thread_id);
+
+      CREATE TABLE IF NOT EXISTS desktop_observer_meta (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+        schema_version INTEGER NOT NULL,
+        schema_initialized_at INTEGER NOT NULL,
+        codex_home_identity TEXT NOT NULL,
+        bootstrap_started_at INTEGER,
+        bootstrap_initial_pass_completed_at INTEGER,
+        bootstrap_catalog_generation INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS desktop_observer_state (
+        thread_id TEXT PRIMARY KEY,
+        bootstrap_member INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_member IN (0,1)),
+        baseline_state TEXT NOT NULL CHECK(baseline_state IN ('pending','monitoring','deferred')),
+        anchor_turn_id TEXT,
+        monitoring_started_at INTEGER,
+        monitor_from_at INTEGER NOT NULL,
+        next_history_reconcile_at INTEGER NOT NULL,
+        last_reconciled_at INTEGER,
+        first_discovered_at INTEGER,
+        last_recency_at_ms INTEGER,
+        last_error TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_desktop_observer_due
+        ON desktop_observer_state(baseline_state, next_history_reconcile_at);
+
+      CREATE TABLE IF NOT EXISTS desktop_turn_observations (
+        thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        last_status TEXT NOT NULL,
+        terminal_kind TEXT,
+        content_state TEXT NOT NULL CHECK(content_state IN ('not_applicable','pending','ready','confirmed_empty','timeout_unconfirmed')),
+        disposition TEXT NOT NULL CHECK(disposition IN ('monitoring','baseline_suppressed','already_known','notification_enqueued')),
+        final_text_hash TEXT,
+        terminal_first_observed_at INTEGER,
+        settle_deadline_at INTEGER,
+        first_observed_at INTEGER NOT NULL,
+        last_observed_at INTEGER NOT NULL,
+        PRIMARY KEY(thread_id, turn_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_desktop_turn_observation_pending
+        ON desktop_turn_observations(disposition, content_state, last_observed_at);
+
       CREATE TABLE IF NOT EXISTS desktop_notification_outbox (
         event_fingerprint TEXT PRIMARY KEY,
         telegram_chat_id TEXT NOT NULL,

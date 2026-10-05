@@ -19,8 +19,6 @@ const config: AppConfig = {
   allowedChatId: "456",
   dbPath: ":memory:",
   hookSocketPath: "/tmp/test.sock",
-  codexStateDbPath: ":memory:",
-  codexThreadHistoryDbPath: ":memory:",
   codexCliPath: "/codex",
   codexHome: "/tmp/codex-home",
   approvalTimeoutMs: 5000,

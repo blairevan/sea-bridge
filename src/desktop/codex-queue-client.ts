@@ -20,12 +20,21 @@ export interface QueueDeliveryDiagnostics {
 }
 
 type ProcessResult = { exitCode: number | null; signal: NodeJS.Signals | null; stderr: string; stdout?: string; timedOut?: boolean };
-type ProcessRunner = (command: string, args: string[], timeoutMs: number) => Promise<ProcessResult>;
+type ProcessRunner = (
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+) => Promise<ProcessResult>;
 
 /** Bound queue admission and settle only after the subprocess exits or fails to spawn. */
-function runProcess(command: string, args: string[], timeoutMs: number): Promise<ProcessResult> {
+function runProcess(command: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<ProcessResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      ...(env ? { env } : {}),
+    });
     let stderr = ""; let stdout = ""; let settled = false; let timedOut = false;
     /** Release the deadline and pipe once, including spawn-error and exit races. */
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
@@ -69,16 +78,26 @@ export class ProcessCodexQueueClient {
     private readonly runner: ProcessRunner = runProcess,
     private readonly timeoutMs = 15_000,
     private readonly diagnostics?: QueueDeliveryDiagnostics,
+    private readonly codexHome?: string,
+    private readonly admissionAllowed: () => boolean = () => true,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("queue_timeout_invalid");
   }
 
   /** Queue once; a timed-out process cannot prove whether admission already happened. */
   async queue(threadId: string, text: string, context?: QueueDeliveryContext): Promise<QueueResult> {
+    if (!this.admissionAllowed()) {
+      return { status: "failed", exitCode: null, errorCode: "codex_environment_reinitialize_required" };
+    }
     const trace: QueueDeliveryTrace = { deliveryId: randomUUID(), threadId, source: context?.source ?? "unknown",
       submittedAt: Date.now(), messageLength: text.length, ...(context?.updateId === undefined ? {} : { updateId: context.updateId }) };
     observe(() => this.diagnostics?.submitted(trace));
-    const result = await this.runner(this.codexCliPath, ["queue", "--thread", threadId, "--message", text], this.timeoutMs);
+    const result = await this.runner(
+      this.codexCliPath,
+      ["queue", "--thread", threadId, "--message", text],
+      this.timeoutMs,
+      this.codexHome ? { ...process.env, CODEX_HOME: this.codexHome } : process.env,
+    );
     let outcome: QueueResult;
     if (result.timedOut) outcome = { status: "delivery_unknown", exitCode: null, errorCode: "codex_queue_timeout" };
     else if (result.exitCode === 0 && result.signal === null) {

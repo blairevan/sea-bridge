@@ -1,6 +1,6 @@
 {
   "name": "sea-bridge",
-  "version": "0.14.5",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "dev": "bun --watch run src/main.ts",
     "test": "bun test",
     "web:account": "bun run scripts/web-control.ts account",
+    "codex:observer-reset": "bun run scripts/codex-observer-reset.ts",
     "typecheck": "bunx tsc --noEmit",
     "build": "bun run scripts/build.ts",
     "dsh-connector:check": "./scripts/install-dsh-connector.sh check",

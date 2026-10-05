@@ -15,10 +15,25 @@ export function createStatusService(sources: Partial<Record<"codex" | "dsh", Web
         const statuses: Record<string, unknown> = {};
         await Promise.all(Object.entries(sources).map(async ([name, source]) => {
           if (!source) return;
-          try { await source.sessions(); statuses[name] = { state: "limited", capabilities: source.capabilities() }; }
-          catch { statuses[name] = { state: "unavailable", capabilities: source.capabilities() }; }
+          try {
+            if (source.probeCapabilities) await source.probeCapabilities();
+            else await source.sessions();
+            statuses[name] = { state: source.statusState?.() ?? "limited", capabilities: source.capabilities(), details: source.statusDetails?.() };
+          } catch {
+            const projected = source.statusState?.();
+            statuses[name] = {
+              state: projected && projected !== "limited" ? projected : "unavailable",
+              capabilities: source.capabilities(),
+              details: source.statusDetails?.(),
+            };
+          }
         }));
-        cached = { sources: statuses, observedAt: Date.now() }; until = Date.now() + 30000;
+        cached = { sources: statuses, observedAt: Date.now() };
+        const degraded = Object.values(statuses).some((value) => {
+          const state = (value as { state?: string }).state;
+          return state !== "limited";
+        });
+        until = Date.now() + (degraded ? 3000 : 30000);
       })();
       try { await pending; } finally { pending = null; }
     }

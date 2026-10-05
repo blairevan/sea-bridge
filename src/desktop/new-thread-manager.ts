@@ -19,6 +19,8 @@ export interface NewThreadManagerOptions {
   pathExists?: (path: string) => boolean;
   now?: () => number;
   onThreadStarted?: (threadId: string) => void;
+  actions?: Pick<CodexAppServerClient, "startThreadAndTurn">;
+  actionAvailable?: () => boolean;
 }
 
 export class NewThreadManager {
@@ -27,15 +29,23 @@ export class NewThreadManager {
   private readonly pathExists: (path: string) => boolean;
   private readonly now: () => number;
   private readonly onThreadStarted: (threadId: string) => void;
+  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn">;
+  private readonly actionAvailable: () => boolean;
 
   constructor(
-    private readonly appServer: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">,
+    private readonly appServer: Pick<CodexAppServerClient, "listProjects" | "listModels">
+      & Partial<Pick<CodexAppServerClient, "startThreadAndTurn">>,
     private readonly state: NewThreadStateStore,
     options: NewThreadManagerOptions = {},
   ) {
     this.pathExists = options.pathExists ?? existsSync;
     this.now = options.now ?? Date.now;
     this.onThreadStarted = options.onThreadStarted ?? (() => undefined);
+    const legacyAction = appServer.startThreadAndTurn?.bind(appServer);
+    this.actions = options.actions ?? {
+      startThreadAndTurn: legacyAction ?? (async () => { throw new Error("codex_action_provider_missing"); }),
+    };
+    this.actionAvailable = options.actionAvailable ?? (() => true);
   }
 
   async listProjects(forceRefresh = false): Promise<ProjectItem[]> {
@@ -122,11 +132,12 @@ export class NewThreadManager {
     prompt: string,
     onThreadStarted?: (threadId: string) => void,
   ): Promise<StartedThread> {
+    if (!this.actionAvailable()) throw new Error("codex_observer_reinitialize_required");
     if (!this.pathExists(project.primaryRoot)) {
       throw new Error("project_path_missing");
     }
     const model = this.getDefaultModel(chatId);
-    return this.appServer.startThreadAndTurn({
+    return this.actions.startThreadAndTurn({
       projectId: project.id,
       cwd: project.primaryRoot,
       ...(model ? { model } : {}),
@@ -137,11 +148,12 @@ export class NewThreadManager {
 
   /** Start a consumed ForceReply request with the same early identity callback as direct creation. */
   async startPendingThread(chatId: string, pending: PendingNewThreadPrompt, prompt: string, onThreadStarted?: (threadId: string) => void): Promise<StartedThread> {
+    if (!this.actionAvailable()) throw new Error("codex_observer_reinitialize_required");
     if (!this.pathExists(pending.cwd)) {
       throw new Error("project_path_missing");
     }
     const model = this.getDefaultModel(chatId);
-    return this.appServer.startThreadAndTurn({
+    return this.actions.startThreadAndTurn({
       projectId: pending.projectId,
       cwd: pending.cwd,
       ...(model ? { model } : {}),

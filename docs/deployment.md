@@ -133,10 +133,19 @@ SEA_BRIDGE_LOG_LEVEL=info
 | `SEA_BRIDGE_DB_PATH` | 应用数据库；修改会切换数据源，包括账号和会话 |
 | `SEA_BRIDGE_WEB_CONTROL_SOCKET` | 本机设置账号的控制通道；CLI 和服务必须一致 |
 | `SEA_BRIDGE_WEB_OPERATION_PEPPER_PATH` | 自动创建的操作摘要密钥；迁移时一起保留 |
-| `SEA_BRIDGE_CODEX_STATE_DB_PATH` | 默认 `~/.codex/state_5.sqlite` |
-| `SEA_BRIDGE_CODEX_THREAD_HISTORY_DB_PATH` | 默认 `~/.codex/thread_history_1.sqlite` |
 | `SEA_BRIDGE_CODEX_CLI_PATH` | 可显式指定可执行 Codex CLI；未指定时按源码规则探测 |
-| `CODEX_HOME` | 默认 Codex 状态库所在目录；需要与使用的 Codex 用户一致 |
+| `CODEX_HOME` | 默认 `~/.codex`；ReadService、ActionService 与 queue CLI 都显式使用同一值 |
+
+SEA-BRIDGE 已不再通过 `SEA_BRIDGE_CODEX_STATE_DB_PATH` 或 `SEA_BRIDGE_CODEX_THREAD_HISTORY_DB_PATH` 读取 Codex 私有 SQLite；这两个旧配置不再生效。
+
+同一 `CODEX_HOME` 升级通常无需重置。状态页明确显示“需重新初始化”时先停止 SEA-BRIDGE，再执行下面命令；如果这次操作同时要切换到另一个 `CODEX_HOME`，还必须先确保没有 pending Codex 通知。同一 `CODEX_HOME` 的定向重置会原样保留 pending outbox。
+
+```bash
+cd /opt/app/aitools/sea-bridge
+bun run codex:observer-reset
+```
+
+该命令只重建 Codex catalog/observer 本地状态。真正切换 `CODEX_HOME` 时还会清理旧 Codex reply link、已发送通知去重历史、未完成的新建会话提示和旧默认模型；DSH、账号与其他 SEA-BRIDGE 数据不受影响。
 
 当前完整应用启动仍要求三项 Telegram 配置，即使主要通过网页使用。不要把网页登录密码写入这个环境文件；它通过本机命令设置。
 

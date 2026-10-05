@@ -1,17 +1,26 @@
 import { readCodexAttachment } from "../codex-attachment.ts";
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
+import type { CodexReadService } from "../../desktop/codex-read-service.ts";
+import type { CodexCatalogHealth } from "../../desktop/codex-catalog-store.ts";
 import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
   openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
-  appServer: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">;
+  appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">;
+  catalogs?: Pick<CodexReadService, "listProjects" | "listModels">;
+  actions?: Pick<CodexAppServerClient, "startThreadAndTurn">;
+  readThread?: Pick<CodexReadService, "getThread">["getThread"];
+  catalogHealth?: () => CodexCatalogHealth["state"];
+  sourceStatus?: () => WebSourceStatusState;
+  observerStatus?: () => { history: string; notifications: string };
+  actionsAvailable?: () => boolean;
   queue: Pick<ProcessCodexQueueClient, "queue">;
   sessionRoots: readonly string[];
   pathExists: (path: string) => boolean;
@@ -30,6 +39,7 @@ export class CodexWebSource implements WebSource {
   private readonly nativeActivity = new Map<string, { activity: CodexActivity; readAt: number }>();
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
+  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn">;
   private projectsReadable = false;
   private modelsReadable = false;
   private sessionsReadable = false;
@@ -37,8 +47,32 @@ export class CodexWebSource implements WebSource {
 
   /** Reuse existing clients without changing Telegram preferences or mappings. */
   constructor(private readonly deps: CodexSourceDependencies) {
-    this.projectCache = new CatalogCache(() => deps.appServer.listProjects());
-    this.modelCache = new CatalogCache(() => deps.appServer.listModels());
+    const catalogs = deps.catalogs ?? deps.appServer;
+    const actions = deps.actions ?? deps.appServer;
+    if (!catalogs || !actions) throw new Error("codex_source_dependencies_missing");
+    this.actions = actions;
+    this.projectCache = new CatalogCache(() => catalogs.listProjects());
+    this.modelCache = new CatalogCache(() => catalogs.listModels());
+  }
+
+  statusDetails(): Record<string, string> {
+    const catalog = this.deps.catalogHealth?.() ?? "unavailable";
+    const observer = this.deps.observerStatus?.();
+    return {
+      catalog,
+      history: observer?.history ?? "unavailable",
+      notifications: observer?.notifications ?? "unavailable",
+      actions: (this.deps.actionsAvailable?.() ?? this.deps.queueUsable) ? "ready" : "unavailable",
+    };
+  }
+
+  statusState(): WebSourceStatusState {
+    if (this.deps.sourceStatus) return this.deps.sourceStatus();
+    const health = this.deps.catalogHealth?.();
+    return health === "stale" ? "stale"
+      : health === "reinitialize_required" ? "reinitialize_required"
+      : health === "unavailable" ? "unavailable"
+      : "limited";
   }
 
   /** Report independently proven discovery and configured execution capabilities. */
@@ -48,11 +82,32 @@ export class CodexWebSource implements WebSource {
       createEnabled: this.projectsReadable && this.deps.queueUsable, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
   }
 
+  /** Sample overview capabilities explicitly so "not yet used" is not rendered as unavailable. */
+  async probeCapabilities(): Promise<void> {
+    await this.sessions();
+    await Promise.allSettled([this.projects(), this.models()]);
+    this.historyReadable = false;
+    const candidates = this.deps.threads.listActive().filter((thread) => Boolean(thread.rolloutPath)).slice(0, 5);
+    for (const thread of candidates) {
+      if (!thread.rolloutPath) continue;
+      try {
+        await readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, null, 1);
+        this.historyReadable = true;
+        return;
+      } catch {
+        // A single missing or malformed rollout must not hide history support for other threads.
+      }
+    }
+  }
+
   /** Open an existing active thread on explicit request; never queue or resume input here. */
   async openDesktop(id: string): Promise<void> {
     if (!this.deps.openDesktop) throw new Error("desktop_open_unavailable");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("invalid_session_id");
-    if (!this.deps.threads.listActive().some((thread) => thread.id === id)) throw new Error("session_missing");
+    const current = this.deps.readThread
+      ? await this.deps.readThread(id)
+      : this.deps.threads.getThread?.(id) ?? this.deps.threads.listActive().find((thread) => thread.id === id) ?? null;
+    if (!current) throw new Error("session_missing");
     if (this.owners.has(id)) throw new Error("first_turn_owned");
     if (this.desktopOpening || Date.now() - this.desktopOpenedAt < 5000) throw new Error("desktop_open_busy");
     this.desktopOpening = true;
@@ -64,6 +119,8 @@ export class CodexWebSource implements WebSource {
   /** List verified nonarchived threads without inventing project ownership. */
   async sessions(): Promise<WebSession[]> {
     try {
+      const health = this.deps.catalogHealth?.();
+      if (health === "unavailable" || health === "reinitialize_required") throw new Error("catalog_unavailable");
       const threads = this.deps.threads.listActive(); this.sessionsReadable = true;
       return threads.sort((a, b) => b.updatedAtMs - a.updatedAtMs).map((thread) => {
         const approval = this.deps.pendingApproval(thread.id);
@@ -112,6 +169,7 @@ export class CodexWebSource implements WebSource {
   async history(id: string, cursor: string | null, limit: number): Promise<WebHistory> {
     const thread = this.deps.threads.getThread?.(id);
     if (!thread) { this.historyReadable = false; throw new Error("session_missing"); }
+    if (!thread.rolloutPath) { this.historyReadable = false; throw new Error("history_unavailable"); }
     try {
       const [history, activity] = await Promise.all([
         readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit),
@@ -137,7 +195,7 @@ export class CodexWebSource implements WebSource {
   /** Resolve images from native user records without accepting arbitrary browser paths. */
   async attachment(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }> {
     const thread = this.deps.threads.getThread?.(id);
-    if (!thread) throw new Error("attachment_missing");
+    if (!thread?.rolloutPath) throw new Error("attachment_missing");
     const message = await readCodexMessage(thread.rolloutPath, this.deps.sessionRoots, messageId);
     return readCodexAttachment(id, messageId, index, { messages: message ? [message] : [], cursor: null, completeUserHistory: false });
   }
@@ -157,7 +215,7 @@ export class CodexWebSource implements WebSource {
     }
     let known: string | null = null;
     try {
-      const result = await this.deps.appServer.startThreadAndTurn({
+      const result = await this.actions.startThreadAndTurn({
         projectId: project.id, cwd: project.primaryRoot, prompt: input.prompt, ...(input.modelId ? { model: input.modelId } : {}),
         onThreadStarted: (id) => { known = id; this.owners.add(id); input.onSessionKnown(id); this.deps.registerCreatedThread?.(id); },
         onOwnershipReleased: (id) => { this.owners.delete(id); },

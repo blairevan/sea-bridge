@@ -73,8 +73,10 @@ export interface AppConfig {
   hookSocketPath: string;
   approvalTimeoutMs: number;
   activeSessionTtlMs: number;
-  codexStateDbPath: string;
-  codexThreadHistoryDbPath: string;
+  /** @deprecated Test-fixture compatibility only; runtime no longer reads Codex SQLite directly. */
+  codexStateDbPath?: string;
+  /** @deprecated Test-fixture compatibility only; runtime no longer reads thread_history SQLite. */
+  codexThreadHistoryDbPath?: string;
   codexCliPath: string;
   desktopPollIntervalMs: number;
   telegramSummaryMaxChars: number;
@@ -165,11 +167,9 @@ export function resolveCodexCli(configuredPath?: string): { path: string; usable
 export function loadConfig(): AppConfig {
   const dbPath = expandHome(process.env.SEA_BRIDGE_DB_PATH ?? "~/Library/Application Support/SeaBridge/sea-bridge.sqlite3");
   const hookSocketPath = expandHome(process.env.SEA_BRIDGE_HOOK_SOCKET ?? "~/Library/Application Support/SeaBridge/run/codex-hook.sock");
-  const codexStateDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_STATE_DB_PATH ?? "~/.codex/state_5.sqlite");
-  const codexThreadHistoryDbPath = expandHome(process.env.SEA_BRIDGE_CODEX_THREAD_HISTORY_DB_PATH ?? "~/.codex/thread_history_1.sqlite");
   const cliResolution = resolveCodexCli(process.env.SEA_BRIDGE_CODEX_CLI_PATH);
   const codexCliPath = cliResolution.path;
-  const codexHome = expandHome(process.env.CODEX_HOME ?? dirname(codexStateDbPath));
+  const codexHome = expandHome(process.env.CODEX_HOME ?? "~/.codex");
   const dshReadOnlyEnabled = booleanValue("SEA_BRIDGE_DSH_READ_ONLY_ENABLED", false);
   const dshWriteEnabled = booleanValue("SEA_BRIDGE_DSH_WRITE_ENABLED", false);
   const dshNotificationsEnabled = booleanValue("SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED", false);
@@ -195,8 +195,6 @@ export function loadConfig(): AppConfig {
     hookSocketPath,
     approvalTimeoutMs: positiveInt("SEA_BRIDGE_APPROVAL_TIMEOUT_MS", 25_000),
     activeSessionTtlMs: positiveInt("SEA_BRIDGE_ACTIVE_SESSION_TTL_MS", 10 * 60_000),
-    codexStateDbPath,
-    codexThreadHistoryDbPath,
     codexCliPath,
     desktopPollIntervalMs: positiveInt("SEA_BRIDGE_DESKTOP_POLL_INTERVAL_MS", 2_000),
     telegramSummaryMaxChars: positiveInt("SEA_BRIDGE_TELEGRAM_SUMMARY_MAX_CHARS", 3_000),

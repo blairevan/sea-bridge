@@ -426,6 +426,31 @@ test("overview describes independent capabilities and Telegram stopped state wit
   expect(nodes.get("overview-session-scope")?.textContent).toContain("部分来源");
 });
 
+test("overview keeps actively probed status capabilities when the concurrent sessions snapshot is older", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, loadStatus })', {
+    URLSearchParams,
+    fetch: async (path: string) => Response.json({ data: path === "/api/status" ? {
+      observedAt: 1,
+      sources: { codex: { state: "limited", capabilities: { sessionsReadable: true, historyReadable: true, projectsReadable: true, modelsReadable: true, createEnabled: true, sendEnabled: true } } },
+      telegram: { stopped: false, pollFailed: false, lastPollSuccessAt: 1 },
+    } : {
+      items: [], cursor: null, partial: false,
+      capabilities: { codex: { sessionsReadable: true, historyReadable: false, projectsReadable: false, modelsReadable: false, createEnabled: false, sendEnabled: true } },
+    } }),
+    document: {
+      cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as { state: { paused: boolean; settings: { redactionEnabled: boolean }; caps: Record<string, Record<string, boolean>> }; loadStatus: () => Promise<void> };
+  ui.state.paused = false; ui.state.settings = { redactionEnabled: true };
+  await ui.loadStatus();
+  expect(ui.state.caps.codex).toMatchObject({ historyReadable: true, projectsReadable: true, modelsReadable: true, createEnabled: true });
+});
+
 test("unchanged history polling retains message nodes and expanded image state", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
