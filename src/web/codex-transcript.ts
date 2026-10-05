@@ -7,12 +7,86 @@ import type { WebHistory, WebMessage } from "./sources/types.ts";
 const READ_WINDOW_BYTES = 256 * 1024;
 const MAX_LATEST_SCAN_BYTES = 16 * 1024 * 1024;
 
-/** Remove complete leading runtime envelopes, preserving questions and quoted examples. */
+/** Advance past whitespace without normalizing the preserved user text. */
+function skipWhitespace(text: string, from: number): number {
+  let index = from;
+  while (index < text.length && /\s/.test(text[index] ?? "")) index++;
+  return index;
+}
+
+/** Consume one complete XML-like runtime block at the current logical start. */
+function consumeRuntimeBlock(text: string, from: number, tag: "INSTRUCTIONS" | "environment_context"): number | null {
+  const start = skipWhitespace(text, from);
+  const openTag = `<${tag}>`;
+  const closeTag = `</${tag}>`;
+  if (!text.startsWith(openTag, start)) return null;
+  const close = text.indexOf(closeTag, start + openTag.length);
+  return close < 0 ? null : close + closeTag.length;
+}
+
+/** Consume Codex's generated AGENTS heading only when it is followed by a complete INSTRUCTIONS block. */
+function consumeAgentsEnvelope(text: string, from: number): number | null {
+  const start = skipWhitespace(text, from);
+  const newline = text.indexOf("\n", start);
+  const lineEnd = newline < 0 ? text.length : newline;
+  const line = text.slice(start, lineEnd).replace(/\r$/, "");
+  if (!/^# AGENTS\.md instructions(?: for .+)?$/.test(line)) return null;
+  return consumeRuntimeBlock(text, newline < 0 ? lineEnd : newline + 1, "INSTRUCTIONS");
+}
+
+/** Require the stronger runtime shape before removing AGENTS text that a user could legitimately quote. */
+function consumeAgentsRuntimeEnvelope(text: string, from: number): number | null {
+  let cursor = from;
+  let count = 0;
+  while (true) {
+    const next = consumeAgentsEnvelope(text, cursor);
+    if (next === null) break;
+    cursor = next;
+    count++;
+  }
+  if (count === 0) return null;
+  const environment = consumeRuntimeBlock(text, cursor, "environment_context");
+  if (environment !== null) return environment;
+  return skipWhitespace(text, cursor) === text.length ? cursor : null;
+}
+
+/**
+ * Remove only complete leading Codex runtime envelopes.
+ *
+ * Quoted examples/fenced blocks are preserved because matching is anchored to the logical start.
+ * A real question appended after the injected envelope remains visible.
+ */
 function userMessageText(text: string): string {
-  let visible = text;
-  const envelope = /^\s*<environment_context>[\s\S]*?<\/environment_context>\s*/;
-  while (envelope.test(visible)) visible = visible.replace(envelope, "");
-  return visible;
+  let cursor = 0;
+  let consumed = false;
+  while (true) {
+    const agents = consumeAgentsRuntimeEnvelope(text, cursor);
+    if (agents !== null) {
+      cursor = agents;
+      consumed = true;
+      continue;
+    }
+
+    const environment = consumeRuntimeBlock(text, cursor, "environment_context");
+    if (environment !== null) {
+      cursor = environment;
+      consumed = true;
+      continue;
+    }
+
+    // Some Codex builds omit the AGENTS heading but still emit the paired runtime envelope.
+    const instructions = consumeRuntimeBlock(text, cursor, "INSTRUCTIONS");
+    if (instructions !== null) {
+      const pairedEnvironment = consumeRuntimeBlock(text, instructions, "environment_context");
+      if (pairedEnvironment !== null) {
+        cursor = pairedEnvironment;
+        consumed = true;
+        continue;
+      }
+    }
+    break;
+  }
+  return consumed ? text.slice(skipWhitespace(text, cursor)) : text;
 }
 
 /** Parse only fixture-backed response-item user and final-answer records. */

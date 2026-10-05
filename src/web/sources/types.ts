@@ -33,7 +33,13 @@ export interface CreateRequest {
   onSessionKnown: (id: string) => void;
 }
 /** Web adapter boundary independent of Telegram IDs and preferences. */
+export type WebSourceStatusState = "limited" | "stale" | "unavailable" | "protocol_incompatible" | "reinitialize_required";
+
 export interface WebSource {
+  statusDetails?(): Record<string, string>;
+  statusState?(): WebSourceStatusState;
+  /** Actively sample read-only capabilities for status pages instead of relying on prior user actions. */
+  probeCapabilities?(): Promise<void>;
   attachment?(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }>;
   openDesktop?(id: string): Promise<void>;
   capabilities(): WebSourceCapabilities;

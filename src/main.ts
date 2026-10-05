@@ -17,13 +17,14 @@ import { HookServer } from "./desktop/providers/hook-server.ts";
 import { TelegramService } from "./telegram/service.ts";
 import { DesktopSameSessionAdapter } from "./desktop/same-session-adapter.ts";
 import { DesktopMessageStore } from "./state/desktop-message-store.ts";
-import { CodexThreadStore } from "./desktop/codex-thread-store.ts";
+import { CodexObserverStore } from "./state/codex-observer-store.ts";
+import { CodexCatalogStore } from "./desktop/codex-catalog-store.ts";
+import { CodexReadService } from "./desktop/codex-read-service.ts";
 import { CodexQueueStore } from "./desktop/codex-queue-store.ts";
 import { DesktopObserver } from "./desktop/desktop-observer.ts";
 import { ProcessCodexQueueClient } from "./desktop/codex-queue-client.ts";
 import { CodexQueueDiagnostics } from "./desktop/codex-queue-diagnostics.ts";
 import { readQueueExecutionEvidence, readCodexProcesses, readRolloutOpenPids } from "./desktop/codex-queue-evidence.ts";
-import { ThreadHistoryStore } from "./desktop/thread-history-store.ts";
 import { CodexAppServerClient } from "./desktop/codex-app-server-client.ts";
 import { NewThreadManager } from "./desktop/new-thread-manager.ts";
 import { NewThreadStateStore } from "./state/new-thread-state-store.ts";
@@ -72,15 +73,19 @@ async function main(): Promise<void> {
   );
   const desktop = new DesktopSameSessionAdapter(state, sessions, queue, config.activeSessionTtlMs);
   const messages = new DesktopMessageStore(state);
-  const threadStore = new CodexThreadStore(config.codexStateDbPath);
+  const catalogStore = new CodexCatalogStore(state, config.codexHome);
+  const observerStore = new CodexObserverStore(state, config.codexHome);
+  const observerEnvironmentReady = observerStore.ensureEnvironment() === "ready"
+    && catalogStore.health().state !== "reinitialize_required";
+  const readService = new CodexReadService(config.codexCliPath, config.codexHome, { logger });
   const nativeQueue = new CodexQueueStore(join(config.codexHome, "queue_1.sqlite"));
   const sessionRoots = [join(config.codexHome, "sessions"), join(config.codexHome, "archived_sessions")];
   const queueDiagnostics = new CodexQueueDiagnostics({ logger, readQueue: () => nativeQueue.readMetadata(),
     processes: async (id) => {
       const processes = await readCodexProcesses();
       try {
-        const thread = threadStore.getThread(id);
-        const handles = thread ? await readRolloutOpenPids(thread.rolloutPath) : null;
+        const thread = catalogStore.getThread(id);
+        const handles = thread?.rolloutPath ? await readRolloutOpenPids(thread.rolloutPath) : null;
         return { ...processes, rolloutHandleReadAvailable: handles?.available ?? false,
           rolloutOpenPids: handles?.pids.filter((pid) => processes.codexChildPids.includes(pid)) ?? [] };
       } catch { return { ...processes, rolloutHandleReadAvailable: false, rolloutOpenPids: [] }; }
@@ -88,8 +93,8 @@ async function main(): Promise<void> {
     evidence: async (id, clientIds) => {
       let native;
       try {
-        const thread = threadStore.getThread(id);
-        native = thread ? await readQueueExecutionEvidence(thread.rolloutPath, sessionRoots, clientIds) : null;
+        const thread = catalogStore.getThread(id);
+        native = thread?.rolloutPath ? await readQueueExecutionEvidence(thread.rolloutPath, sessionRoots, clientIds) : null;
       } catch { native = null; }
       const hook = sessions.getById(id);
       return { available: native?.available ?? false, activity: native?.activity ?? null, matches: native?.matches ?? new Map(),
@@ -97,17 +102,26 @@ async function main(): Promise<void> {
         hook: hook ? { state: hook.activityState, turnId: hook.turnId, lastEvent: hook.lastEvent, lastSeenAt: hook.lastSeenAt } : null };
     },
   });
-  const queueClient = new ProcessCodexQueueClient(config.codexCliPath, undefined, 15_000, queueDiagnostics);
-  const appServerClient = new CodexAppServerClient(config.codexCliPath, {
+  const queueClient = new ProcessCodexQueueClient(
+    config.codexCliPath,
+    undefined,
+    15_000,
+    queueDiagnostics,
+    config.codexHome,
+    () => observerEnvironmentReady,
+  );
+  const actionClient = new CodexAppServerClient(config.codexCliPath, {
     inboundRequestHandler: createAppServerApprovalHandler(approvals, logger),
     codexHome: config.codexHome,
   });
   const newThreadManager = new NewThreadManager(
-    appServerClient,
+    readService,
     new NewThreadStateStore(state),
     {
+      actions: actionClient,
+      actionAvailable: () => observerEnvironmentReady,
       onThreadStarted: (threadId) => {
-        messages.registerCreatedThread(threadId);
+        observerStore.registerCreatedThread(threadId);
       },
     },
   );
@@ -179,14 +193,22 @@ async function main(): Promise<void> {
   }
 
   const observer = new DesktopObserver(
-    threadStore,
-    new ThreadHistoryStore(config.codexThreadHistoryDbPath),
+    readService,
+    catalogStore,
+    observerStore,
     messages,
     telegramClient,
     config.allowedChatId,
     logger,
     config.desktopPollIntervalMs,
     config.telegramSummaryMaxChars,
+    {
+      runtimeEvidence: (threadId) => {
+        const observed = sessions.getById(threadId);
+        if (!observed || Date.now() - observed.lastSeenAt > config.activeSessionTtlMs) return null;
+        return { state: observed.activityState, turnId: observed.turnId, lastEvent: observed.lastEvent };
+      },
+    },
   );
   const hookProvider = new CodexHookProvider(
     sessions,
@@ -205,7 +227,7 @@ async function main(): Promise<void> {
     messages,
     queueClient,
     logger,
-    threadStore,
+    catalogStore,
     newThreadManager,
     dshReadOnly,
     dshStore,
@@ -224,10 +246,25 @@ async function main(): Promise<void> {
     }
     return new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
       sourceFactory: (webStore) => ({
-        codex: new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: threadStore, appServer: appServerClient, queue: queueClient,
+        codex: new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
+          catalogs: readService, actions: actionClient, readThread: (id) => readService.getThread(id),
+          catalogHealth: () => catalogStore.health().state,
+          sourceStatus: () => {
+            const catalog = catalogStore.health().state;
+            if (!observerEnvironmentReady || catalog === "reinitialize_required") return "reinitialize_required";
+            if (readService.state === "protocol_incompatible") return "protocol_incompatible";
+            if (catalog === "unavailable") return "unavailable";
+            if (["starting", "degraded", "restarting", "stopped"].includes(readService.state)) return "stale";
+            if (catalog === "stale") return "stale";
+            return "limited";
+          },
+          observerStatus: () => observer.health,
+          actionsAvailable: () => codexCliUsable && observerEnvironmentReady,
+          queue: queueClient,
           readQueue: (id) => nativeQueue.read(id),
           sessionRoots, pathExists: existsSync,
-          queueUsable: codexCliUsable, registerCreatedThread: (id) => messages.registerCreatedThread(id),
+          queueUsable: codexCliUsable && observerEnvironmentReady,
+          registerCreatedThread: (id) => observerStore.registerCreatedThread(id),
           pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
           activity: (id) => {
             const observed = sessions.getById(id);
@@ -251,7 +288,8 @@ async function main(): Promise<void> {
     await observer.stop();
     await queueDiagnostics.stop();
     await hookServer.stop().catch((error) => logger.warn("hook_server_stop_failed", { error: String(error) }));
-    await appServerClient.close().catch((error) => logger.warn("app_server_stop_failed", { error: String(error) }));
+    await readService.close().catch((error) => logger.warn("read_service_stop_failed", { error: String(error) }));
+    await actionClient.close().catch((error) => logger.warn("app_server_stop_failed", { error: String(error) }));
     state.close();
     logger.info("shutdown_complete");
   };
@@ -260,6 +298,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
   await hookServer.start();
+  void readService.start().catch((error) => logger.warn("codex_read_service_start_deferred", { error: String(error) }));
   observer.start();
   queueDiagnostics.start();
   dshObserver?.start();

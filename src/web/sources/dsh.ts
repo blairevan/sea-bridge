@@ -53,6 +53,22 @@ export class DshWebSource implements WebSource {
       sendEnabled: enabled && this.writes && this.transportHealthy, approvalTransport: null };
   }
 
+  /** Probe the fixed read-only Host surface for the overview instead of waiting for user navigation. */
+  async probeCapabilities(): Promise<void> {
+    this.requireRead();
+    const sessions = await this.sessions();
+    await Promise.allSettled([this.projects(), this.models()]);
+    const first = sessions[0];
+    if (!first) { this.historyReadable = true; return; }
+    try {
+      const snapshot = await this.host.followSnapshot(first.id);
+      const page = await this.host.pageHistory(first.id, snapshot.cursor);
+      this.historyReadable = !page.truncated;
+    } catch {
+      this.historyReadable = false;
+    }
+  }
+
   /** List only Host-supplied session fields, never guessed project ownership. */
   async sessions(): Promise<WebSession[]> {
     this.requireRead();

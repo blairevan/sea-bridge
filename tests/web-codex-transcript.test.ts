@@ -26,6 +26,52 @@ test("environment-only records are hidden while mixed questions, examples and by
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Codex runtime AGENTS envelopes are hidden while appended user requests and quoted examples survive", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-agents-envelope-"));
+  const file = join(root, "fixture.jsonl");
+  const agents = "# AGENTS.md instructions for /fixture\n\n<INSTRUCTIONS>\nDo not expose this runtime instruction.\n</INSTRUCTIONS>";
+  const environment = "<environment_context>\n<cwd>/fixture</cwd>\n<shell>zsh</shell>\n</environment_context>";
+  const pairedWithoutHeading = "<INSTRUCTIONS>\nInjected runtime rule.\n</INSTRUCTIONS>\n\n" + environment;
+  const quoted = "请解释下面这段 Codex 元数据，而不是执行它：\n\n```text\n" + agents + "\n" + environment + "\n```";
+  const directFence = "```text\n" + agents + "\n" + environment + "\n```";
+  const incomplete = "# AGENTS.md instructions for /fixture\n\n<INSTRUCTIONS>\nunfinished";
+  const discussedRawAgents = agents + "\n\n请帮我审查上面的 AGENTS.md 规则";
+  const attachment = "# Files mentioned by the user:\n\n## image.png: /tmp/codex-remote-attachments/thread/image.png\n\n## My request:\n看看图片";
+  const record = (text: string) => ({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
+  const raw = [
+    record(agents + "\n\n" + environment),
+    record(agents + "\n\n" + environment + "\n\n真实问题"),
+    record(agents + "\n\n# AGENTS.md instructions for /fixture/sub\n\n<INSTRUCTIONS>\nNested runtime rule.\n</INSTRUCTIONS>\n\n" + environment + "\n\n嵌套后问题"),
+    record(pairedWithoutHeading + "\n\n无标题封装后的问题"),
+    record(environment + "\n\n" + attachment),
+    record(quoted),
+    record(directFence),
+    record(incomplete),
+    record(discussedRawAgents),
+    record("我正在讨论 AGENTS.md instructions 和 <INSTRUCTIONS> 标签"),
+  ].map((item) => JSON.stringify(item)).join("\n") + "\n";
+  try {
+    writeFileSync(file, raw);
+    const messages = []; let cursor: string | null = null;
+    do {
+      const page = await readCodexTranscript(file, [root], cursor, 20);
+      messages.unshift(...page.messages); cursor = page.cursor;
+    } while (cursor);
+    expect(messages.map((message) => message.text)).toEqual([
+      "真实问题",
+      "嵌套后问题",
+      "无标题封装后的问题",
+      attachment,
+      quoted,
+      directFence,
+      incomplete,
+      discussedRawAgents,
+      "我正在讨论 AGENTS.md instructions 和 <INSTRUCTIONS> 标签",
+    ]);
+    expect(await Bun.file(file).text()).toBe(raw);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("bounded Codex reader accepts verified text and rejects path escapes", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-rollout-"));
   try {
@@ -133,6 +179,10 @@ test("exact native message reads enforce confinement, record boundaries and size
     writeFileSync(file, "{}\n" + line);
     expect((await readCodexMessage(file, [sessions], "rollout-3"))?.text).toBe("exact");
     expect(await readCodexMessage(file, [sessions], "rollout-0")).toBeNull();
+    const runtimeAttachment = "# AGENTS.md instructions for /fixture\n\n<INSTRUCTIONS>\nInjected.\n</INSTRUCTIONS>\n\n<environment_context>\n<cwd>/fixture</cwd>\n</environment_context>\n\n# Files mentioned by the user:\n\n## image.png: /tmp/codex-remote-attachments/thread/image.png\n\n## My request:\nInspect.";
+    const runtimeLine = JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: runtimeAttachment }] } });
+    writeFileSync(file, runtimeLine);
+    expect((await readCodexMessage(file, [sessions], "rollout-0"))?.text).toStartWith("# Files mentioned by the user:");
     await expect(readCodexMessage(file, [sessions], "rollout-4")).rejects.toThrow();
     await expect(readCodexMessage(file, [sessions], "rollout-03")).rejects.toThrow();
     await expect(readCodexMessage(file, [sessions], "rollout-99999")).rejects.toThrow();

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { CodexAppServerClient } from "../src/desktop/codex-app-server-client.ts";
+import { AppServerSession, CodexAppServerClient } from "../src/desktop/codex-app-server-client.ts";
 
 class MockProcess extends EventEmitter {
   stdin = {
@@ -39,7 +39,88 @@ class MockProcess extends EventEmitter {
   }
 }
 
+describe("AppServerSession framing", () => {
+  test("consumes complete newline-delimited messages before enforcing the incomplete-buffer limit", async () => {
+    const proc = new MockProcess(() => undefined);
+    const session = new AppServerSession(
+      proc as unknown as ChildProcessWithoutNullStreams,
+      500,
+      undefined,
+      { maxStdoutBufferChars: 64, maxJsonLineChars: 256 },
+    );
+    const result = session.request<{ ok: boolean }>("probe", {});
+    const chunk = Array.from({ length: 6 }, (_, index) => JSON.stringify({ method: "notice", params: { index } })).join("\n")
+      + "\n" + JSON.stringify({ id: 1, result: { ok: true } }) + "\n";
+    expect(chunk.length).toBeGreaterThan(64);
+    proc.stdout.emit("data", chunk);
+    await expect(result).resolves.toEqual({ ok: true });
+    await session.closeGracefully();
+  });
+
+  test("accepts a single valid response larger than the old 1 MiB ceiling when below the configured bound", async () => {
+    const proc = new MockProcess(() => undefined);
+    const session = new AppServerSession(
+      proc as unknown as ChildProcessWithoutNullStreams,
+      1_000,
+      undefined,
+      { maxStdoutBufferChars: 2 * 1024 * 1024, maxJsonLineChars: 2 * 1024 * 1024 },
+    );
+    const result = session.request<{ payload: string }>("large", {});
+    const payload = "x".repeat(1024 * 1024 + 128 * 1024);
+    proc.stdout.emit("data", JSON.stringify({ id: 1, result: { payload } }) + "\n");
+    await expect(result).resolves.toEqual({ payload });
+    await session.closeGracefully();
+  });
+
+  test("still rejects an unterminated response that exceeds the configured incomplete-buffer bound", async () => {
+    const proc = new MockProcess(() => undefined);
+    const session = new AppServerSession(
+      proc as unknown as ChildProcessWithoutNullStreams,
+      500,
+      undefined,
+      { maxStdoutBufferChars: 64, maxJsonLineChars: 256 },
+    );
+    const result = session.request("probe", {});
+    proc.stdout.emit("data", "x".repeat(65));
+    await expect(result).rejects.toThrow("app_server_stdout_buffer_limit");
+  });
+});
+
 describe("CodexAppServerClient", () => {
+  test("injects CODEX_HOME into the actual app-server child environment", async () => {
+    let proc!: MockProcess;
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") proc.send({ id: message.id, result: {} });
+      if (message.method === "project/list") proc.send({ id: message.id, result: { data: [], nextCursor: null } });
+    });
+    const client = new CodexAppServerClient("/codex", {
+      codexHome: "/target/codex-home",
+      spawner: (_command, _args, env) => { capturedEnv = env; return proc as unknown as ChildProcessWithoutNullStreams; },
+    });
+    await client.listProjects();
+    expect(capturedEnv?.CODEX_HOME).toBe("/target/codex-home");
+    await client.close();
+  });
+
+  test("graceful close immediately rejects pending RPCs instead of waiting for their timeout", async () => {
+    let proc!: MockProcess;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { entered = resolve; });
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "project/list") entered();
+    });
+    const client = new CodexAppServerClient("/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+      requestTimeoutMs: 500,
+    });
+    const listing = client.listProjects();
+    await pending;
+    await client.close();
+    await expect(listing).rejects.toThrow("app_server_session_closed");
+  });
+
   test("releases ownership once after completion and concurrent shutdown", async () => {
     let proc: MockProcess;
     proc = new MockProcess((message) => {

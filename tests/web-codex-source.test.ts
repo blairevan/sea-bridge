@@ -86,6 +86,27 @@ test("Codex history capability is proven independently from thread listing", asy
   expect(source.capabilities()).toMatchObject({ sessionsReadable: true, historyReadable: true, finalReplyReadable: true });
 });
 
+test("Codex overview capability probe samples catalogs and bounded history without prior navigation", async () => {
+  const fixture = "tests/fixtures/codex-rollout-web/visible.jsonl";
+  const source = new CodexWebSource({
+    threads: {
+      listActive: () => [{ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: fixture }],
+      getThread: () => ({ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: fixture }),
+    },
+    appServer: {
+      async listProjects() { return [{ id: "project", index: 1, name: "fixture", roots: ["/repo"], primaryRoot: "/repo", position: 1 }]; },
+      async listModels() { return [{ id: "model", displayName: "fixture" }]; },
+      async startThreadAndTurn() { throw new Error("unused"); },
+    },
+    queue: { async queue() { throw new Error("unused"); } },
+    sessionRoots: ["tests/fixtures/codex-rollout-web"], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+
+  expect(source.capabilities()).toMatchObject({ projectsReadable: false, modelsReadable: false, historyReadable: false, createEnabled: false });
+  await source.probeCapabilities();
+  expect(source.capabilities()).toMatchObject({ sessionsReadable: true, projectsReadable: true, modelsReadable: true, historyReadable: true, finalReplyReadable: true, createEnabled: true });
+});
+
 test("Codex catalog failure before thread start is a definite failure", async () => {
   let starts = 0;
   const source = new CodexWebSource({

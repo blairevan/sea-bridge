@@ -3,7 +3,7 @@ import { classifyCreationClient, type CreationClient } from "./codex-provenance.
 
 export interface CodexThread {
   id: string;
-  rolloutPath: string;
+  rolloutPath: string | null;
   title: string;
   updatedAtMs: number;
   creationClient?: CreationClient;

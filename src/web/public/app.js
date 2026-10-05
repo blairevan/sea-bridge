@@ -81,7 +81,7 @@ function restoreOverviewCache() {
     const raw = localStorage.getItem("sea-overview-v1"); if (!raw || raw.length > 128000) return;
     const value = JSON.parse(raw);
     if (value.schema !== 1 || value.deviceId !== state.device.id || value.settingsVersion !== state.settings.version || !Number.isFinite(value.savedAt) || Date.now() - value.savedAt > 86400000 || value.savedAt > Date.now() || !value.status || !Array.isArray(value.sessions?.items) || value.sessions.items.length > 30) { clearOverviewCache(); return; }
-    renderOverview(value.status, value.sessions, value.continuation, true);
+    renderOverview(value.status, value.sessions, value.sessions.items[0] ?? null, true);
     const freshness = el("overview-freshness"); freshness.hidden = false;
     freshness.textContent = `上次数据 · ${new Date(value.savedAt).toLocaleString("zh-CN")} · 正在更新`;
   } catch { clearOverviewCache(); }
@@ -737,7 +737,13 @@ async function openOverviewCapability(source, capability) {
 function sourceStatusCard(name, source) {
   const card = node("article", "", "status-card source-card");
   const heading = node("div", "", "source-heading");
-  heading.append(node("h3", sourceDisplayName(name)), node("span", !source ? "未接入" : source.state === "limited" ? "已采样" : "暂不可用", "status-badge"));
+  const sourceStateLabel = !source ? "未接入"
+    : source.state === "limited" ? "已采样"
+      : source.state === "stale" ? "缓存数据"
+        : source.state === "reinitialize_required" ? "需重新初始化"
+          : source.state === "protocol_incompatible" ? "协议不兼容"
+            : "暂不可用";
+  heading.append(node("h3", sourceDisplayName(name)), node("span", sourceStateLabel, "status-badge"));
   card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : "Host 会话与消息桥接", "muted"));
   const capabilities = node("div", "", "capability-grid");
   for (const [key, label] of [["sessionsReadable", "会话读取"], ["historyReadable", "历史读取"], ["projectsReadable", "项目目录"], ["modelsReadable", "模型目录"], ["createEnabled", "新建会话"], ["sendEnabled", "发送消息"]]) {
@@ -764,18 +770,9 @@ function rememberSession(session) {
   try { localStorage.setItem(`sea-last-session:${state.device.id}`, JSON.stringify({ source: session.source, id: session.id })); } catch { /* Storage may be disabled. */ }
 }
 
-/** Select the previous conversation even outside the latest page, respecting source failures. */
+/** Select the newest row from the same ordered session page used by the overview. */
 async function continueSessionTarget(sessions) {
-  const pointer = lastSessionPointer();
-  if (!pointer) return sessions.items[0] ?? null;
-  const known = sessions.items.find((item) => item.source === pointer.source && item.id === pointer.id);
-  if (known) return known;
-  try {
-    const params = new URLSearchParams({ source: pointer.source, sessionId: pointer.id, limit: "1" });
-    const result = await api(`/api/sessions?${params}`);
-    if (result.partial) return null;
-    return result.items.find((item) => item.source === pointer.source && item.id === pointer.id) ?? sessions.items[0] ?? null;
-  } catch { return null; }
+  return sessions.items[0] ?? null;
 }
 
 /** Route a single deliberate click directly into the selected conversation. */
@@ -795,7 +792,7 @@ function renderContinueSession(session) {
   const signature = JSON.stringify([session.source, session.id, session.title, session.state, session.updatedAt, session.creationClient, session.creationPending]);
   if (button.dataset?.sessionSignature !== signature || !button.childElementCount) {
     if (button.dataset) button.dataset.sessionSignature = signature;
-    const heading = node("span", "", "continue-heading"); heading.append(node("small", "继续会话"), node("span", "进入 →", "continue-arrow"));
+    const heading = node("span", "", "continue-heading"); heading.append(node("small", "最新会话"), node("span", "进入 →", "continue-arrow"));
     const title = node("strong", session.title, "continue-title"); title.title = session.title;
     button.replaceChildren(heading, title, node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
   }
@@ -815,7 +812,13 @@ async function loadStatus() {
 /** Render live or explicitly stale dashboard data without fetching conversation bodies. */
 function renderOverview(status, sessions, continuation, cached = false) {
   renderContinueSession(continuation);
-  state.overviewSessions = sessions.items; if (!cached) state.caps = sessions.capabilities ?? state.caps;
+  state.overviewSessions = sessions.items;
+  if (!cached) {
+    state.caps = sessions.capabilities ?? state.caps;
+    for (const [name, source] of Object.entries(status.sources ?? {})) {
+      if (source?.capabilities) state.caps[name] = source.capabilities;
+    }
+  }
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   el("overview-observed").textContent = `来源采样 ${overviewTime(status.observedAt)}`;
   el("overview-privacy").textContent = state.settings?.redactionEnabled === true ? "隐私脱敏已开启" : state.settings?.redactionEnabled === false ? "隐私脱敏已关闭" : "脱敏状态未确认";

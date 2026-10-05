@@ -426,6 +426,31 @@ test("overview describes independent capabilities and Telegram stopped state wit
   expect(nodes.get("overview-session-scope")?.textContent).toContain("部分来源");
 });
 
+test("overview keeps actively probed status capabilities when the concurrent sessions snapshot is older", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const ui = runInNewContext(script.slice(0, end) + '\n({ state, loadStatus })', {
+    URLSearchParams,
+    fetch: async (path: string) => Response.json({ data: path === "/api/status" ? {
+      observedAt: 1,
+      sources: { codex: { state: "limited", capabilities: { sessionsReadable: true, historyReadable: true, projectsReadable: true, modelsReadable: true, createEnabled: true, sendEnabled: true } } },
+      telegram: { stopped: false, pollFailed: false, lastPollSuccessAt: 1 },
+    } : {
+      items: [], cursor: null, partial: false,
+      capabilities: { codex: { sessionsReadable: true, historyReadable: false, projectsReadable: false, modelsReadable: false, createEnabled: false, sendEnabled: true } },
+    } }),
+    document: {
+      cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as { state: { paused: boolean; settings: { redactionEnabled: boolean }; caps: Record<string, Record<string, boolean>> }; loadStatus: () => Promise<void> };
+  ui.state.paused = false; ui.state.settings = { redactionEnabled: true };
+  await ui.loadStatus();
+  expect(ui.state.caps.codex).toMatchObject({ historyReadable: true, projectsReadable: true, modelsReadable: true, createEnabled: true });
+});
+
 test("unchanged history polling retains message nodes and expanded image state", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -703,24 +728,23 @@ test("running timer counts from native timestamp and hides on completion or miss
   state.selected = { source: "codex", state: "running" }; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.hidden).toBe(true);
 });
 
-test("continuation prefers last visited identity and verifies old or unavailable sessions", async () => {
+test("overview latest session ignores the last visited identity and follows refreshed ordering", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const start = script.indexOf("function lastSessionPointer()");
   const end = script.indexOf("/** Route a single deliberate click", start);
-  let pointer: string | null = null; let partial = false;
   const old = { id: "old", source: "codex" }; const latest = { id: "latest", source: "dsh" };
-  let items = [old]; let calls = 0;
-  const ui = runInNewContext(script.slice(start, end) + "\n({continueSessionTarget, rememberSession})", {
+  const newer = { id: "newer", source: "codex" };
+  let calls = 0;
+  const ui = runInNewContext(script.slice(start, end) + "\n({continueSessionTarget})", {
     state: { device: { id: "device" } }, URLSearchParams,
-    localStorage: { getItem: () => pointer, setItem: (_key: string, value: string) => { pointer = value; } },
-    api: async () => { calls++; return { items, partial }; },
+    localStorage: { getItem: () => JSON.stringify(old) },
+    api: async () => { calls++; return { items: [old] }; },
   });
-  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
-  ui.rememberSession({ ...old, title: "private title", text: "private message" });
-  expect(pointer).not.toContain("private");
-  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(old); expect(calls).toBe(1);
-  partial = true; expect(await ui.continueSessionTarget({ items: [latest] })).toBeNull();
-  partial = false; items = []; expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
+  expect(await ui.continueSessionTarget({ items: [latest, old] })).toEqual(latest);
+  expect(await ui.continueSessionTarget({ items: [newer, latest, old] })).toEqual(newer);
+  expect(await ui.continueSessionTarget({ items: [] })).toBeNull();
+  expect(await ui.continueSessionTarget({ items: [latest], partial: true })).toEqual(latest);
+  expect(calls).toBe(0);
 });
 
 test("continuation card rebuilds after privacy clearing even with unchanged identity", async () => {
@@ -910,16 +934,16 @@ test("startup reports login versus settings requests and names the timed-out sta
 test("overview snapshots require fresh device/policy verification and expire safely", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const start = script.indexOf("/** Discard the overview snapshot"); const end = script.indexOf("/** Generate an RFC", start);
-  let raw: string | null = null; let renders = 0; let blocked = false;
+  let raw: string | null = null; let renders = 0; let blocked = false; let restored: unknown;
   const state = { page: "overview", device: { id: "device" }, settings: { version: 7 } };
   const freshness = new ElementFixture("p");
   const ui = runInNewContext(script.slice(start, end) + "\n({ saveOverviewCache, restoreOverviewCache, clearOverviewCache })", {
-    state, el: () => freshness, renderOverview() { renders++; }, localStorage: {
+    state, el: () => freshness, renderOverview(_status: unknown, _sessions: unknown, continuation: unknown) { renders++; restored = continuation; }, localStorage: {
       getItem() { if (blocked) throw new Error("blocked"); return raw; }, setItem(_key: string, value: string) { if (blocked) throw new Error("blocked"); raw = value; }, removeItem() { raw = null; },
     },
   }) as { saveOverviewCache(status: unknown, sessions: { items: unknown[] }, continuation: unknown): void; restoreOverviewCache(): void; clearOverviewCache(): void };
-  ui.saveOverviewCache({ observedAt: 1 }, { items: [{ id: "session", title: "last title" }] }, null);
-  const valid = raw!; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(freshness.textContent).toContain("上次数据");
+  ui.saveOverviewCache({ observedAt: 1 }, { items: [{ id: "session", title: "last title" }] }, { id: "old" });
+  const valid = raw!; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(restored).toEqual({ id: "session", title: "last title" }); expect(freshness.textContent).toContain("上次数据");
   state.device.id = "other"; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
   state.device.id = "device"; raw = valid; state.settings.version = 8; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
   state.settings.version = 7; raw = JSON.stringify({ ...JSON.parse(valid), savedAt: Date.now() - 86400001 }); ui.restoreOverviewCache(); expect(raw).toBeNull();

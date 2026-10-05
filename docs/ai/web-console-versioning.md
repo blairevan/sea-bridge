@@ -275,3 +275,28 @@
 - 修复快速切换筛选时请求被拦截、筛选外选中会话断线恢复后不能发送、较早历史附件无法读取，以及原生数据库路径错误会创建空数据库的问题。
 - `bun test` 366 pass / 0 fail；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 通过。
 - 已部署，LaunchAgent running，仅监听 127.0.0.1:7310；本机和 HTTPS 域名页面、JS/CSS 与发布快照一致，未认证接口 401，SQLite 健康，账号和已有设备会话保留。iPhone 人工交互验收待完成。
+
+## v0.14.5 follow-up（待部署）
+
+- Codex 历史读取扩展运行时封装过滤：隐藏开头的完整 `# AGENTS.md instructions` + `<INSTRUCTIONS>` + `<environment_context>` 注入，以及无 AGENTS 标题但完整成对的 `<INSTRUCTIONS>` + `<environment_context>`；同条消息中封装后的真实问题继续展示。
+- 过滤采用保守结构识别：AGENTS 文本只有在后续存在完整 environment runtime block，或整条消息仅由完整 AGENTS/INSTRUCTIONS 构成时才隐藏。用户主动讨论 AGENTS.md、代码围栏示例、不完整 envelope 均保留。
+- 附件 `# Files mentioned by the user:` / `<image>` 元数据继续由现有附件展示链路单独处理，不并入通用 runtime filter；assistant commentary/tool records 和 memory citation 也继续沿用各自已有过滤逻辑。
+- 回归覆盖纯注入、注入后真实问题、多层 AGENTS、无标题 runtime pair、附件 envelope、代码围栏、主动讨论和 exact-message 读取；不修改原始 rollout 文件。
+
+## v1.0.0
+
+- 按用户确认，将官方 app-server 读取架构作为 1.0 正式发布节点，包含此前 supervisor、LKG、observer 和主动能力采样改造。
+- 本次修复 Codex 用户历史中的完整 AGENTS/runtime 封装展示，保留真实问题与附件；截图中 23:21:16 原始记录经真实解析验证返回 null。
+- 验证：`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`bun test`（403 pass / 0 fail / 1825 expect）、`git diff --check`。
+- 已部署 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.0.0-20261005-234035`；本机与公网首页版本及静态资源参数均为 1.0.0，发布文件与构建产物逐字节一致，SQLite quick_check 为 ok。
+- 启动配置和一致性数据库备份：`/Users/zhuhaijun/.config/sea-bridge/backups/20261005-234035`。没有 observer reset、数据库迁移、commit 或 push；手机登录后的显示仍待用户刷新验收。
+
+## v1.0.1
+
+- 修复跨进程读取中无完成时间、无最终正文、无同 turn Interrupt 证据的 interrupted 误判；持续 reconciliation，不按 settle 超时强行通知。
+- 允许有明确完成证据的 interrupted → completed 一次更正，使用独立 fingerprint，保留已发消息链接，原子替换尚未发送的旧 outbox。
+- 部署前审查补充：未更正的已通知 interrupted turn 保留在 anchor 分页追踪集合，完成更正后退出，防止较旧记录超过 overlap 后漏更正。
+- 验证命令：`bun test tests/codex-observer-store.test.ts tests/desktop-observer.test.ts`、`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`bun test`、`git diff --check`。409 pass / 0 fail / 1843 expect。
+- 真实 Codex 0.160.0 + 生产数据库副本只读验收：7 条 completed correction 均含正文，没有发送测试通知。
+- 发布：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.0.1-20261006-001007`；备份：`/Users/zhuhaijun/.config/sea-bridge/backups/20261006-001007`。本机/公网首页版本 1.0.1，数据库 quick_check ok。
+- 部署后等待正常 reconciliation，7 条 completed correction 已全部 sent，7 条旧 interrupted reply link 保留；没有新错误或 observer refresh failure。未 reset、未 schema 迁移、未 commit/push。Telegram 客户端实际展示待用户查看。

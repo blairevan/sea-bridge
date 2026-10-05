@@ -22,7 +22,8 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|indexedDB|serviceWorker/);
   const pointerStart = script.indexOf("function lastSessionPointer()");
-  const pointerEnd = script.indexOf("/** Select the previous conversation", pointerStart);
+  const pointerEnd = script.indexOf("/** Select the newest row", pointerStart);
+  expect(pointerStart).toBeGreaterThan(-1); expect(pointerEnd).toBeGreaterThan(pointerStart);
   const themeStart = script.indexOf("/** Apply a visual preference");
   const themeEnd = script.indexOf("/** Generate an RFC", themeStart);
   expect(script.slice(0, themeStart) + script.slice(themeEnd, pointerStart) + script.slice(pointerEnd)).not.toContain("localStorage");
