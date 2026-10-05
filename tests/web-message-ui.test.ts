@@ -909,16 +909,16 @@ test("startup reports login versus settings requests and names the timed-out sta
 test("overview snapshots require fresh device/policy verification and expire safely", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const start = script.indexOf("/** Discard the overview snapshot"); const end = script.indexOf("/** Generate an RFC", start);
-  let raw: string | null = null; let renders = 0; let blocked = false;
+  let raw: string | null = null; let renders = 0; let blocked = false; let restored: unknown;
   const state = { page: "overview", device: { id: "device" }, settings: { version: 7 } };
   const freshness = new ElementFixture("p");
   const ui = runInNewContext(script.slice(start, end) + "\n({ saveOverviewCache, restoreOverviewCache, clearOverviewCache })", {
-    state, el: () => freshness, renderOverview() { renders++; }, localStorage: {
+    state, el: () => freshness, renderOverview(_status: unknown, _sessions: unknown, continuation: unknown) { renders++; restored = continuation; }, localStorage: {
       getItem() { if (blocked) throw new Error("blocked"); return raw; }, setItem(_key: string, value: string) { if (blocked) throw new Error("blocked"); raw = value; }, removeItem() { raw = null; },
     },
   }) as { saveOverviewCache(status: unknown, sessions: { items: unknown[] }, continuation: unknown): void; restoreOverviewCache(): void; clearOverviewCache(): void };
-  ui.saveOverviewCache({ observedAt: 1 }, { items: [{ id: "session", title: "last title" }] }, null);
-  const valid = raw!; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(freshness.textContent).toContain("上次数据");
+  ui.saveOverviewCache({ observedAt: 1 }, { items: [{ id: "session", title: "last title" }] }, { id: "old" });
+  const valid = raw!; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(restored).toEqual({ id: "session", title: "last title" }); expect(freshness.textContent).toContain("上次数据");
   state.device.id = "other"; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
   state.device.id = "device"; raw = valid; state.settings.version = 8; ui.restoreOverviewCache(); expect(renders).toBe(1); expect(raw).toBeNull();
   state.settings.version = 7; raw = JSON.stringify({ ...JSON.parse(valid), savedAt: Date.now() - 86400001 }); ui.restoreOverviewCache(); expect(raw).toBeNull();

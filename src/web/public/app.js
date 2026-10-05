@@ -81,7 +81,7 @@ function restoreOverviewCache() {
     const raw = localStorage.getItem("sea-overview-v1"); if (!raw || raw.length > 128000) return;
     const value = JSON.parse(raw);
     if (value.schema !== 1 || value.deviceId !== state.device.id || value.settingsVersion !== state.settings.version || !Number.isFinite(value.savedAt) || Date.now() - value.savedAt > 86400000 || value.savedAt > Date.now() || !value.status || !Array.isArray(value.sessions?.items) || value.sessions.items.length > 30) { clearOverviewCache(); return; }
-    renderOverview(value.status, value.sessions, value.continuation, true);
+    renderOverview(value.status, value.sessions, value.sessions.items[0] ?? null, true);
     const freshness = el("overview-freshness"); freshness.hidden = false;
     freshness.textContent = `上次数据 · ${new Date(value.savedAt).toLocaleString("zh-CN")} · 正在更新`;
   } catch { clearOverviewCache(); }
