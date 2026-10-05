@@ -764,18 +764,9 @@ function rememberSession(session) {
   try { localStorage.setItem(`sea-last-session:${state.device.id}`, JSON.stringify({ source: session.source, id: session.id })); } catch { /* Storage may be disabled. */ }
 }
 
-/** Select the previous conversation even outside the latest page, respecting source failures. */
+/** Select the newest row from the same ordered session page used by the overview. */
 async function continueSessionTarget(sessions) {
-  const pointer = lastSessionPointer();
-  if (!pointer) return sessions.items[0] ?? null;
-  const known = sessions.items.find((item) => item.source === pointer.source && item.id === pointer.id);
-  if (known) return known;
-  try {
-    const params = new URLSearchParams({ source: pointer.source, sessionId: pointer.id, limit: "1" });
-    const result = await api(`/api/sessions?${params}`);
-    if (result.partial) return null;
-    return result.items.find((item) => item.source === pointer.source && item.id === pointer.id) ?? sessions.items[0] ?? null;
-  } catch { return null; }
+  return sessions.items[0] ?? null;
 }
 
 /** Route a single deliberate click directly into the selected conversation. */
@@ -795,7 +786,7 @@ function renderContinueSession(session) {
   const signature = JSON.stringify([session.source, session.id, session.title, session.state, session.updatedAt, session.creationClient, session.creationPending]);
   if (button.dataset?.sessionSignature !== signature || !button.childElementCount) {
     if (button.dataset) button.dataset.sessionSignature = signature;
-    const heading = node("span", "", "continue-heading"); heading.append(node("small", "继续会话"), node("span", "进入 →", "continue-arrow"));
+    const heading = node("span", "", "continue-heading"); heading.append(node("small", "最新会话"), node("span", "进入 →", "continue-arrow"));
     const title = node("strong", session.title, "continue-title"); title.title = session.title;
     button.replaceChildren(heading, title, node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
   }

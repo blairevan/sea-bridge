@@ -703,24 +703,23 @@ test("running timer counts from native timestamp and hides on completion or miss
   state.selected = { source: "codex", state: "running" }; ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.hidden).toBe(true);
 });
 
-test("continuation prefers last visited identity and verifies old or unavailable sessions", async () => {
+test("overview latest session ignores the last visited identity and follows refreshed ordering", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const start = script.indexOf("function lastSessionPointer()");
   const end = script.indexOf("/** Route a single deliberate click", start);
-  let pointer: string | null = null; let partial = false;
   const old = { id: "old", source: "codex" }; const latest = { id: "latest", source: "dsh" };
-  let items = [old]; let calls = 0;
-  const ui = runInNewContext(script.slice(start, end) + "\n({continueSessionTarget, rememberSession})", {
+  const newer = { id: "newer", source: "codex" };
+  let calls = 0;
+  const ui = runInNewContext(script.slice(start, end) + "\n({continueSessionTarget})", {
     state: { device: { id: "device" } }, URLSearchParams,
-    localStorage: { getItem: () => pointer, setItem: (_key: string, value: string) => { pointer = value; } },
-    api: async () => { calls++; return { items, partial }; },
+    localStorage: { getItem: () => JSON.stringify(old) },
+    api: async () => { calls++; return { items: [old] }; },
   });
-  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
-  ui.rememberSession({ ...old, title: "private title", text: "private message" });
-  expect(pointer).not.toContain("private");
-  expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(old); expect(calls).toBe(1);
-  partial = true; expect(await ui.continueSessionTarget({ items: [latest] })).toBeNull();
-  partial = false; items = []; expect(await ui.continueSessionTarget({ items: [latest] })).toEqual(latest);
+  expect(await ui.continueSessionTarget({ items: [latest, old] })).toEqual(latest);
+  expect(await ui.continueSessionTarget({ items: [newer, latest, old] })).toEqual(newer);
+  expect(await ui.continueSessionTarget({ items: [] })).toBeNull();
+  expect(await ui.continueSessionTarget({ items: [latest], partial: true })).toEqual(latest);
+  expect(calls).toBe(0);
 });
 
 test("continuation card rebuilds after privacy clearing even with unchanged identity", async () => {
