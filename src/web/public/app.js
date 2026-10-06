@@ -645,7 +645,7 @@ function handleDesktopRecoveryNotice(event) {
   if (!value || typeof value !== "object" || value.threadId !== state.selected.id || value.version !== state.version
       || !Number.isSafeInteger(value.occurredAt) || Date.now() - value.occurredAt > 30_000 || value.occurredAt - Date.now() > 5000) return;
   if (value.outcome === "open_requested") {
-    notice("检测到排队超过 10 秒，已请求 Mac 激活此会话；是否恢复执行请以消息状态为准。", { kind: "info", durationMs: 10_000 });
+    notice("检测到排队超过 30 秒，已请求 Mac 激活此会话；是否恢复执行请以消息状态为准。", { kind: "info", durationMs: 10_000 });
   } else if (value.outcome === "failed") {
     notice("自动激活 Codex 的请求失败，可到设置中的「Mac 会话恢复」手动尝试。", { kind: "warning", sticky: true });
   }

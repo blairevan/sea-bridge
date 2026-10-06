@@ -730,7 +730,7 @@ test("automatic recovery notices distinguish requested activation from failure a
   }) as (event: { data: string }) => void;
   const event = { threadId: "thread", outcome: "open_requested", occurredAt: 20_000, version: 1 };
   handle({ data: JSON.stringify(event) });
-  expect(notices[0]?.text).toContain("已请求 Mac 激活此会话"); expect(notices[0]?.kind).toBe("info");
+  expect(notices[0]?.text).toContain("排队超过 30 秒"); expect(notices[0]?.text).toContain("已请求 Mac 激活此会话"); expect(notices[0]?.kind).toBe("info");
   handle({ data: JSON.stringify({ ...event, outcome: "failed" }) });
   expect(notices[1]?.text).toContain("设置"); expect(notices[1]?.kind).toBe("warning");
   for (const data of ["invalid", "null", JSON.stringify({ ...event, threadId: "other" }), JSON.stringify({ ...event, version: 0 }),
