@@ -412,6 +412,7 @@ function setConnectionControls(disabled) {
   if (createSubmit) createSubmit.disabled = disabled || Boolean(state.pending) || !el("create-project").value || !state.caps[el("create-source")?.value]?.createEnabled;
   const settingsSubmit = el("redaction-form")?.querySelector?.('button[type="submit"]');
   if (settingsSubmit) settingsSubmit.disabled = disabled;
+  const desktopOpen = el("open-desktop"); if (desktopOpen) desktopOpen.disabled = disabled;
 }
 /** Preserve all loaded page data and drafts while the server connection is unverified. */
 function retainLoadedViews() {
@@ -636,7 +637,20 @@ function invalidatePolicy(version) {
   state.recoverySeq++; state.stream?.close(); state.stream = null; state.recovering = false;
   cancelStreamTimer(); cancelReconnectTimer(); scheduleReconnect(true);
 }
-/** Subscribe only to control events; EventSource failure enters the same bounded recovery path. */
+/** Show only fresh, policy-matched outcomes for the Codex conversation currently being viewed. */
+function handleDesktopRecoveryNotice(event) {
+  if (state.paused || !["sessions", "settings"].includes(state.page) || state.selected?.source !== "codex") return;
+  let value;
+  try { value = JSON.parse(event.data); } catch { return; }
+  if (!value || typeof value !== "object" || value.threadId !== state.selected.id || value.version !== state.version
+      || !Number.isSafeInteger(value.occurredAt) || Date.now() - value.occurredAt > 30_000 || value.occurredAt - Date.now() > 5000) return;
+  if (value.outcome === "open_requested") {
+    notice("检测到排队超过 10 秒，已请求 Mac 激活此会话；是否恢复执行请以消息状态为准。", { kind: "info", durationMs: 10_000 });
+  } else if (value.outcome === "failed") {
+    notice("自动激活 Codex 的请求失败，可到设置中的「Mac 会话恢复」手动尝试。", { kind: "warning", sticky: true });
+  }
+}
+/** Subscribe to control and recovery outcomes; EventSource failure uses the bounded recovery path. */
 function connectEvents() {
   cancelStreamTimer();
   const stream = new EventSource("/api/events"); state.stream = stream;
@@ -651,6 +665,10 @@ function connectEvents() {
   };
   stream.onerror = () => { if (state.stream === stream) enterDisconnected(); };
   stream.addEventListener("session_revoked", () => { if (state.stream !== stream) return; showLogin(); notice("设备已被撤销，请重新登录"); });
+  stream.addEventListener("desktop_recovery", (event) => {
+    if (state.stream !== stream) return;
+    handleDesktopRecoveryNotice(event);
+  });
   stream.addEventListener("settings_version", (event) => {
     if (state.stream !== stream) return;
     const version = JSON.parse(event.data).version;
@@ -904,7 +922,6 @@ async function loadSessions(more) {
     }
     if (live) state.selected = live;
     el("session-title").textContent = state.selected.title; renderSessionStatus();
-    el("open-desktop").hidden = state.selected.source !== "codex" || !state.caps.codex?.desktopOpenEnabled;
     el("send-button").disabled = state.paused || !state.selected.sendEnabled || Boolean(state.pending);
   }
 }
@@ -1107,12 +1124,23 @@ async function loadRecords(more) {
   el("log-items").replaceChildren();
   for (const item of logs.items) el("log-items").append(node("pre", `${new Date(item.createdAt).toLocaleString()} ${item.event} ${item.fields}`, "record-row"));
 }
+/** Explain the selected recovery target and hide actions unsupported by this source or host. */
+function renderDesktopRecoverySettings() {
+  const available = Boolean(state.caps.codex?.desktopOpenEnabled);
+  const selected = state.selected?.source === "codex" ? state.selected : null;
+  el("open-desktop").hidden = !available || !selected;
+  el("open-desktop").disabled = state.paused;
+  el("desktop-recovery-target").textContent = !available
+    ? "当前服务不支持在 Mac 上打开 Codex 会话。"
+    : selected ? `当前会话：${selected.title}` : "请先在会话页选择需要恢复的 Codex 会话，再返回设置。";
+}
 /** Display global policy and revocable device metadata. */
 async function loadSettings() {
   const viewEpoch = state.viewEpoch;
   const settings = await api("/api/settings");
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   state.settings = settings; el("redaction-enabled").checked = settings.redactionEnabled;
+  renderDesktopRecoverySettings();
   const devices = await api("/api/devices");
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   el("device-items").replaceChildren();

@@ -1,8 +1,9 @@
 import type { WebStore } from "./store.ts";
+import type { CodexQueueRecoveryNotice } from "../desktop/codex-queue-recovery.ts";
 
 interface Connection { deviceId: string; controller: ReadableStreamDefaultController<Uint8Array>; dispose: () => void; }
 
-/** Authenticated control-only event registry with bounded per-device connections. */
+/** Authenticated control and outcome metadata registry with bounded per-device connections. */
 export class WebEvents {
   private readonly connections = new Set<Connection>();
   private readonly encoder = new TextEncoder();
@@ -41,6 +42,19 @@ export class WebEvents {
   /** Broadcast only a version, never private display data. */
   settingsChanged(version: number): void { for (const connection of this.connections) this.emit(connection, "settings_version", { version }); }
 
+  /** Broadcast recovery metadata without titles or message content, rechecking device authorization. */
+  desktopRecovery(notice: CodexQueueRecoveryNotice): void {
+    const version = this.store.getSettings().version;
+    for (const connection of [...this.connections]) {
+      const device = this.store.getDevice(connection.deviceId);
+      if (!device || device.revokedAt !== null || device.expiresAt <= Date.now()) {
+        this.revoke(connection.deviceId); continue;
+      }
+      this.emit(connection, "desktop_recovery", { threadId: notice.threadId, outcome: notice.outcome,
+        occurredAt: notice.occurredAt, version });
+    }
+  }
+
   /** Send revocation control and close all connections for the target device. */
   revoke(deviceId: string): void {
     for (const connection of [...this.connections]) if (connection.deviceId === deviceId) {
@@ -55,7 +69,7 @@ export class WebEvents {
   close(): void { for (const connection of [...this.connections]) connection.dispose(); }
 
   /** Encode a bounded control event, disposing slow clients instead of buffering forever. */
-  private emit(connection: Connection, name: string, value: Record<string, number>): void {
+  private emit(connection: Connection, name: string, value: Record<string, string | number>): void {
     this.enqueue(connection, `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`);
   }
 

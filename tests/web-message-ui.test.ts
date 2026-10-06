@@ -695,6 +695,51 @@ test("manual desktop opening requires confirmation and sends no message", async 
   state.paused = false; state.selected.source = "dsh"; await open(); expect(requests).toHaveLength(1);
 });
 
+test("manual Mac recovery lives in settings and identifies the selected Codex target", async () => {
+  const html = await Bun.file("src/web/public/index.html").text();
+  const settings = html.slice(html.indexOf('<section id="settings"'));
+  expect(settings).toContain('id="open-desktop"');
+  expect(html.slice(0, html.indexOf('<section id="settings"'))).not.toContain('id="open-desktop"');
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("function renderDesktopRecoverySettings()");
+  const end = script.indexOf("/** Display global policy", start);
+  const state: { paused: boolean; caps: { codex: { desktopOpenEnabled: boolean } }; selected: { source: string; title: string } | null } = {
+    paused: false, caps: { codex: { desktopOpenEnabled: true } }, selected: { source: "codex", title: "目标会话" },
+  };
+  const button = { hidden: false, disabled: false }; const target = { textContent: "" };
+  const render = runInNewContext(script.slice(start, end) + "\nrenderDesktopRecoverySettings", {
+    state, el: (id: string) => id === "open-desktop" ? button : target,
+  });
+  render(); expect(button.hidden).toBe(false); expect(target.textContent).toContain("目标会话");
+  state.paused = true; render(); expect(button.disabled).toBe(true);
+  state.selected = { source: "dsh", title: "其他会话" }; render();
+  expect(button.hidden).toBe(true); expect(target.textContent).toContain("选择");
+  state.selected = null; render(); expect(button.hidden).toBe(true);
+  state.caps.codex.desktopOpenEnabled = false; render(); expect(target.textContent).toContain("不支持");
+});
+
+test("automatic recovery notices distinguish requested activation from failure and ignore unrelated or stale data", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const start = script.indexOf("function handleDesktopRecoveryNotice(");
+  const end = script.indexOf("/** Subscribe", start);
+  const state = { paused: false, version: 1, page: "sessions", selected: { source: "codex", id: "thread" } };
+  const notices: Array<{ text: string; kind: string | undefined }> = [];
+  const handle = runInNewContext(script.slice(start, end) + "\nhandleDesktopRecoveryNotice", {
+    state, Date: { now: () => 20_000 },
+    notice: (text: string, options: { kind?: string }) => notices.push({ text, kind: options.kind }),
+  }) as (event: { data: string }) => void;
+  const event = { threadId: "thread", outcome: "open_requested", occurredAt: 20_000, version: 1 };
+  handle({ data: JSON.stringify(event) });
+  expect(notices[0]?.text).toContain("已请求 Mac 激活此会话"); expect(notices[0]?.kind).toBe("info");
+  handle({ data: JSON.stringify({ ...event, outcome: "failed" }) });
+  expect(notices[1]?.text).toContain("设置"); expect(notices[1]?.kind).toBe("warning");
+  for (const data of ["invalid", "null", JSON.stringify({ ...event, threadId: "other" }), JSON.stringify({ ...event, version: 0 }),
+    JSON.stringify({ ...event, occurredAt: -20_000 }), JSON.stringify({ ...event, outcome: "completed" })]) handle({ data });
+  expect(notices).toHaveLength(2);
+  state.paused = true; handle({ data: JSON.stringify(event) }); expect(notices).toHaveLength(2);
+  state.paused = false; state.selected.source = "dsh"; handle({ data: JSON.stringify(event) }); expect(notices).toHaveLength(2);
+});
+
 test("logout cancellation preserves pairing and confirmation revokes exactly once", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const start = script.indexOf("async function confirmLogout()");
