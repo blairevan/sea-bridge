@@ -6,6 +6,15 @@ import { join } from "node:path";
 import { WebServer } from "../src/web/server.ts";
 import { loadWebConfig } from "../src/config.ts";
 
+test("form controls have a device-independent readable font without disabling zoom", async () => {
+  const css = await Bun.file("src/web/public/app.css").text();
+  const html = await Bun.file("src/web/public/index.html").text();
+  // The base rule must cover dialog and login fields, not just the composer.
+  const baseCss = css.slice(0, css.indexOf("@media"));
+  expect(baseCss).toMatch(/(?:^|})\s*input\s*,\s*select\s*,\s*textarea\s*\{[^}]*font-size\s*:\s*16px\s*[;}]/);
+  expect(html).not.toMatch(/user-scalable\s*=\s*(?:no|0)(?:\D|$)|maximum-scale\s*=\s*1(?:\D|$)/i);
+});
+
 test("static shell has local assets and no unsafe rendering or persistent body cache", async () => {
   const html = renderVersionedShell(await Bun.file("src/web/public/index.html").text());
   const script = await Bun.file("src/web/public/app.js").text();
