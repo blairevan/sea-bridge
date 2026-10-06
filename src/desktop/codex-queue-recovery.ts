@@ -1,6 +1,8 @@
 import type { Logger } from "../logger.ts";
 import type { CodexQueueMetadataSnapshot } from "./codex-queue-store.ts";
 
+const QUEUE_WAIT_MS = 30_000;
+
 /** A launch receipt or failure, never a claim that queued work has begun executing. */
 export interface CodexQueueRecoveryNotice {
   threadId: string;
@@ -36,7 +38,7 @@ export class CodexQueueRecovery {
   start(): void {
     if (this.timer) return;
     this.stopped = false;
-    this.deps.logger.info("codex_queue_recovery_started", { pollIntervalMs: 1000, queueWaitMs: 10_000 });
+    this.deps.logger.info("codex_queue_recovery_started", { pollIntervalMs: 1000, queueWaitMs: QUEUE_WAIT_MS });
     this.timer = setInterval(() => void this.pollOnce(), 1000);
     this.timer.unref();
     void this.pollOnce();
@@ -78,13 +80,13 @@ export class CodexQueueRecovery {
       if (this.stopped) return;
       if (seenThreads.has(item.threadId)) continue;
       seenThreads.add(item.threadId);
-      if (this.attempted.has(item.id) || this.now() - item.createdAt <= 10_000) continue;
+      if (this.attempted.has(item.id) || this.now() - item.createdAt <= QUEUE_WAIT_MS) continue;
       try {
         if (!await this.deps.isIdle(item.threadId) || this.stopped) continue;
         if (!await this.deps.isIdle(item.threadId) || this.stopped) continue;
         const current = this.deps.readQueue();
         if (!current.available || current.truncated || !current.items.some((pending) =>
-          pending.id === item.id && pending.threadId === item.threadId && this.now() - pending.createdAt > 10_000)) continue;
+          pending.id === item.id && pending.threadId === item.threadId && this.now() - pending.createdAt > QUEUE_WAIT_MS)) continue;
         for (const pending of current.items) {
           if (pending.threadId === item.threadId) this.attempted.add(pending.id);
         }
