@@ -11,6 +11,7 @@ import { WebServer, resolveWebStaticRoot } from "./server.ts";
 import type { WebConfig, WebService } from "./types.ts";
 import type { WebSource } from "./sources/types.ts";
 import type { TelegramStatus } from "./status.ts";
+import type { CodexQueueRecoveryNotice } from "../desktop/codex-queue-recovery.ts";
 
 /** Web runtime resources composed after the existing bridge's database is healthy. */
 export class WebRuntime implements WebService {
@@ -42,6 +43,11 @@ export class WebRuntime implements WebService {
     this.cleanup = setInterval(() => { try { store.cleanup(Date.now()); } catch { /* Retention failure cannot stop the existing bridge. */ } }, 60000);
     this.cleanup.unref();
     db.query("INSERT INTO web_logs(level,event,fields_json,created_at) VALUES('info','web_started','{}',?)").run(Date.now());
+  }
+
+  /** Forward server-side recovery outcomes to currently authenticated browser streams. */
+  notifyDesktopRecovery(notice: CodexQueueRecoveryNotice): void {
+    this.events?.desktopRecovery(notice);
   }
 
   /** Stop only Web resources, before the owner closes shared state and source clients. */

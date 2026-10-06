@@ -34,3 +34,22 @@ test("SSE sends version-only controls and revocation closes the device stream", 
   expect((await reader.read()).done).toBe(true);
   events.close(); db.close();
 });
+
+test("SSE recovery notice contains only outcome metadata and the current policy version", async () => {
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const auth = new WebAuth(store);
+  const paired = await loginFixture(auth); if (!paired) throw new Error("fixture failed");
+  const events = new WebEvents(store);
+  try {
+    const reader = events.open(paired.device.id, new AbortController().signal).getReader();
+    await reader.read();
+    events.desktopRecovery({ threadId: "11111111-1111-4111-8111-111111111111", outcome: "open_requested", occurredAt: 123 });
+    const update = new TextDecoder().decode((await reader.read()).value);
+    expect(update).toContain("event: desktop_recovery");
+    const line = update.split("\n").find((value) => value.startsWith("data: "));
+    expect(JSON.parse(line?.slice(6) ?? "{}")).toEqual({ threadId: "11111111-1111-4111-8111-111111111111", outcome: "open_requested", occurredAt: 123, version: store.getSettings().version });
+    store.revokeDevice(paired.device.id, Date.now());
+    events.desktopRecovery({ threadId: "11111111-1111-4111-8111-111111111111", outcome: "failed", occurredAt: 124 });
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("session_revoked");
+    expect((await reader.read()).done).toBe(true);
+  } finally { events.close(); db.close(); }
+});

@@ -1,3 +1,4 @@
+import { CodexQueueRecovery } from "./desktop/codex-queue-recovery.ts";
 import { openCodexDesktopThread } from "./desktop/codex-desktop-opener.ts";
 import { loadConfig, loadWebConfig, isExecutableUsable } from "./config.ts";
 import { startWebLifecycle } from "./web/server.ts";
@@ -236,6 +237,40 @@ async function main(): Promise<void> {
     dshObserver ?? undefined,
   );
 
+  const codexSource = new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
+    catalogs: readService, actions: actionClient, readThread: (id) => readService.getThread(id),
+    catalogHealth: () => catalogStore.health().state,
+    sourceStatus: () => {
+      const catalog = catalogStore.health().state;
+      if (!observerEnvironmentReady || catalog === "reinitialize_required") return "reinitialize_required";
+      if (readService.state === "protocol_incompatible") return "protocol_incompatible";
+      if (catalog === "unavailable") return "unavailable";
+      if (["starting", "degraded", "restarting", "stopped"].includes(readService.state)) return "stale";
+      if (catalog === "stale") return "stale";
+      return "limited";
+    },
+    observerStatus: () => observer.health,
+    actionsAvailable: () => codexCliUsable && observerEnvironmentReady,
+    queue: queueClient,
+    readQueue: (id) => nativeQueue.read(id),
+    sessionRoots, pathExists: existsSync,
+    queueUsable: codexCliUsable && observerEnvironmentReady,
+    registerCreatedThread: (id) => observerStore.registerCreatedThread(id),
+    pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
+    activity: (id) => {
+      const observed = sessions.getById(id);
+      if (!observed || Date.now() - observed.lastSeenAt > config.activeSessionTtlMs) return null;
+      return { state: observed.activityState, turnId: observed.turnId };
+    },
+  });
+  let webRuntime: WebRuntime | null = null;
+  const queueRecovery = process.platform === "darwin" ? new CodexQueueRecovery({
+    logger, readQueue: () => nativeQueue.readMetadata(),
+    isIdle: (id) => codexSource.isDesktopRecoveryIdle(id),
+    openDesktop: (id) => codexSource.openDesktop(id, true),
+    onRecovery: (notice) => webRuntime?.notifyDesktopRecovery(notice),
+  }) : null;
+
   const web = await startWebLifecycle(loadWebConfig, (webConfig) => {
     const secrets = [config.telegramBotToken];
     if (dshHost && existsSync(config.dshTokenPath)) {
@@ -244,44 +279,21 @@ async function main(): Promise<void> {
           (process.getuid && tokenStat.uid !== process.getuid())) throw new Error("web_secret_path_unsafe");
       secrets.push(readFileSync(config.dshTokenPath, "utf8").trim());
     }
-    return new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
+    webRuntime = new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
       sourceFactory: (webStore) => ({
-        codex: new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
-          catalogs: readService, actions: actionClient, readThread: (id) => readService.getThread(id),
-          catalogHealth: () => catalogStore.health().state,
-          sourceStatus: () => {
-            const catalog = catalogStore.health().state;
-            if (!observerEnvironmentReady || catalog === "reinitialize_required") return "reinitialize_required";
-            if (readService.state === "protocol_incompatible") return "protocol_incompatible";
-            if (catalog === "unavailable") return "unavailable";
-            if (["starting", "degraded", "restarting", "stopped"].includes(readService.state)) return "stale";
-            if (catalog === "stale") return "stale";
-            return "limited";
-          },
-          observerStatus: () => observer.health,
-          actionsAvailable: () => codexCliUsable && observerEnvironmentReady,
-          queue: queueClient,
-          readQueue: (id) => nativeQueue.read(id),
-          sessionRoots, pathExists: existsSync,
-          queueUsable: codexCliUsable && observerEnvironmentReady,
-          registerCreatedThread: (id) => observerStore.registerCreatedThread(id),
-          pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
-          activity: (id) => {
-            const observed = sessions.getById(id);
-            if (!observed || Date.now() - observed.lastSeenAt > config.activeSessionTtlMs) return null;
-            return { state: observed.activityState, turnId: observed.turnId };
-          },
-        }),
+        codex: codexSource,
         ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled,
           (id) => webStore.listAcceptedMessageSnapshots("dsh", id)) } : {}),
       }),
     });
+    return webRuntime;
   }, logger);
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
+    await queueRecovery?.stop();
     await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
     await telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
@@ -301,6 +313,7 @@ async function main(): Promise<void> {
   void readService.start().catch((error) => logger.warn("codex_read_service_start_deferred", { error: String(error) }));
   observer.start();
   queueDiagnostics.start();
+  queueRecovery?.start();
   dshObserver?.start();
   logger.info("sea_bridge_started", {
     dbPath: config.dbPath,

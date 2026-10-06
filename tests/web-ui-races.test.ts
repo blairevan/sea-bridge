@@ -232,6 +232,25 @@ class RaceStream {
   close(): void { this.readyState = 2; }
 }
 
+test("recovery events from a replaced SSE connection cannot show a notice", async () => {
+  const notices: string[] = [];
+  const ui = await fixture({ EventSource: RaceStream, notices, setTimeout: () => 1, clearTimeout() {} },
+    "\nnotice = (text) => notices.push(text);\n");
+  const helpers = ui.evaluate("({ state, connectEvents })") as {
+    state: { paused: boolean; version: number; page: string; selected: { id: string; source: string }; stream: RaceStream };
+    connectEvents: () => void;
+  };
+  helpers.state.paused = false; helpers.state.version = 1; helpers.state.page = "sessions";
+  helpers.state.selected = { id: "thread", source: "codex" };
+  helpers.connectEvents();
+  const old = helpers.state.stream.callbacks.get("desktop_recovery");
+  helpers.connectEvents();
+  const current = helpers.state.stream.callbacks.get("desktop_recovery");
+  const event = { data: JSON.stringify({ threadId: "thread", outcome: "open_requested", occurredAt: Date.now(), version: 1 }) };
+  old?.(event); expect(notices).toHaveLength(0);
+  current?.(event); expect(notices).toHaveLength(1);
+});
+
 test("consecutive settings events retain a recovery path after stale validation", async () => {
   const auth = deferred<Response>();
   const ui = await fixture({ EventSource: RaceStream, fetch: () => auth.promise, setTimeout: () => 1, clearTimeout() {} }, "\nnotice = () => {};\n");

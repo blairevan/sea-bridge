@@ -100,8 +100,21 @@ export class CodexWebSource implements WebSource {
     }
   }
 
-  /** Open an existing active thread on explicit request; never queue or resume input here. */
-  async openDesktop(id: string): Promise<void> {
+  /** Confirm idle from native lifecycle evidence while respecting approvals and first-turn ownership. */
+  async isDesktopRecoveryIdle(id: string): Promise<boolean> {
+    if (!this.deps.queueUsable || this.owners.has(id) || this.deps.pendingApproval(id) || this.deps.activity?.(id)?.state === "active") return false;
+    if (this.deps.catalogHealth && this.deps.catalogHealth() !== "ready") return false;
+    const thread = this.deps.threads.getThread?.(id);
+    if (!thread?.rolloutPath) return false;
+    try {
+      const activity = await readCodexActivity(thread.rolloutPath, this.deps.sessionRoots);
+      return activity?.state === "idle" && !this.owners.has(id) && !this.deps.pendingApproval(id)
+        && this.deps.activity?.(id)?.state !== "active";
+    } catch { return false; }
+  }
+
+  /** Open an existing active thread for manual or automatic recovery; never re-send input here. */
+  async openDesktop(id: string, requireIdle = false): Promise<void> {
     if (!this.deps.openDesktop) throw new Error("desktop_open_unavailable");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("invalid_session_id");
     const current = this.deps.readThread
@@ -109,6 +122,7 @@ export class CodexWebSource implements WebSource {
       : this.deps.threads.getThread?.(id) ?? this.deps.threads.listActive().find((thread) => thread.id === id) ?? null;
     if (!current) throw new Error("session_missing");
     if (this.owners.has(id)) throw new Error("first_turn_owned");
+    if (requireIdle && !await this.isDesktopRecoveryIdle(id)) throw new Error("desktop_recovery_not_idle");
     if (this.desktopOpening || Date.now() - this.desktopOpenedAt < 5000) throw new Error("desktop_open_busy");
     this.desktopOpening = true;
     this.desktopOpenedAt = Date.now();

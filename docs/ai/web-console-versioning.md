@@ -300,3 +300,10 @@
 - 真实 Codex 0.160.0 + 生产数据库副本只读验收：7 条 completed correction 均含正文，没有发送测试通知。
 - 发布：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.0.1-20261006-001007`；备份：`/Users/zhuhaijun/.config/sea-bridge/backups/20261006-001007`。本机/公网首页版本 1.0.1，数据库 quick_check ok。
 - 部署后等待正常 reconciliation，7 条 completed correction 已全部 sent，7 条旧 interrupted reply link 保留；没有新错误或 observer refresh failure。未 reset、未 schema 迁移、未 commit/push。Telegram 客户端实际展示待用户查看。
+
+## v1.1.0
+
+- Codex 空闲且原生消息排队超过 10 秒时，服务端自动请求激活对应 Desktop；共用会话、审批、首轮所有权和限流保护，同批消息只尝试一次。
+- 手动打开按钮移到设置；自动恢复请求成功或失败通过 SSE 显示在当前会话顶部提示区，过滤旧连接、过期事件和不同显示策略版本。
+- 428 项测试、typecheck、JS 语法检查、build 和 diff 检查通过；本机/公网页面版本及静态资源匹配，数据库健康且账号设备保留。
+- 已部署，并观察到真实自动激活后同一会话排队项离队及执行证据；未本轮实测 iPhone 顶部提示。详见 [部署验收](2026-10-06-codex-idle-recovery-deployment.md)。
