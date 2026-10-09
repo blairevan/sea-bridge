@@ -51,6 +51,7 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(css).toContain(".notice-bar.expanded .notice-text");
   expect(css).toContain(".notice-bar.notice-connection");
   expect(css).toContain("#sessions{padding:0;display:flex;height:100%;min-height:0;overflow:hidden}");
+  expect(css).toContain(".session-list .session-row{display:flex;flex-direction:column");
   expect(css).toContain("#messages{flex:1;min-height:0;overflow:auto");
 });
 
