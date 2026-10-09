@@ -34,6 +34,16 @@
 .overview-context{align-items:center}.overview-context #overview-privacy{font-size:12px;padding:7px 9px;min-height:44px}.overview-context #overview-privacy::after{content:" · 管理 →"}
 .capability-action{width:100%;border:0;border-top:1px solid #edf1ee;border-radius:0;background:transparent;color:inherit;text-align:left;min-height:44px;align-items:center}.capability-action:disabled{opacity:1;color:#88918d}.source-link{margin-top:14px;min-height:44px}.catalog-items{max-height:55dvh;overflow:auto;margin-bottom:16px}.catalog-row{padding:14px 4px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}#catalog-new{min-height:44px}#catalog-retry{margin:0 8px 12px 0}
 #sessions.browse-only .session-detail{display:none}#sessions.browse-only .session-list{width:100%;border-right:0}
+
+/* Session list items: stack title and metadata vertically with clean typography and hover state. */
+.session-list .session-row{display:flex;flex-direction:column;align-items:flex-start;gap:6px;width:100%;text-align:left;padding:14px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;border-radius:0}
+.session-list .session-row span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;flex:none;width:100%;font-weight:500;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.session-list .session-row small{display:block;flex:none;width:100%;font-size:12px;line-height:1.4;color:#687770;overflow-wrap:anywhere}
+.session-list .session-row:hover:not(.selected){background:#edf4ee}
+.session-list .session-row.selected small{color:#50655a}
+[data-theme="dark"] .session-list .session-row:hover:not(.selected){background:#2b4032}
+[data-theme="dark"] .session-list .session-row small{color:#8c9e94}
+[data-theme="dark"] .session-list .session-row.selected small{color:#9ec2ae}
 @media(max-width:760px){.overview-heading{flex-wrap:wrap;gap:12px}.overview-actions{margin-left:auto}.overview-actions button{padding:8px 10px;font-size:12px}.overview-summary>button{padding:14px 11px;min-height:104px}.overview-summary small{font-size:10px}.overview-context{display:flex}.overview-context>span{flex-basis:100%}.source-link{width:100%;text-align:center}}
 
 /* Explicit tracks contain iOS date inputs and align all record-filter controls. */

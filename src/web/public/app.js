@@ -707,7 +707,8 @@ async function openOverviewSessions(source = "", activity = "") {
     const items = cached.filter((session) => (!source || session.source === source) && (!activity || session.state === activity)).sort((a, b) => b.updatedAt - a.updatedAt);
     const list = el("session-items"); list.replaceChildren();
     for (const session of items) {
-      const button = node("button", "", "session-row"); button.type = "button";
+      const isSelected = state.selected?.id === session.id && state.selected?.source === session.source;
+      const button = node("button", "", isSelected ? "session-row selected" : "session-row"); button.type = "button";
       button.append(node("span", session.title), node("small", sessionSourceLabel(session), "muted"));
       button.onclick = () => run("select", async () => {
         if (state.selected?.id === session.id && state.selected.source === session.source) {
@@ -895,7 +896,8 @@ async function loadSessions(more) {
   for (const target of ["session-items"]) {
     const container = el(target); container.replaceChildren();
     for (const session of state.sessions) {
-      const button = node("button", "", "session-row"); button.type = "button";
+      const isSelected = state.selected?.id === session.id && state.selected?.source === session.source;
+      const button = node("button", "", isSelected ? "session-row selected" : "session-row"); button.type = "button";
       button.append(node("span", session.title), node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "未知"}`, "muted"));
       button.onclick = () => run("select", async () => {
         if (state.paused) {
