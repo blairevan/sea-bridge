@@ -39,8 +39,10 @@ test("list and point lookup share trimmed name, title and short identity fallbac
     insert.run("name", "/fixture/name", "  名称  ", "标题", 1);
     insert.run("title", "/fixture/title", " \t ", "  标题  ", 2);
     insert.run("01a0fd67-0000-0000-0000-123456789abc", "/fixture/blank", null, " \n ", 3);
+    insert.run("with-files", "/fixture/files", null, "# Files mentioned by the user:\n\n## shot.png: /path/shot.png\n\n## My request:\n页面布局异常", 4);
+    insert.run("only-image", "/fixture/img", null, "# Files mentioned by the user:\n\n## clip.png: /path/clip.png\n\n## My request:\n<image>", 5);
     const items = store.listActive();
-    expect(items.map((item) => item.title)).toEqual(["名称", "标题", "未命名会话 · 56789abc"]);
+    expect(items.map((item) => item.title)).toEqual(["名称", "标题", "未命名会话 · 56789abc", "页面布局异常", "[图片] clip.png"]);
     for (const item of items) expect(store.getThread(item.id)?.title).toBe(item.title);
     expect(store.getThread("missing")).toBeNull();
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

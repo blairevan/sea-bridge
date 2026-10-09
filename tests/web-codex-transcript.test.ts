@@ -192,7 +192,34 @@ test("exact native message reads enforce confinement, record boundaries and size
     await expect(readCodexMessage(join(sessions, "escape"), [sessions], "rollout-0")).rejects.toThrow();
     writeFileSync(file, line.slice(0, -3));
     expect(await readCodexMessage(file, [sessions], "rollout-0")).toBeNull();
-    writeFileSync(file, "x".repeat(256 * 1024 + 1));
+    writeFileSync(file, "x".repeat(4 * 1024 * 1024 + 1));
     await expect(readCodexMessage(file, [sessions], "rollout-0")).rejects.toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("large user messages with multi-hundred-kilobyte inline images are preserved and readable", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-large-image-transcript-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    const largeBase64 = "a".repeat(800 * 1024);
+    const dataUrl = `data:image/png;base64,${largeBase64}`;
+    const line = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "# Files mentioned by the user:\n\n## photo.png: /path/photo.png\n\n## My request:\nCheck this" },
+          { type: "input_image", image_url: dataUrl }
+        ]
+      }
+    });
+    writeFileSync(file, line + "\n");
+    const transcript = await readCodexTranscript(file, [root], null, 10);
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages[0]?.text).toContain("Check this");
+    const exact = await readCodexMessage(file, [root], "rollout-0");
+    expect(exact?.images).toHaveLength(1);
+    expect(exact?.images?.[0]?.contentType).toBe("image/png");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

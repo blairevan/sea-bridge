@@ -48,3 +48,22 @@ test("Codex source resolves attachments older than its latest hundred messages",
     await expect(source.attachment(thread, "rollout-999999999999999999999", 0)).rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("readCodexAttachment directly decodes inline base64 images and tolerates leading newlines", async () => {
+  const thread = randomUUID();
+  const pngBytes = Buffer.from([137,80,78,71,13,10,26,10]);
+  const base64 = pngBytes.toString("base64");
+  const history: WebHistory = {
+    messages: [{
+      id: "rollout-10",
+      role: "user",
+      text: "\n# Files mentioned by the user:\n\n## pasted.png: /var/folders/test/codex-clipboard-1234.png\n\n## My request:\n\n<image>",
+      images: [{ contentType: "image/png", base64 }],
+    }],
+    cursor: null,
+    completeUserHistory: false,
+  };
+  const result = await readCodexAttachment(thread, "rollout-10", 0, history);
+  expect(result.contentType).toBe("image/png");
+  expect(Buffer.from(result.bytes)).toEqual(pngBytes);
+});
