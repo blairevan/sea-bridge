@@ -4,7 +4,8 @@ import { open, realpath, stat } from "node:fs/promises";
 import { relative, isAbsolute } from "node:path";
 import type { WebHistory, WebMessage } from "./sources/types.ts";
 
-const READ_WINDOW_BYTES = 256 * 1024;
+const READ_WINDOW_BYTES = 4 * 1024 * 1024;
+const MAX_MESSAGE_RECORD_BYTES = 10 * 1024 * 1024;
 const MAX_LATEST_SCAN_BYTES = 16 * 1024 * 1024;
 
 /** Advance past whitespace without normalizing the preserved user text. */
@@ -90,7 +91,7 @@ function userMessageText(text: string): string {
 }
 
 /** Parse only fixture-backed response-item user and final-answer records. */
-function visibleMessage(line: string, offset: number): WebMessage | null {
+function visibleMessage(line: string, offset: number, includeImages = false): WebMessage | null {
   let record: unknown;
   try { record = JSON.parse(line); } catch { return null; }
   if (!record || typeof record !== "object") return null;
@@ -108,7 +109,17 @@ function visibleMessage(line: string, offset: number): WebMessage | null {
   }).join("");
   const text = role === "user" ? userMessageText(rawText) : rawText;
   const parsedTime = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
-  return text ? { id: `rollout-${offset}`, role, text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null } : null;
+  if (!text) return null;
+  const images = includeImages && role === "user" ? payload.content.flatMap((part: unknown) => {
+    if (!part || typeof part !== "object") return [];
+    const item = part as Record<string, unknown>;
+    if (item.type === "input_image" && typeof item.image_url === "string") {
+      const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(item.image_url);
+      if (match && match[1] && match[2]) return [{ contentType: match[1], base64: match[2] }];
+    }
+    return [];
+  }) : [];
+  return { id: `rollout-${offset}`, role, text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null, ...(images.length > 0 ? { images } : {}) };
 }
 
 /** Open a regular rollout only after root confinement and inode identity checks. */
@@ -152,7 +163,7 @@ export async function readCodexMessage(path: string, roots: readonly string[], m
     const bytes = buffer.subarray(0, bytesRead);
     const newline = bytes.indexOf(10);
     if (newline < 0 && offset + bytesRead !== opened.size) throw new Error("attachment_missing");
-    return visibleMessage(bytes.subarray(0, newline < 0 ? bytesRead : newline).toString("utf8"), offset);
+    return visibleMessage(bytes.subarray(0, newline < 0 ? bytesRead : newline).toString("utf8"), offset, true);
   } finally { await handle.close(); }
 }
 

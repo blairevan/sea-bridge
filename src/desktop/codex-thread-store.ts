@@ -16,7 +16,25 @@ export interface CodexThreadReader {
 
 /** Normalize a native title without persisting changes back into Codex. */
 function threadTitle(row: { id: string; name: string | null; title: string | null }): string {
-  return row.name?.trim() || row.title?.trim() || `未命名会话 · ${row.id.slice(-8)}`;
+  let title = row.name?.trim() || row.title?.trim();
+  if (title) {
+    const trimmed = title.trimStart();
+    if (trimmed.startsWith("# Files mentioned by the user:")) {
+      const marker = "## My request:";
+      const split = trimmed.indexOf(marker);
+      if (split >= 0) {
+        const body = trimmed.slice(split + marker.length).replace(/<\/?image\b[^>]*>/g, "").trim();
+        if (body) {
+          title = body.split("\n")[0]?.trim() || body;
+        } else {
+          const header = trimmed.slice(0, split);
+          const first = /^## ([^\n:]+):/m.exec(header)?.[1]?.trim();
+          title = first ? `[图片] ${first}` : "图片会话";
+        }
+      }
+    }
+  }
+  return title || `未命名会话 · ${row.id.slice(-8)}`;
 }
 
 /** Fixed projections cover old schemas without accepting dynamically supplied column names. */

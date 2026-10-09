@@ -164,11 +164,12 @@ function appendInline(parent, text, depth = 0) {
 /** Recognize the native attachment envelope without treating its paths as Markdown headings. */
 function userAttachmentEnvelope(text) {
   const marker = "## My request:";
-  if (!text.startsWith("# Files mentioned by the user:") || !text.includes(marker)) return null;
-  const split = text.indexOf(marker); const header = text.slice(0, split);
+  const trimmed = String(text || "").trimStart();
+  if (!trimmed.startsWith("# Files mentioned by the user:") || !trimmed.includes(marker)) return null;
+  const split = trimmed.indexOf(marker); const header = trimmed.slice(0, split);
   const names = [...header.matchAll(/^## ([^\n]+?):[^\n]*$/gm)].map((match) => match[1]);
   if (!names.length) return null;
-  const body = text.slice(split + marker.length).replace(/<\/?image\b[^>]*>/g, "").trim();
+  const body = trimmed.slice(split + marker.length).replace(/<\/?image\b[^>]*>/g, "").trim();
   return { names, body };
 }
 
