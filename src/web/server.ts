@@ -57,7 +57,7 @@ export class WebServer implements WebService {
     this.stopping = false;
     const { config, staticRoot, handler } = this.options;
     const assets = new Map<string, { bytes: ArrayBuffer | string; type: string }>();
-    for (const [path, file, type] of [["/", "index.html", "text/html; charset=utf-8"], ["/app.js", "app.js", "text/javascript; charset=utf-8"], ["/app.css", "app.css", "text/css; charset=utf-8"]]) {
+    for (const [path, file, type] of [["/", "index.html", "text/html; charset=utf-8"], ["/app.js", "app.js", "text/javascript; charset=utf-8"], ["/app.css", "app.css", "text/css; charset=utf-8"], ["/favicon.svg", "favicon.svg", "image/svg+xml"], ["/apple-touch-icon.png", "apple-touch-icon.png", "image/png"]]) {
       if (!path || !file || !type) throw new Error("web_asset_invalid");
       const asset = Bun.file(join(staticRoot, file));
       if (!(await asset.exists()) || asset.size > 1024 * 1024) throw new Error("web_asset_missing");
