@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Sea-Bridge — 海上之桥</title>
+  <rect width="64" height="64" rx="14" fill="#102D46"/>
+  <path d="M15 38V31C15 12 49 12 49 31V38M11 38H53" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M13 49C19 43 25 55 32 49S45 43 51 49" fill="none" stroke="#45D6CA" stroke-width="5" stroke-linecap="round"/>
+</svg>

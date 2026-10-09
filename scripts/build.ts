@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   if (!result.success) throw new Error("build_failed");
   const web = join(output, "web"); await mkdir(web, { recursive: true });
   if ((await lstat(web)).isSymbolicLink()) throw new Error("build_assets_symlink");
-  for (const file of ["index.html", "app.js", "app.css"]) await copyFile(join(root, "src/web/public", file), join(web, file));
+  for (const file of ["index.html", "app.js", "app.css", "favicon.svg", "apple-touch-icon.png"]) await copyFile(join(root, "src/web/public", file), join(web, file));
   const htmlPath = join(web, "index.html");
   await writeFile(htmlPath, renderVersionedShell(await readFile(htmlPath, "utf8")));
   process.stdout.write("Sea-Bridge server and Web assets built.\n");
