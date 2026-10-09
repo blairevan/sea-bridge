@@ -1,9 +1,10 @@
 import type { Logger } from "../logger.ts";
 import { redact } from "../security/redact.ts";
-import type { DesktopMessageEventKind, DesktopMessageStore } from "../state/desktop-message-store.ts";
+import type { DesktopMessageEventKind, DesktopMessageStore, PendingDesktopNotification } from "../state/desktop-message-store.ts";
 import {
   CodexObserverStore,
   textHash,
+  terminalCorrectionFingerprint,
   type CodexObserverThreadState,
   type ObservationCommit,
 } from "../state/codex-observer-store.ts";
@@ -116,7 +117,7 @@ export class DesktopObserver {
     private readonly catalog: CodexCatalogStore,
     private readonly observerState: CodexObserverStore,
     private readonly messages: DesktopMessageStore,
-    private readonly telegram: Pick<TelegramClient, "sendMessage">,
+    private readonly telegram: Pick<TelegramClient, "sendMessage" | "editMessageText">,
     private readonly chatId: string,
     private readonly logger: Logger,
     private readonly pollIntervalMs: number,
@@ -589,12 +590,46 @@ export class DesktopObserver {
     }
   }
 
+  /** Edits a sent interrupted terminal on correction; never falls back to sending after edit failure. */
+  private async deliverNotification(notification: PendingDesktopNotification, buttons: InlineButton[][]): Promise<number> {
+    const isCorrection = notification.eventKind === "completed"
+      && notification.eventFingerprint === terminalCorrectionFingerprint(notification.threadId, notification.turnId);
+    const messageId = isCorrection
+      ? this.messages.findSentInterruptedMessage(notification.chatId, notification.threadId, notification.turnId)
+      : null;
+    if (messageId == null) {
+      const message = await this.telegram.sendMessage(notification.chatId, notification.text, buttons, false);
+      return message.message_id;
+    }
+    try {
+      await this.telegram.editMessageText(notification.chatId, messageId, notification.text, buttons);
+    } catch (error) {
+      // An edit can succeed remotely before a crash prevents the local transaction from committing.
+      if (!(error instanceof Error) || !("code" in error) || error.code !== 400
+        || !error.message.includes("message is not modified")) throw error;
+    }
+    return messageId;
+  }
+
+  /** Delivers due notifications and retains failed sends or edits for backoff retry. */
   private async deliverPendingNotifications(): Promise<void> {
     for (const notification of this.messages.listPendingNotifications(this.now())) {
       const buttons: InlineButton[][] = [[{ text: "💬 回复", callback_data: "reply:" + notification.threadId }]];
       try {
-        const message = await this.telegram.sendMessage(notification.chatId, notification.text, buttons, false);
-        this.messages.completeNotification(notification.eventFingerprint, message.message_id, this.now());
+        const messageId = await this.deliverNotification(notification, buttons);
+        const completed = this.messages.completeNotification(notification.eventFingerprint, messageId, this.now());
+        if (!completed) {
+          // A correction can replace a pending interrupted row while its send is in flight.
+          // Preserve the successful send's reply link so the correction edits this message.
+          this.messages.link({
+            chatId: notification.chatId,
+            messageId,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            eventKind: notification.eventKind,
+            eventFingerprint: notification.eventFingerprint,
+          });
+        }
         this.logger.info("desktop_message_notified", {
           threadId: notification.threadId,
           turnId: notification.turnId,

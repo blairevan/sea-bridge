@@ -52,6 +52,11 @@ interface FixtureOptions {
   createdBySeaBridge?: boolean;
 }
 
+/** Rejects unexpected edits in fixtures that only exercise ordinary sends. */
+async function unexpectedEdit(): Promise<never> {
+  throw new Error("unexpected Telegram edit");
+}
+
 function fixture(options: FixtureOptions = {}) {
   let now = options.now ?? 1_000_000;
   let status: "inProgress" | "completed" | "failed" | "interrupted" = options.initialStatus ?? "inProgress";
@@ -59,6 +64,8 @@ function fixture(options: FixtureOptions = {}) {
   let completedAt = status === "completed" ? recency : null;
   let commentaryText: string | null = null;
   let finalText = "final result";
+  let editError: Error | null = null;
+  let beforeSendResponse: (() => Promise<void>) | null = null;
   let runtimeEvidence: { state: "active" | "idle" | "unknown"; turnId: string | null; lastEvent: string } | null = null;
   let proc!: MockProcess;
   proc = new MockProcess((message) => {
@@ -112,6 +119,7 @@ function fixture(options: FixtureOptions = {}) {
     restartDelaysMs: [5],
   });
   const sent: Array<{ text: string; buttons: unknown }> = [];
+  const edited: Array<{ chatId: string | number; messageId: number; text: string; buttons: unknown }> = [];
   const observer = new DesktopObserver(
     read,
     catalog,
@@ -120,7 +128,13 @@ function fixture(options: FixtureOptions = {}) {
     {
       sendMessage: async (_chatId: string, text: string, buttons?: unknown) => {
         sent.push({ text, buttons });
+        if (beforeSendResponse) await beforeSendResponse();
         return { message_id: sent.length, chat: { id: 42, type: "private" as const } };
+      },
+      editMessageText: async (chatId: string | number, messageId: number, text: string, buttons?: unknown) => {
+        edited.push({ chatId, messageId, text, buttons });
+        if (editError) throw editError;
+        return { message_id: messageId, chat: { id: 42, type: "private" as const } };
       },
     },
     "42",
@@ -143,6 +157,9 @@ function fixture(options: FixtureOptions = {}) {
     read,
     observer,
     sent,
+    edited,
+    setEditError(value: Error | null) { editError = value; },
+    setBeforeSendResponse(value: (() => Promise<void>) | null) { beforeSendResponse = value; },
     advance(ms: number) { now += ms; recency = Math.floor(now / 1000); },
     complete(text = "final result") { status = "completed"; finalText = text; recency = Math.floor(now / 1000); completedAt = recency; },
     completeWithoutTimestamp(text = "final result") { status = "completed"; finalText = text; recency = Math.floor(now / 1000); completedAt = null; },
@@ -155,6 +172,35 @@ function fixture(options: FixtureOptions = {}) {
 }
 
 describe("DesktopObserver app-server history", () => {
+  test("edits the interrupted message even when correction arrives before its send response", async () => {
+    const f = fixture();
+    let finishSend: (() => void) | undefined;
+    let markSending: (() => void) | undefined;
+    const sending = new Promise<void>((resolve) => { markSending = resolve; });
+    const response = new Promise<void>((resolve) => { finishSend = resolve; });
+    f.setBeforeSendResponse(async () => { markSending?.(); await response; });
+    await f.observer.pollOnce();
+    f.advance(2_000);
+    f.interrupt("old interrupted", 1_002);
+    await f.observer.pollOnce();
+    f.observer.start();
+    await sending;
+    f.advance(2_000);
+    f.complete("correct completed reply");
+    await f.observer.pollOnce();
+    finishSend?.();
+    await f.observer.stop();
+    f.setBeforeSendResponse(null);
+    f.observer.start();
+    await Bun.sleep(10);
+    await f.observer.stop();
+    expect(f.sent).toHaveLength(1);
+    expect(f.edited).toMatchObject([{ messageId: 1, text: "Codex: Test thread\n状态: 执行完成\ncorrect completed reply" }]);
+    expect(f.messages.findLink("42", 1)?.eventKind).toBe("completed");
+    expect(f.messages.listPendingNotifications()).toHaveLength(0);
+    await f.read.close(); f.state.close();
+  });
+
   test("baselines a running turn and notifies when it later completes", async () => {
     const f = fixture();
     await f.observer.pollOnce();
@@ -270,46 +316,80 @@ describe("DesktopObserver app-server history", () => {
     await f.read.close(); f.state.close();
   });
 
-  test("corrects a previously sent interrupted terminal when official history later proves completion", async () => {
-    const f = fixture();
-    await f.observer.pollOnce();
-    const state = f.observerStore.getThreadState("thread-a");
-    if (!state) throw new Error("thread state missing");
-    const oldAt = 1_000_400;
-    f.advance(400);
-    f.observerStore.commitThreadRefresh({
-      threadId: "thread-a",
-      observations: [{
-        turnId: "turn-a",
-        status: "interrupted",
-        terminalKind: "interrupted",
-        contentState: "confirmed_empty",
-        disposition: "monitoring",
-        notification: { chatId: "42", eventKind: "interrupted", text: "Codex: Test thread\n状态: 已中断" },
-      }],
-      anchorTurnId: "turn-a",
-      baselineState: "monitoring",
-      monitoringStartedAt: state.monitoringStartedAt,
-      nextHistoryReconcileAt: oldAt,
-      lastReconciledAt: oldAt,
-      lastRecencyAtMs: state.lastRecencyAtMs,
-    }, oldAt);
-    const wrong = f.messages.listPendingNotifications(oldAt)[0];
-    if (!wrong) throw new Error("old interrupted notification missing");
-    f.messages.completeNotification(wrong.eventFingerprint, 77, oldAt);
-    expect(f.messages.findLink("42", 77)?.eventKind).toBe("interrupted");
+  for (const scenario of ["success", "retry", "not_modified"] as const) {
+    test(`corrects a previously sent interrupted terminal without a new message: ${scenario}`, async () => {
+      const f = fixture();
+      await f.observer.pollOnce();
+      const state = f.observerStore.getThreadState("thread-a");
+      if (!state) throw new Error("thread state missing");
+      const oldAt = 1_000_400;
+      f.advance(400);
+      f.observerStore.commitThreadRefresh({
+        threadId: "thread-a",
+        observations: [{
+          turnId: "turn-a",
+          status: "interrupted",
+          terminalKind: "interrupted",
+          contentState: "confirmed_empty",
+          disposition: "monitoring",
+          notification: { chatId: "42", eventKind: "interrupted", text: "Codex: Test thread\n状态: 已中断" },
+        }],
+        anchorTurnId: "turn-a",
+        baselineState: "monitoring",
+        monitoringStartedAt: state.monitoringStartedAt,
+        nextHistoryReconcileAt: oldAt,
+        lastReconciledAt: oldAt,
+        lastRecencyAtMs: state.lastRecencyAtMs,
+      }, oldAt);
+      const wrong = f.messages.listPendingNotifications(oldAt)[0];
+      if (!wrong) throw new Error("old interrupted notification missing");
+      f.messages.completeNotification(wrong.eventFingerprint, 77, oldAt);
+      expect(f.messages.findLink("42", 77)?.eventKind).toBe("interrupted");
 
-    f.advance(40_000);
-    f.complete("correct completed reply");
-    await f.observer.pollOnce();
-    expect(f.messages.listPendingNotifications()).toMatchObject([{
-      turnId: "turn-a",
-      eventKind: "completed",
-      text: "Codex: Test thread\n状态: 执行完成\ncorrect completed reply",
-    }]);
-    expect(f.observerStore.getObservation("thread-a", "turn-a")?.terminalKind).toBe("completed");
-    await f.read.close(); f.state.close();
-  });
+      f.advance(40_000);
+      f.complete("correct completed reply");
+      await f.observer.pollOnce();
+      expect(f.messages.listPendingNotifications()).toMatchObject([{
+        turnId: "turn-a",
+        eventKind: "completed",
+        text: "Codex: Test thread\n状态: 执行完成\ncorrect completed reply",
+      }]);
+      expect(f.observerStore.getObservation("thread-a", "turn-a")?.terminalKind).toBe("completed");
+      if (scenario === "retry") f.setEditError(new Error("temporary edit failure"));
+      if (scenario === "not_modified") {
+        f.setEditError(Object.assign(new Error("Telegram editMessageText failed: Bad Request: message is not modified"), { code: 400 }));
+      }
+      f.observer.start();
+      await Bun.sleep(10);
+      await f.observer.stop();
+      expect(f.sent).toHaveLength(0);
+      expect(f.edited[0]).toEqual({
+        chatId: "42", messageId: 77,
+        text: "Codex: Test thread\n状态: 执行完成\ncorrect completed reply",
+        buttons: [[{ text: "💬 回复", callback_data: "reply:thread-a" }]],
+      });
+      if (scenario === "retry") {
+        expect(f.messages.findLink("42", 77)?.eventKind).toBe("interrupted");
+        expect(f.messages.listPendingNotifications(1_050_000)).toMatchObject([{ attemptCount: 1 }]);
+        f.setEditError(null);
+        f.advance(6_000);
+        f.observer.start();
+        await Bun.sleep(10);
+        await f.observer.stop();
+        expect(f.sent).toHaveLength(0);
+        expect(f.edited).toHaveLength(2);
+        expect(f.edited[1]?.messageId).toBe(77);
+      } else {
+        expect(f.edited).toHaveLength(1);
+      }
+      expect(f.messages.findLink("42", 77)?.eventKind).toBe("completed");
+      expect(f.messages.listPendingNotifications()).toHaveLength(0);
+      f.advance(40_000);
+      await f.observer.pollOnce();
+      expect(f.messages.listPendingNotifications()).toHaveLength(0);
+      await f.read.close(); f.state.close();
+    });
+  }
 
   test("suppresses a bootstrap-member historical terminal even when completedAt is absent", async () => {
     const f = fixture();
@@ -388,7 +468,7 @@ describe("DesktopObserver app-server history", () => {
       requestTimeoutMs: 50,
     });
     const observer = new DesktopObserver(read, catalog, observerStore, messages,
-      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }) },
+      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }), editMessageText: unexpectedEdit },
       "42", logger, 10, 3_000, { now: () => now, coldReconcileMs: 50 });
 
     await observer.pollOnce();
@@ -499,7 +579,7 @@ describe("DesktopObserver app-server history", () => {
       catalog,
       observerStore,
       new DesktopMessageStore(state),
-      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }) },
+      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }), editMessageText: unexpectedEdit },
       "42",
       logger,
       20,
@@ -548,7 +628,7 @@ describe("DesktopObserver app-server history", () => {
       requestTimeoutMs: 50,
     });
     const observer = new DesktopObserver(read, catalog, observerStore, messages,
-      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }) },
+      { sendMessage: async () => ({ message_id: 1, chat: { id: 42, type: "private" as const } }), editMessageText: unexpectedEdit },
       "42", logger, 10, 3_000, { now: () => now, fullCatalogIntervalMs: 1, coldReconcileMs: 1 });
 
     await observer.pollOnce();
@@ -582,7 +662,7 @@ describe("DesktopObserver app-server history", () => {
       new CodexCatalogStore(state, "/home"),
       new CodexObserverStore(state, "/home"),
       messages,
-      { sendMessage: async () => ({ message_id: 9, chat: { id: 42, type: "private" as const } }) },
+      { sendMessage: async () => ({ message_id: 9, chat: { id: 42, type: "private" as const } }), editMessageText: unexpectedEdit },
       "42", logger, 20, 3_000,
     );
     observer.start();

@@ -122,9 +122,15 @@ export class DesktopMessageStore {
       } | null;
       if (!row) return false;
       this.state.db.query(
-        `INSERT OR IGNORE INTO desktop_message_links(
+        `INSERT INTO desktop_message_links(
           telegram_chat_id,telegram_message_id,thread_id,turn_id,event_kind,event_fingerprint,sent_at
-        ) VALUES (?,?,?,?,?,?,?)`,
+        ) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(telegram_chat_id,telegram_message_id) DO UPDATE SET
+          event_kind=excluded.event_kind,event_fingerprint=excluded.event_fingerprint
+        WHERE desktop_message_links.thread_id=excluded.thread_id
+          AND desktop_message_links.turn_id=excluded.turn_id
+          AND desktop_message_links.event_kind='interrupted'
+          AND excluded.event_kind='completed'`,
       ).run(row.telegram_chat_id, messageId, row.thread_id, row.turn_id, row.event_kind, eventFingerprint, now);
       const result = this.state.db.query(
         `UPDATE desktop_notification_outbox
@@ -134,6 +140,16 @@ export class DesktopMessageStore {
       return result.changes === 1;
     });
     return complete();
+  }
+
+  /** Finds the original interrupted message within the exact chat, thread and turn. */
+  findSentInterruptedMessage(chatId: string, threadId: string, turnId: string): number | null {
+    const row = this.state.db.query(`
+      SELECT telegram_message_id FROM desktop_message_links
+      WHERE telegram_chat_id=? AND thread_id=? AND turn_id=? AND event_kind='interrupted'
+      ORDER BY telegram_message_id DESC LIMIT 1
+    `).get(chatId, threadId, turnId) as { telegram_message_id: number } | null;
+    return row == null ? null : Number(row.telegram_message_id);
   }
 
   link(link: DesktopMessageLink): boolean {

@@ -3,6 +3,17 @@ import { StateDb } from "../src/state/db.ts";
 import { DesktopMessageStore } from "../src/state/desktop-message-store.ts";
 
 describe("DesktopMessageStore", () => {
+  test("interrupted edit targets cannot cross chat, thread or turn boundaries", () => {
+    const state = new StateDb(":memory:");
+    const store = new DesktopMessageStore(state);
+    store.link({ chatId: "42", messageId: 77, threadId: "thread-a", turnId: "turn-a", eventKind: "interrupted", eventFingerprint: "old" });
+    expect(store.findSentInterruptedMessage("42", "thread-a", "turn-a")).toBe(77);
+    expect(store.findSentInterruptedMessage("43", "thread-a", "turn-a")).toBeNull();
+    expect(store.findSentInterruptedMessage("42", "thread-b", "turn-a")).toBeNull();
+    expect(store.findSentInterruptedMessage("42", "thread-a", "turn-b")).toBeNull();
+    state.close();
+  });
+
   test("maps one Telegram notification to one Desktop thread", () => {
     const state = new StateDb(":memory:");
     const store = new DesktopMessageStore(state);
