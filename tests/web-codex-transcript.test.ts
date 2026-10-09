@@ -223,3 +223,26 @@ test("large user messages with multi-hundred-kilobyte inline images are preserve
     expect(exact?.images?.[0]?.contentType).toBe("image/png");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Codex desktop apps runtime tags like external_codex_apps_open_page and client_time_context are hidden", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-desktop-tags-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    const record = (text: string) => JSON.stringify({
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text }] }
+    });
+    const openPageTag = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>';
+    const instructionsTag = '<codex_apps_open_page_instructions>Page instructions</codex_apps_open_page_instructions>';
+    const timeTag = '<codex_apps_client_time_context>time</codex_apps_client_time_context>';
+    const lines = [
+      record("hello"),
+      record(openPageTag),
+      record(`${openPageTag}\n${instructionsTag}\n${timeTag}\n如何优化？`),
+    ].join("\n") + "\n";
+    writeFileSync(file, lines);
+    const transcript = await readCodexTranscript(file, [root], null, 10);
+    expect(transcript.messages).toHaveLength(2);
+    expect(transcript.messages.map((m) => m.text)).toEqual(["hello", "如何优化？"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
