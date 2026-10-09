@@ -16,7 +16,7 @@ function skipWhitespace(text: string, from: number): number {
 }
 
 /** Consume one complete XML-like runtime block at the current logical start. */
-function consumeRuntimeBlock(text: string, from: number, tag: "INSTRUCTIONS" | "environment_context"): number | null {
+function consumeRuntimeBlock(text: string, from: number, tag: string): number | null {
   const start = skipWhitespace(text, from);
   const openTag = `<${tag}>`;
   const closeTag = `</${tag}>`;
@@ -71,6 +71,27 @@ function userMessageText(text: string): string {
     const environment = consumeRuntimeBlock(text, cursor, "environment_context");
     if (environment !== null) {
       cursor = environment;
+      consumed = true;
+      continue;
+    }
+
+    const openPage = consumeRuntimeBlock(text, cursor, "external_codex_apps_open_page");
+    if (openPage !== null) {
+      cursor = openPage;
+      consumed = true;
+      continue;
+    }
+
+    const openPageInst = consumeRuntimeBlock(text, cursor, "codex_apps_open_page_instructions");
+    if (openPageInst !== null) {
+      cursor = openPageInst;
+      consumed = true;
+      continue;
+    }
+
+    const timeContext = consumeRuntimeBlock(text, cursor, "codex_apps_client_time_context");
+    if (timeContext !== null) {
+      cursor = timeContext;
       consumed = true;
       continue;
     }
