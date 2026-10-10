@@ -25,6 +25,15 @@ function consumeRuntimeBlock(text: string, from: number, tag: string): number | 
   return close < 0 ? null : close + closeTag.length;
 }
 
+/** Require Codex's name/path header before treating a skill block as injected instructions. */
+function consumeSkillEnvelope(text: string, from: number): number | null {
+  const end = consumeRuntimeBlock(text, from, "skill");
+  if (end === null) return null;
+  const start = skipWhitespace(text, from);
+  const body = text.slice(start + "<skill>".length, end - "</skill>".length);
+  return /^\s*<name>\s*[^<\s][^<]*<\/name>\s*<path>\s*[^<\s][^<]*<\/path>/.test(body) ? end : null;
+}
+
 /** Consume Codex's generated AGENTS heading only when it is followed by a complete INSTRUCTIONS block. */
 function consumeAgentsEnvelope(text: string, from: number): number | null {
   const start = skipWhitespace(text, from);
@@ -61,6 +70,20 @@ function userMessageText(text: string): string {
   let cursor = 0;
   let consumed = false;
   while (true) {
+    const skill = consumeSkillEnvelope(text, cursor);
+    if (skill !== null) {
+      cursor = skill;
+      consumed = true;
+      continue;
+    }
+
+    const aborted = consumeRuntimeBlock(text, cursor, "turn_aborted");
+    if (aborted !== null) {
+      cursor = aborted;
+      consumed = true;
+      continue;
+    }
+
     const agents = consumeAgentsRuntimeEnvelope(text, cursor);
     if (agents !== null) {
       cursor = agents;

@@ -319,3 +319,10 @@
 - 同一轮已发送的 interrupted 被官方历史修正为 completed 时，编辑原 Telegram 消息并更新回复映射，不新增一条通知。
 - 编辑失败仅退避重试；处理远端已成功编辑、本地尚未落库时的 message is not modified 恢复。保留回复按钮与原消息顺序。
 - 不新增依赖或数据库迁移；详见 [发布记录](2026-10-09-telegram-status-correction-delivery.md)。
+
+## v1.1.7
+
+- 隐藏 Codex 用户历史开头的完整 skill 注入块（要求非空 name/path 头部）及 turn_aborted 运行时块；同条后续真实问题继续展示。
+- 保留显式 skill 调用、围栏和正文引用、不完整/缺少元数据的 skill 示例及助手文本；历史分页与 exact-message 读取共用过滤，不修改原始 rollout。
+- 近三天原始记录开头标签核查仅发现上述两类未覆盖项；环境、AGENTS 与 Desktop 上下文沿用已有规则，不按未知标签泛化过滤。
+- 无新增依赖或数据库迁移。交付验证与部署步骤见 [发布清单](2026-10-10-runtime-message-filter-delivery.md)。
