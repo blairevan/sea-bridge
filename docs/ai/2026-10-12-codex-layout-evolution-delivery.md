@@ -6,7 +6,11 @@
 - 开启后，仅普通 Enter、存在非空草稿且当前发送按钮处于可用发送模式时提交；Shift+Enter 换行，IME composition 不触发发送。空草稿或发送不可用时不会提交；中断按钮不会被 Enter 误触发。
 - 增加覆盖发送、Shift+Enter、IME、空草稿、关闭偏好和不可发送状态的回归测试。
 - 版本升至 v1.1.24，刷新一年 immutable 缓存的 JS/CSS 版本键。
-- 当前工作区改动尚未提交或部署。
+- 代码提交 `d3dc22a`（`feat(web): add configurable enter-to-send preference`）已推送并快进合并到 `main`。
+- 发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.24-20261012-203644`；备份：`~/.config/sea-bridge/backups/20261012-203644/`，含旧 LaunchAgent plist 与 SQLite 一致性备份，`PRAGMA quick_check=ok`。
+- 部署后 LaunchAgent running，PID `96219`，仅监听 `127.0.0.1:7310`；首页 HTTP 200 并显示 v1.1.24，`app.js?v=1.1.24`、`app.css?v=1.1.24` 均与快照逐字节一致，未登录 `/api/auth/session` 返回 401。
+- 首次切换因新快照误用了源码启动脚本而未监听端口，自动恢复原 v1.1.23 服务；修正为上一已验证快照使用的 `dist/main.js` 启动方式后重试成功。SQLite 未从备份覆盖或回滚。
+- 验证边界：未对未提供的公网域名或已登录浏览器进行实机交互验收；设置入口已由实际服务 HTML 确认。
 
 ## v1.1.23 会话列表状态修复
 
@@ -234,15 +238,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.23`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20/v1.1.21 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片并完成发布；v1.1.22 修复 Desktop 新版 pasted-file envelope 与移动端轮次提示/回到最新按钮重叠；v1.1.23 修复历史 Codex 会话列表状态投影，复用 recency 对齐的持久 observer lifecycle evidence。发布后 HTML 应引用新的 `app.css?v=1.1.23` / `app.js?v=1.1.23`。
-
-本轮尚未：
-
-- commit；
-- push；
-- deploy。
-
-因此本文描述的是**当前工作区已验证实现**，不是已经发布的新版本。目标 Mac External Contract Gate 已完成且判定 FAIL；当前版本线不得把 Desktop / CLI / queue external active-writer interrupt 标为可用。只有 Codex 上游新增共享控制总线、writer-safe attach/control 等新契约并重新通过新的目标机 Gate 后，才能重新评估该能力。
+当前 `package.json` 为 `1.1.24`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次发布代码变化都必须递增版本。v1.1.24 增加浏览器本地回车发送偏好，HTML 引用 `app.css?v=1.1.24` / `app.js?v=1.1.24`。该版本已提交、推送、快进合并并部署；本机 HTTP、版本资源字节一致性和未认证接口均已验证。目标 Mac External Contract Gate 已完成且判定 FAIL；当前版本线不得把 Desktop / CLI / queue external active-writer interrupt 标为可用。只有 Codex 上游新增共享控制总线、writer-safe attach/control 等新契约并重新通过新的目标机 Gate 后，才能重新评估该能力。
 
 ## 6. 目标机 External Interrupt Contract Gate 验证记录 (2026-10-12)
 

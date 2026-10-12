@@ -19,6 +19,7 @@
 
 - 设置页新增当前浏览器本地的回车发送偏好；默认关闭。开启后 Enter 发送、Shift+Enter 换行，输入法组字期间不提交，并遵从当前 Composer 的发送可用状态。
 - 回归覆盖普通 Enter、Shift+Enter、IME、空草稿及不可发送状态。
+- 已提交 `d3dc22a` 并推送、快进合并到 `main`；发布快照 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.24-20261012-203644`，SQLite 备份 quick_check 为 ok。LaunchAgent running，PID 96219；本机首页/版本资源 HTTP 200，JS/CSS 与快照一致，未认证 session 为 401。
 
 - 不兼容变更递增主版本；新功能递增次版本；问题修复递增补丁版本。
 - 每次发布包含代码变化时递增版本，避免同一版本代表不同发布内容。
