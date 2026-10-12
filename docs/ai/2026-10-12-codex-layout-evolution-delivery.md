@@ -2,7 +2,12 @@
 
 ## v1.1.20 活动流展示调整
 
-阶段性 commentary 在已读取范围内完整展开，移除 280px 限高和内部滚动。连续工具项聚合为紧凑摘要，末尾保留最新工具记录；最新记录不代表已验证的进行中状态。由消息区统一跟随最新，用户查看旧内容时不抢滚动。后端移除末尾 25 条截断，仍保留原有有界文件读取契约。此版本尚未提交或部署。
+阶段性 commentary 在已读取范围内完整展开，移除 280px 限高和内部滚动。连续工具项聚合为紧凑摘要，末尾保留最新工具记录；最新记录不代表已验证的进行中状态。由消息区统一跟随最新，用户查看旧内容时不抢滚动。后端移除末尾 25 条截断，仍保留原有有界文件读取契约。
+
+- 发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.20-20261012-185114`。
+- SQLite 一致性备份：`~/.config/sea-bridge/backups/20261012-185114/state.sqlite3`，`PRAGMA quick_check=ok`。
+- LaunchAgent 重载首次 bootstrap 返回错误 5；确认旧进程退出、7310 已释放后单独重试成功。当前 LaunchAgent running，PID 50346。
+- 本机首页、`/app.js?v=1.1.20`、`/app.css?v=1.1.20` 均 HTTP 200，HTML 确认版本为 v1.1.20。
 
 - 日期：2026-10-12
 - 仓库：`/opt/app/aitools/sea-bridge`
