@@ -5,7 +5,10 @@
 - rollout 的 canonical `error.message` 作为独立 error role 消息按原始顺序显示；仅允许 task_complete、turn_complete、turn_aborted，文本最多 4000 字符，不透出结构化内部字段。
 - Web 使用独立橙色错误卡片，无助手元信息，不进入助手 Markdown、快捷操作或最终答复判定。
 - 版本递增至 v1.1.21，更新 immutable 静态资源键。
-- 发布状态与实机探活结果将在部署后补记。
+- 提交：`fa9eb95`；发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.21-20261012-185950`。
+- SQLite 一致性备份：`~/.config/sea-bridge/backups/20261012-185950/state.sqlite3`，`PRAGMA quick_check=ok`。
+- LaunchAgent running，PID 60824；本机首页、`/app.js?v=1.1.21`、`/app.css?v=1.1.21` 均 HTTP 200，HTML 确认版本 v1.1.21。
+- 部署文档记录单独提交并推送；全量门禁：480 pass、0 fail，typecheck、JS syntax、build、diff check 均通过。
 
 ## v1.1.20 活动流展示调整
 
