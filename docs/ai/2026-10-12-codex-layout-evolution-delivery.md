@@ -1,5 +1,12 @@
 # Codex 布局演进 Phase A-E 实施与验证记录
 
+## v1.1.22 移动端附件与浮层显示修复
+
+- 兼容 Codex Desktop 新版 `Files pasted by the user`：从 envelope 中只提取用户请求正文与附件 basename，隐藏粘贴 payload 和 `/Users/.../.codex/attachments/...` 等宿主绝对路径。
+- 文本等非图片附件仅显示紧凑附件卡，不再错误提供“查看图片”；图片附件继续使用现有 same-origin 预览接口。
+- `当前第 X 轮 · 已加载 N 轮` 显示期间，`↓` 回到最新按钮自动上移避让；6 秒提示隐藏后恢复原位，避免移动端浮层重叠。
+- 当前工作区版本递增至 v1.1.22，用于新的 immutable JS/CSS 缓存键；尚未 commit / push / deploy。
+
 ## v1.1.21 Codex 终态错误卡片发布
 
 - rollout 的 canonical `error.message` 作为独立 error role 消息按原始顺序显示；仅允许 task_complete、turn_complete、turn_aborted，文本最多 4000 字符，不透出结构化内部字段。
@@ -22,7 +29,7 @@
 - 日期：2026-10-12
 - 仓库：`/opt/app/aitools/sea-bridge`
 - 基线版本：`v1.1.8`
-- 当前状态：代码已完成并通过门禁；尚未 commit / push / deploy / bump version
+- 当前状态：v1.1.22 工作区修复已完成；尚未 commit / push / deploy
 
 ## 1. 已完成范围
 
@@ -204,7 +211,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.20`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片。发布后 HTML 应引用新的 `app.css?v=1.1.20` / `app.js?v=1.1.20`。
+当前 `package.json` 为 `1.1.22`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20/v1.1.21 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片并完成发布；v1.1.22 修复 Desktop 新版 pasted-file envelope 与移动端轮次提示/回到最新按钮重叠。发布后 HTML 应引用新的 `app.css?v=1.1.22` / `app.js?v=1.1.22`。
 
 本轮尚未：
 

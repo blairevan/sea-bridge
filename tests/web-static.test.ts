@@ -25,6 +25,7 @@ test("dark turn dialog overrides the global primary-button palette for readable 
   expect(css).toContain('.message.error{background:#fff7f0;border-color:#d9783f;color:#a94414');
   expect(css).toContain('[data-theme="dark"] .message.error{background:#1b100a;color:#ff7a2f;border-color:#7b4024}');
   expect(css).toContain('.turn-indicator{opacity:.5;position:absolute;right:12px;bottom:8px;');
+  expect(css).toContain('.floating-latest[data-turn-indicator-visible="true"] { bottom: 54px; }');
 });
 
 test("static shell has local assets and no unsafe rendering or persistent body cache", async () => {

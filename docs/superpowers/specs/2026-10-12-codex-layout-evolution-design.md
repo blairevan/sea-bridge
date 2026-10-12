@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级设计文档
 
+### v1.1.22 移动端附件与浮层避让
+
+兼容 Codex Desktop 新版 `Files pasted by the user` 附件 envelope：Web 只展示用户请求正文与附件 basename，不把粘贴 payload 或宿主绝对路径当作 Markdown 标题渲染；非图片附件不提供图片预览入口。移动端轮次提示出现时，`↓` 回到最新按钮上移避让，提示隐藏后恢复原位，避免两个浮层覆盖。
+
 ### v1.1.21 终态错误展示
 
 仅从 task_complete / turn_complete / turn_aborted 的 canonical error.message 投影独立错误消息，长度最多 4000 字符；其他结构化错误字段不出现在 Web。该消息保留 rollout 时序，不作为 assistant final 或快捷操作输入。

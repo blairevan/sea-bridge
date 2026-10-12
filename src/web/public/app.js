@@ -223,16 +223,29 @@ function appendInline(parent, text, depth = 0) {
   }
   parent.append(document.createTextNode(text.slice(offset)));
 }
-/** Recognize the native attachment envelope without treating its paths as Markdown headings. */
+/** Recognize native attachment envelopes without rendering host paths or pasted payloads as headings. */
 function userAttachmentEnvelope(text) {
   const marker = "## My request:";
   const trimmed = String(text || "").trimStart();
-  if (!trimmed.startsWith("# Files mentioned by the user:") || !trimmed.includes(marker)) return null;
+  const mentioned = trimmed.startsWith("# Files mentioned by the user:");
+  const pasted = trimmed.startsWith("# Files pasted by the user:");
+  if ((!mentioned && !pasted) || !trimmed.includes(marker)) return null;
   const split = trimmed.indexOf(marker); const header = trimmed.slice(0, split);
-  const names = [...header.matchAll(/^## ([^\n]+?):[^\n]*$/gm)].map((match) => match[1]);
+  const entries = [...header.matchAll(/^##\s+(.+):\s+((?:\/|[A-Za-z]:[\\/]).+)$/gm)];
+  const names = entries.map((match) => {
+    const label = String(match[1] || "").trim();
+    const path = String(match[2] || "").trim().replace(/["']$/g, "");
+    const base = path.split(/[\\/]/).filter(Boolean).at(-1) || "附件";
+    return pasted ? base : label;
+  }).filter(Boolean);
   if (!names.length) return null;
   const body = trimmed.slice(split + marker.length).replace(/<\/?image\b[^>]*>/g, "").trim();
   return { names, body };
+}
+
+/** Only image attachments expose the explicit same-origin preview action. */
+function isImageAttachmentName(name) {
+  return /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i.test(String(name || ""));
 }
 
 /** Hide complete assistant memory citations outside fenced examples without changing source history. */
@@ -303,7 +316,7 @@ function renderUserMessage(message, session) {
   const attachments = node("div", "", "message-attachments");
   envelope.names.slice(0, 20).forEach((name, index) => {
     const card = node("div", "", "attachment-card"); card.append(node("span", name, "attachment-name"));
-    if (session.source === "codex") {
+    if (session.source === "codex" && isImageAttachmentName(name)) {
       const button = node("button", "查看图片", "quiet"); button.type = "button";
       const preview = node("div", "", "attachment-preview");
       button.onclick = () => {
@@ -1042,6 +1055,12 @@ function updateLatestShortcut() {
   const earliest = el("floating-earliest");
   if (earliest) earliest.hidden = unavailable || messages.scrollTop < 100;
 }
+/** Keep the floating latest shortcut clear of the transient loaded-turn indicator. */
+function setTurnIndicatorAvoidance(visible) {
+  const latest = el("floating-latest"); if (!latest?.dataset) return;
+  if (visible) latest.dataset.turnIndicatorVisible = "true";
+  else delete latest.dataset.turnIndicatorVisible;
+}
 /** Position the latest rendered message inside the actual message scroller. */
 function scrollMessagesToLatest(container) {
   container.scrollTop = container.scrollHeight;
@@ -1182,6 +1201,7 @@ function clearTurnNavigation() {
   turnIndicatorTimer = null; turnRailButtons = []; turnDialogButtons = []; activeLoadedTurn = 0;
   const rail = el("turn-rail"); if (rail) { rail.replaceChildren(); rail.hidden = true; }
   const indicator = el("turn-indicator"); if (indicator) indicator.hidden = true;
+  setTurnIndicatorAvoidance(false);
   const list = el("turn-dialog-list"); if (list) list.replaceChildren();
   const older = el("turn-load-older"); if (older) older.hidden = true;
 }
@@ -1253,9 +1273,9 @@ function showTurnIndicatorOnScroll(now = Date.now()) {
   const width = typeof window !== "undefined" ? window.innerWidth : 1024;
   if (width > 760 || turnRailButtons.length === 0 || now > messageScrollIntentUntil) return;
   const indicator = el("turn-indicator"); if (!indicator) return;
-  indicator.hidden = false;
+  indicator.hidden = false; setTurnIndicatorAvoidance(true);
   if (turnIndicatorTimer !== null && typeof clearTimeout === "function") clearTimeout(turnIndicatorTimer);
-  if (typeof setTimeout === "function") turnIndicatorTimer = setTimeout(() => { indicator.hidden = true; turnIndicatorTimer = null; }, 6000);
+  if (typeof setTimeout === "function") turnIndicatorTimer = setTimeout(() => { indicator.hidden = true; setTurnIndicatorAvoidance(false); turnIndicatorTimer = null; }, 6000);
 }
 
 /** Merge executed history with a replaceable native queue snapshot, preserving scroll and older pages. */

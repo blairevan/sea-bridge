@@ -1229,6 +1229,13 @@ test("native image questions render compact attachment cards without raw paths o
   const button = nodes.find((node) => node.tag === "button")!; button.onclick?.();
   expect(flatten(root).find((node) => node.tag === "img")?.src).toBe("/api/sessions/codex/thread/attachments/rollout-1/0");
   button.onclick?.(); expect(flatten(root).filter((node) => node.tag === "img")).toHaveLength(1);
+
+  const pasted = '# Files pasted by the user:\n\n## "{\\"code\\":200,\\"data\\":{\\"items\\":[]}}": /Users/example/.codex/attachments/thread/已粘贴的文本.txt\n\n## My request:\n为什么结果为空？';
+  const pastedRoot = ui.renderUserMessage({ id: "rollout-2", text: pasted }, { id: "thread", source: "codex" });
+  const pastedNodes = flatten(pastedRoot); const pastedContent = pastedNodes.map((node) => node.textContent).join(" ");
+  expect(pastedContent).toContain("为什么结果为空？"); expect(pastedContent).toContain("已粘贴的文本.txt");
+  expect(pastedContent).not.toContain("Files pasted by the user"); expect(pastedContent).not.toContain("/Users/example/"); expect(pastedContent).not.toContain('"code"');
+  expect(pastedNodes.filter((node) => node.tag === "button")).toHaveLength(0);
   expect(ui.userAttachmentEnvelope("ordinary message")).toBeNull();
 });
 
@@ -1478,12 +1485,13 @@ test("mobile turn indicator stays hidden for programmatic scroll and appears bri
   const nodes = new Map<string, ElementFixture>();
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
   const indicator = get("turn-indicator"); indicator.hidden = true;
-  const delays: number[] = [];
+  const latest = get("floating-latest");
+  const delays: number[] = []; const timers: Array<() => void> = [];
   const ui = runInNewContext(script.slice(0, end) + "\nturnRailButtons=[{}]; ({ markMessageScrollIntent, showTurnIndicatorOnScroll })", {
     el: get,
     window: { innerWidth: 390 },
     document: { getElementById: get },
-    setTimeout: (_callback: () => void, delay: number) => { delays.push(delay); return 1; },
+    setTimeout: (callback: () => void, delay: number) => { delays.push(delay); timers.push(callback); return 1; },
     clearTimeout: () => {},
   }) as any;
   ui.showTurnIndicatorOnScroll(1000);
@@ -1491,5 +1499,8 @@ test("mobile turn indicator stays hidden for programmatic scroll and appears bri
   ui.markMessageScrollIntent(1000);
   ui.showTurnIndicatorOnScroll(1100);
   expect(indicator.hidden).toBe(false);
+  expect(latest.dataset.turnIndicatorVisible).toBe("true");
   expect(delays.at(-1)).toBe(6000);
+  timers.at(-1)?.();
+  expect(indicator.hidden).toBe(true); expect(latest.dataset.turnIndicatorVisible).toBeUndefined();
 });
