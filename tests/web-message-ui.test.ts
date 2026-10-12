@@ -1372,3 +1372,40 @@ test("overview snapshots require fresh device/policy verification and expire saf
   raw = valid; ui.clearOverviewCache(); expect(raw).toBeNull();
   blocked = true; expect(() => ui.restoreOverviewCache()).not.toThrow(); expect(() => ui.saveOverviewCache({}, { items: [] }, null)).not.toThrow();
 });
+
+test("syncLiveActivityCard renders live commentary and tool items in active stream", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  const messages = get("messages");
+  const ui = runInNewContext(script.slice(0, end) + "\n({ syncLiveActivityCard, state })", {
+    el: get,
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as any;
+
+  ui.state.paused = false;
+  ui.state.selected = {
+    state: "running",
+    startedAt: 1000,
+    activeTurnItems: [
+      { kind: "commentary", text: "正在审查代码边界" },
+      { kind: "tool", icon: "📖", text: "已读取文件 app.ts" },
+    ],
+  };
+
+  ui.syncLiveActivityCard(66000);
+  const card = messages.children.find((c: any) => c.className === "live-activity-card");
+  expect(card).toBeDefined();
+  const stream = card!.children.find((c: any) => c.className === "live-activity-stream")!;
+  expect(stream).toBeDefined();
+  expect(stream.children).toHaveLength(2);
+  expect(stream.children[0]!.className).toBe("live-activity-item commentary");
+  expect(stream.children[0]!.children[0]!.textContent).toBe("正在审查代码边界");
+  expect(stream.children[1]!.className).toBe("live-activity-item tool");
+  expect(stream.children[1]!.children[1]!.textContent).toBe("已读取文件 app.ts");
+});

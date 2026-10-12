@@ -277,7 +277,7 @@ export class CodexWebSource implements WebSource {
         : ownedActive || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
-      const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt } : {};
+      const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt, activeTurnItems: activity.items ?? [] } : {};
       const turnControl = this.turnControl(id, activity);
       const sessionMeta = this.sessionMeta(id, thread);
       const detail = { ...history, ...timing, ...(sessionMeta ? { sessionMeta } : {}), turnControl, sessionState };

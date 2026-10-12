@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readCodexMessage, readCodexTranscript } from "../src/web/codex-transcript.ts";
+import { readCodexMessage, readCodexTranscript, readCodexActivity } from "../src/web/codex-transcript.ts";
 
 test("environment-only records are hidden while mixed questions, examples and byte cursors survive", async () => {
   const root = mkdtempSync(join(tmpdir(), "web-environment-context-"));
@@ -244,5 +244,31 @@ test("Codex desktop apps runtime tags like external_codex_apps_open_page and cli
     const transcript = await readCodexTranscript(file, [root], null, 10);
     expect(transcript.messages).toHaveLength(2);
     expect(transcript.messages.map((m) => m.text)).toEqual(["hello", "如何优化？"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("readCodexActivity extracts live commentary and tool items for active turns", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-activity-items-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    const nl = String.fromCharCode(10);
+    const lines = [
+      JSON.stringify({ timestamp: "2026-10-12T14:00:00Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-live" } }),
+      JSON.stringify({ timestamp: "2026-10-12T14:00:01Z", type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "正在审查代码边界" }] } }),
+      JSON.stringify({ timestamp: "2026-10-12T14:00:02Z", type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", parsed_cmd: [{ type: "read", name: "app.ts" }] } } }),
+      JSON.stringify({ timestamp: "2026-10-12T14:00:03Z", type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", parsed_cmd: [{ type: "search", query: "target" }] } } }),
+    ].join(nl) + nl;
+    writeFileSync(file, lines);
+    const activity = await readCodexActivity(file, [root]);
+    expect(activity).toMatchObject({
+      state: "active",
+      turnId: "turn-live",
+      observedAt: Date.parse("2026-10-12T14:00:00Z"),
+      items: [
+        { kind: "commentary", text: "正在审查代码边界" },
+        { kind: "tool", icon: "📖", text: "已读取文件 app.ts" },
+        { kind: "tool", icon: "🔍", text: "正在搜索 target" },
+      ],
+    });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

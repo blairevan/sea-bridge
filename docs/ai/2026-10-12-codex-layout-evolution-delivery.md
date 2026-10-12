@@ -209,3 +209,12 @@ git diff --check
    - **Gate FAIL**：当前官方 codex app-server 为每个客户端维护严格私有的 stdio 实例与单 writer 互斥锁，跨进程 App Server 无法介入外部活跃 turn。
    - 严格坚守安全底线：禁止伪造中断、禁止跨实例强抢锁、禁止破坏性进程信号杀进程。
    - 生产环境统一对 non-owned turn 保持 interrupt_provider_unverified fail-closed。
+
+## 7. 运行态阶段性活动流上线记录 (v1.1.16, 2026-10-12)
+
+根据真实 Codex 原生运行态表现与用户要求，活动卡片正式从单一的“执行中 + 计时器”升级为完整的**阶段性结果与工具活动流**：
+
+- **阶段性思考与说明 (Commentary)**：从活跃 turn 的 rollout 记录中提取 `role: "assistant"` 且 `phase: "commentary"` 的文字，原样呈现在活动卡片的内容流中；
+- **微观工具活动 (Tools & Commands)**：从活跃 turn 的 `CommandExecution` 与 `function_call` 记录中提取动作摘要（读取文件 📖、搜索 🔍、命令执行 🛠），与阶段性陈述按发生时序穿插展示；
+- **卡片交互与自适应**：无条目时仅显示耗时标题；产生条目时展开细分割线与纵向活动流（带 max-height 滚动，支持暗色主题自适应）；任务完成时活动卡片平滑移除并由最终答复接管；
+- **防缓存版本递增**：升级至 `v1.1.16`，确保 Safari 等移动端浏览器加载最新样式与脚本。

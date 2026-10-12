@@ -275,23 +275,110 @@ export async function readCodexTranscript(path: string, roots: readonly string[]
   } finally { await handle.close(); }
 }
 
-/** Narrow lifecycle metadata; no prompt, tool or assistant text is returned. */
-export interface CodexActivity { state: "active" | "idle"; turnId: string; observedAt: number; }
+/** Stage items within the currently executing turn. */
+export interface LiveActivityItem {
+  kind: "commentary" | "tool";
+  text: string;
+  icon?: string;
+}
+
+/** Lifecycle and live activity metadata for active turns. */
+export interface CodexActivity {
+  state: "active" | "idle";
+  turnId: string;
+  observedAt: number;
+  items?: LiveActivityItem[];
+}
 
 /** Reuse the confined bounded reader and select the newest complete lifecycle record by file offset. */
 export async function readCodexActivity(path: string, roots: readonly string[]): Promise<CodexActivity | null> {
-  let latest: CodexActivity | null = null; let latestOffset = -1;
+  const observedRows: Array<{ line: string; offset: number }> = [];
   await readCodexTranscript(path, roots, null, 100, (line, offset) => {
-    if (offset <= latestOffset) return;
-    let record: unknown; try { record = JSON.parse(line); } catch { return; }
-    if (!record || typeof record !== "object") return;
-    const row = record as Record<string, unknown>;
-    if (row.type !== "event_msg" || !row.payload || typeof row.payload !== "object" || typeof row.timestamp !== "string") return;
-    const payload = row.payload as Record<string, unknown>; const observedAt = Date.parse(row.timestamp);
-    if (!Number.isFinite(observedAt) || typeof payload.turn_id !== "string" || !payload.turn_id) return;
-    if (!["task_started", "task_complete", "turn_aborted"].includes(String(payload.type))) return;
-    latestOffset = offset;
-    latest = { state: payload.type === "task_started" ? "active" : "idle", turnId: payload.turn_id, observedAt };
+    observedRows.push({ line, offset });
   });
-  return latest;
+  if (observedRows.length === 0) return null;
+  observedRows.sort((a, b) => a.offset - b.offset);
+
+  let activeTurnStartOffset = -1;
+  let latestTurnId = "";
+  let latestObservedAt = 0;
+  let latestState: "active" | "idle" = "idle";
+
+  for (const { line, offset } of observedRows) {
+    let record: unknown; try { record = JSON.parse(line); } catch { continue; }
+    if (!record || typeof record !== "object") continue;
+    const row = record as Record<string, unknown>;
+    if (row.type !== "event_msg" || !row.payload || typeof row.payload !== "object" || typeof row.timestamp !== "string") continue;
+    const payload = row.payload as Record<string, unknown>; const observedAt = Date.parse(row.timestamp);
+    if (!Number.isFinite(observedAt) || typeof payload.turn_id !== "string" || !payload.turn_id) continue;
+    if (payload.type === "task_started") {
+      latestState = "active";
+      activeTurnStartOffset = offset;
+      latestTurnId = payload.turn_id;
+      latestObservedAt = observedAt;
+    } else if (payload.type === "task_complete" || payload.type === "turn_aborted") {
+      latestState = "idle";
+      activeTurnStartOffset = -1;
+      latestTurnId = payload.turn_id;
+      latestObservedAt = observedAt;
+    }
+  }
+
+  if (latestState !== "active" || activeTurnStartOffset < 0) {
+    return latestTurnId ? { state: "idle", turnId: latestTurnId, observedAt: latestObservedAt } : null;
+  }
+
+  const items: LiveActivityItem[] = [];
+  const seenCommentary = new Set<string>();
+
+  for (const { line, offset } of observedRows) {
+    if (offset <= activeTurnStartOffset) continue;
+    let record: unknown; try { record = JSON.parse(line); } catch { continue; }
+    if (!record || typeof record !== "object") continue;
+    const obj = record as Record<string, unknown>;
+    if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
+      const payload = obj.payload as Record<string, unknown>;
+      if (payload.type === "message" && payload.role === "assistant" && payload.phase === "commentary" && Array.isArray(payload.content)) {
+        const text = payload.content.map((c: any) => typeof c?.text === "string" ? c.text : "").join("").trim();
+        if (text && !seenCommentary.has(text)) { seenCommentary.add(text); items.push({ kind: "commentary", text }); }
+      } else if (payload.type === "custom_tool_call" || payload.type === "function_call") {
+        const name = typeof payload.name === "string" ? payload.name : "";
+        if (name && name !== "exec") items.push({ kind: "tool", icon: "🔍", text: name });
+      }
+    } else if (obj.type === "event_msg" && obj.payload && typeof obj.payload === "object") {
+      const payload = obj.payload as Record<string, unknown>;
+      if (payload.type === "item_completed" && payload.item && typeof payload.item === "object") {
+        const item = payload.item as Record<string, any>;
+        if (item.type === "AgentMessage" && item.phase === "commentary" && Array.isArray(item.content)) {
+          const text = item.content.map((c: any) => typeof c?.text === "string" ? c.text : "").join("").trim();
+          if (text && !seenCommentary.has(text)) { seenCommentary.add(text); items.push({ kind: "commentary", text }); }
+        } else if (item.type === "CommandExecution") {
+          let summary = "";
+          let icon = "🛠";
+          if (Array.isArray(item.parsed_cmd) && item.parsed_cmd.length > 0) {
+            const first = item.parsed_cmd[0];
+            if (first?.type === "read") {
+              icon = "📖"; summary = ("已读取文件 " + (first.name || first.path || "")).trim();
+            } else if (first?.type === "search" || first?.cmd?.startsWith("rg ") || first?.cmd?.startsWith("find ")) {
+              icon = "🔍"; summary = ("正在搜索 " + (first.name || first.query || first.cmd || "")).trim();
+            } else {
+              summary = ("运行了命令 " + (first?.cmd || "")).trim();
+            }
+          } else if (Array.isArray(item.command)) {
+            const cmdStr = item.command.join(" ");
+            if (cmdStr.includes("cat ") || cmdStr.includes("sed ") || cmdStr.includes("head ") || cmdStr.includes("tail ")) {
+              icon = "📖"; summary = "已读取文件运行了命令";
+            } else if (cmdStr.includes("grep ") || cmdStr.includes("rg ") || cmdStr.includes("find ")) {
+              icon = "🔍"; summary = "已搜索文件运行了命令";
+            } else {
+              summary = ("运行了命令: " + item.command.slice(2).join(" ")).slice(0, 80).trim();
+            }
+          }
+          if (summary) items.push({ kind: "tool", icon, text: summary });
+        }
+      }
+    }
+  }
+
+  return { state: "active", turnId: latestTurnId, observedAt: latestObservedAt, ...(items.length > 0 ? { items: items.slice(-25) } : {}) };
 }

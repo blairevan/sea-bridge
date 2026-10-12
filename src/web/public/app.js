@@ -18,6 +18,9 @@ let liveActivityCard = null;
 let liveActivityStatus = null;
 let liveActivityDetail = null;
 let liveActivityStale = null;
+let liveActivityDivider = null;
+let liveActivityStream = null;
+let liveActivityStreamSig = "";
 let composerModelControl = null;
 let sessionModelUpdate = null;
 let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
@@ -1053,7 +1056,8 @@ function syncLiveActivityCard(now = Date.now()) {
   const container = el("messages"); if (!container) return;
   const presentation = liveActivityPresentation(state.selected, state.paused, now);
   if (!presentation.visible) {
-    liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null; return;
+    liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; return;
   }
   if (!liveActivityCard) {
     liveActivityCard = node("section", "", "live-activity-card"); liveActivityCard.setAttribute?.("aria-label", "当前任务状态");
@@ -1061,14 +1065,38 @@ function syncLiveActivityCard(now = Date.now()) {
     liveActivityStatus = node("strong", presentation.status);
     heading.append(node("span", "", "live-activity-dot"), liveActivityStatus);
     liveActivityDetail = node("small", "", "live-activity-detail"); liveActivityDetail.setAttribute?.("aria-hidden", "true");
+    liveActivityDivider = node("div", "", "live-activity-divider");
+    liveActivityStream = node("div", "", "live-activity-stream");
     liveActivityStale = node("small", "状态来自断线前最后一次已验证结果", "live-activity-stale");
-    liveActivityCard.append(heading, liveActivityDetail, liveActivityStale); container.append(liveActivityCard);
+    liveActivityCard.append(heading, liveActivityDetail, liveActivityDivider, liveActivityStream, liveActivityStale); container.append(liveActivityCard);
   } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
     container.append(liveActivityCard);
   }
   if (liveActivityStatus && liveActivityStatus.textContent !== presentation.status) liveActivityStatus.textContent = presentation.status;
   if (liveActivityDetail) { liveActivityDetail.textContent = presentation.detail; liveActivityDetail.hidden = !presentation.detail; }
   if (liveActivityStale) liveActivityStale.hidden = !state.paused;
+  const items = Array.isArray(state.selected?.activeTurnItems) ? state.selected.activeTurnItems : [];
+  if (liveActivityDivider) liveActivityDivider.hidden = items.length === 0;
+  if (liveActivityStream) {
+    liveActivityStream.hidden = items.length === 0;
+    const sig = JSON.stringify(items);
+    if (sig !== liveActivityStreamSig) {
+      liveActivityStreamSig = sig;
+      liveActivityStream.replaceChildren();
+      for (const item of items) {
+        if (!item || !item.text) continue;
+        if (item.kind === "commentary") {
+          const row = node("div", "", "live-activity-item commentary");
+          row.append(node("div", item.text, "live-activity-commentary-text"));
+          liveActivityStream.append(row);
+        } else {
+          const row = node("div", "", "live-activity-item tool");
+          row.append(node("span", item.icon || "🔍", "live-activity-icon"), node("span", item.text, "live-activity-tool-text"));
+          liveActivityStream.append(row);
+        }
+      }
+    }
+  }
 }
 
 /** Clear turn observers and controls when conversation identity or privacy context changes. */
@@ -1158,7 +1186,7 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
+    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [], sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
     renderSessionStatus();
   }
   const previousMessages = state.messages;

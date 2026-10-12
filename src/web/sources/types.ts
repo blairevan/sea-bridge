@@ -1,3 +1,4 @@
+import type { LiveActivityItem } from "../codex-transcript.ts";
 import type { CreationClient } from "../../desktop/codex-provenance.ts";
 import type { OperationState } from "../store.ts";
 
@@ -35,7 +36,7 @@ export interface WebTurnControl {
     | { status: "interrupting"; scope: "exact_codex_turn" }
     | { status: "unavailable"; reason: "turn_unknown" | "provider_unavailable" | "provider_unverified" };
 }
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; turnControl?: WebTurnControl; }
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[]; turnControl?: WebTurnControl; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */
