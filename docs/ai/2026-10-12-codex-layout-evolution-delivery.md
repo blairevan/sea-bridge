@@ -7,6 +7,10 @@
 - 新逻辑仅在 observer `lastRecencyAtMs` 与当前 catalog recency 完全一致时复用最新 `anchor_turn_id` observation：`inProgress -> running`，`completed/failed` 以及已确认 `interrupted -> idle`；recency 不一致、baseline 未完成或 provisional interrupted 继续 unknown，避免旧终态覆盖新任务。
 - 不增加列表轮询的 rollout 扫描或 App Server RPC；复用现有 SQLite observer 状态，保持 3 秒列表刷新成本稳定。
 - 版本递增至 v1.1.23。
+- 提交 `184cd76` 已推送；发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.23-20261012-202750`。
+- SQLite 一致性备份：`~/.config/sea-bridge/backups/20261012-202750/state.sqlite3`，`PRAGMA quick_check=ok`。
+- LaunchAgent running，PID 77286；首页及 `/app.js?v=1.1.23` / `/app.css?v=1.1.23` 均 HTTP 200，HTML 确认 v1.1.23。首次 bootstrap 错误 5，旧服务退出、端口释放后单独重试成功。
+- 全量门禁：481 pass、0 fail、2242 expectations；typecheck、JS syntax、build、diff check 均通过。
 
 ## v1.1.22 移动端附件与浮层显示修复
 
