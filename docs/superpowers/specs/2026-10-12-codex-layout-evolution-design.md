@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级设计文档
 
+### v1.1.23 会话列表状态投影修复
+
+会话列表不再只依赖 10 秒 live activity / active Hook TTL。若 Desktop observer 已对当前 catalog recency 完成对齐，则复用其持久化最新 turn observation：`inProgress` 显示执行中，可靠 terminal 显示空闲；若 catalog 已更新而 observer 尚未追上，则继续 fail-closed 显示状态未知，避免把新任务误判为空闲。
+
 ### v1.1.22 移动端附件与浮层避让
 
 兼容 Codex Desktop 新版 `Files pasted by the user` 附件 envelope：Web 只展示用户请求正文与附件 basename，不把粘贴 payload 或宿主绝对路径当作 Markdown 标题渲染；非图片附件不提供图片预览入口。移动端轮次提示出现时，`↓` 回到最新按钮上移避让，提示隐藏后恢复原位，避免两个浮层覆盖。

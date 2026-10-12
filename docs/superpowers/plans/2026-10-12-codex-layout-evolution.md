@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级实施计划 (Implementation Plan)
 
+### v1.1.23 会话列表状态投影
+
+历史会话列表状态改为复用 Desktop observer 已持久化的最新 turn observation，但仅在 observer `lastRecencyAtMs` 与 catalog 当前 recency 完全一致时生效；`inProgress -> running`，可靠 terminal -> idle。recency 不一致、baseline 未完成或 interrupted 仍属 provisional 时继续 unknown，避免用旧终态覆盖新任务。
+
 ### v1.1.22 移动端附件与浮层避让
 
 扩展用户附件 envelope 解析以兼容 `Files pasted by the user`，只保留正文与安全 basename；文本附件不创建图片加载按钮。轮次提示出现时给 `↓` 设置临时避让状态，6 秒提示隐藏后恢复原位，并补充移动端 UI 回归。

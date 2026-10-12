@@ -1,5 +1,13 @@
 # Codex 布局演进 Phase A-E 实施与验证记录
 
+## v1.1.23 会话列表状态修复
+
+- 修复仅当前活跃会话显示正常、历史 Codex 会话大量显示“状态未知”的问题。
+- 根因：列表此前只消费 10 秒 native activity cache 或 activeSession TTL 内的 Hook 证据；历史 turn 的可靠终态虽然已由 Desktop observer 持久化，却未被列表状态投影复用。
+- 新逻辑仅在 observer `lastRecencyAtMs` 与当前 catalog recency 完全一致时复用最新 `anchor_turn_id` observation：`inProgress -> running`，`completed/failed` 以及已确认 `interrupted -> idle`；recency 不一致、baseline 未完成或 provisional interrupted 继续 unknown，避免旧终态覆盖新任务。
+- 不增加列表轮询的 rollout 扫描或 App Server RPC；复用现有 SQLite observer 状态，保持 3 秒列表刷新成本稳定。
+- 版本递增至 v1.1.23。
+
 ## v1.1.22 移动端附件与浮层显示修复
 
 - 兼容 Codex Desktop 新版 `Files pasted by the user`：从 envelope 中只提取用户请求正文与附件 basename，隐藏粘贴 payload 和 `/Users/.../.codex/attachments/...` 等宿主绝对路径。
@@ -214,7 +222,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.22`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20/v1.1.21 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片并完成发布；v1.1.22 修复 Desktop 新版 pasted-file envelope 与移动端轮次提示/回到最新按钮重叠。发布后 HTML 应引用新的 `app.css?v=1.1.22` / `app.js?v=1.1.22`。
+当前 `package.json` 为 `1.1.23`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20/v1.1.21 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片并完成发布；v1.1.22 修复 Desktop 新版 pasted-file envelope 与移动端轮次提示/回到最新按钮重叠；v1.1.23 修复历史 Codex 会话列表状态投影，复用 recency 对齐的持久 observer lifecycle evidence。发布后 HTML 应引用新的 `app.css?v=1.1.23` / `app.js?v=1.1.23`。
 
 本轮尚未：
 

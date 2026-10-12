@@ -241,6 +241,18 @@ export class CodexObserverStore {
     return row ? this.mapState(row) : null;
   }
 
+  /** Project a list-safe lifecycle only when observer and catalog recency still describe the same thread snapshot. */
+  activity(threadId: string, currentRecencyAtMs: number | null): { state: "active" | "idle" | "unknown"; turnId: string | null } | null {
+    const thread = this.getThreadState(threadId);
+    if (!thread || thread.baselineState !== "monitoring" || thread.lastRecencyAtMs !== currentRecencyAtMs || !thread.anchorTurnId) return null;
+    const turn = this.getObservation(threadId, thread.anchorTurnId);
+    if (!turn) return null;
+    if (turn.lastStatus === "inProgress") return { state: "active", turnId: turn.turnId };
+    if (turn.lastStatus === "completed" || turn.lastStatus === "failed") return { state: "idle", turnId: turn.turnId };
+    if (turn.lastStatus === "interrupted" && turn.terminalKind === "interrupted") return { state: "idle", turnId: turn.turnId };
+    return { state: "unknown", turnId: turn.turnId };
+  }
+
   listInitialPending(limit = 20): CodexObserverThreadState[] {
     const rows = this.state.db.query(`
       SELECT thread_id,bootstrap_member,baseline_state,anchor_turn_id,monitoring_started_at,

@@ -274,8 +274,10 @@ async function main(): Promise<void> {
     pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
     activity: (id) => {
       const observed = sessions.getById(id);
-      if (!observed || Date.now() - observed.lastSeenAt > config.activeSessionTtlMs) return null;
-      return { state: observed.activityState, turnId: observed.turnId };
+      if (observed && Date.now() - observed.lastSeenAt <= config.activeSessionTtlMs) {
+        return { state: observed.activityState, turnId: observed.turnId };
+      }
+      return observerStore.activity(id, catalogStore.getRecencyAtMs(id));
     },
   });
   let webRuntime: WebRuntime | null = null;

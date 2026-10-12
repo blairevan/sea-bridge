@@ -10,6 +10,50 @@ function initialize(store: CodexObserverStore, now = 1_000): void {
 }
 
 describe("CodexObserverStore", () => {
+  test("list activity reuses only recency-aligned persisted lifecycle evidence", () => {
+    const state = new StateDb(":memory:");
+    const store = new CodexObserverStore(state, "/home");
+    initialize(store);
+    store.commitThreadRefresh({
+      threadId: "thread",
+      observations: [{
+        turnId: "turn",
+        status: "completed",
+        terminalKind: "completed",
+        contentState: "not_applicable",
+        disposition: "baseline_suppressed",
+      }],
+      anchorTurnId: "turn",
+      baselineState: "monitoring",
+      monitoringStartedAt: 1_100,
+      nextHistoryReconcileAt: 2_000,
+      lastReconciledAt: 1_100,
+      lastRecencyAtMs: 500,
+    }, 1_100);
+
+    expect(store.activity("thread", 500)).toEqual({ state: "idle", turnId: "turn" });
+    expect(store.activity("thread", 501)).toBeNull();
+
+    store.commitThreadRefresh({
+      threadId: "thread",
+      observations: [{
+        turnId: "turn-2",
+        status: "inProgress",
+        terminalKind: null,
+        contentState: "not_applicable",
+        disposition: "monitoring",
+      }],
+      anchorTurnId: "turn-2",
+      baselineState: "monitoring",
+      nextHistoryReconcileAt: 2_000,
+      lastReconciledAt: 1_200,
+      lastRecencyAtMs: 501,
+    }, 1_200);
+    expect(store.activity("thread", 501)).toEqual({ state: "active", turnId: "turn-2" });
+
+    state.close();
+  });
+
   test("terminal identity deduplicates across historical chats and old fingerprints", () => {
     const state = new StateDb(":memory:");
     const store = new CodexObserverStore(state, "/home");
