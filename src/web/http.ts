@@ -191,7 +191,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
           return json(result);
         } catch (error) {
           const code = error instanceof Error ? error.message : "interrupt_provider_unavailable";
-          const stable = ["session_missing", "interrupt_not_owned", "active_turn_changed", "interrupt_already_finished", "interrupt_provider_unavailable"].includes(code)
+          const stable = ["session_missing", "interrupt_not_owned", "active_turn_changed", "interrupt_already_finished", "interrupt_provider_unavailable", "interrupt_provider_unverified"].includes(code)
             ? code : "interrupt_provider_unavailable";
           audit(stable);
           const status = stable === "session_missing" ? 404

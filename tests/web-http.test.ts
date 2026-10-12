@@ -90,7 +90,7 @@ test("owned-turn interrupt endpoint is exact, CSRF-protected, audited and race-s
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
   const auth = new WebAuth(store); const events = new WebEvents(store); const paired = await loginFixture(auth);
   if (!paired) throw new Error("fixture failed");
-  let outcome: "interrupting" | "interrupt_not_owned" | "active_turn_changed" | "interrupt_already_finished" | "interrupt_provider_unavailable" | "session_missing" = "interrupting";
+  let outcome: "interrupting" | "interrupt_not_owned" | "active_turn_changed" | "interrupt_already_finished" | "interrupt_provider_unavailable" | "interrupt_provider_unverified" | "session_missing" = "interrupting";
   const calls: Array<{ id: string; expectedTurnId: string }> = [];
   const source: WebSource = {
     capabilities: () => ({ sessionsReadable: true, projectsReadable: false, modelsReadable: false, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: false, sendEnabled: false, approvalTransport: "telegram" }),
@@ -120,14 +120,14 @@ test("owned-turn interrupt endpoint is exact, CSRF-protected, audited and race-s
     expect(accepted.status).toBe(200); expect((await accepted.json()).data).toEqual({ status: "interrupting" });
     expect(calls.at(-1)).toEqual({ id: "thread-owned", expectedTurnId: "turn-a" });
 
-    for (const [next, status] of [["interrupt_not_owned", 409], ["active_turn_changed", 409], ["interrupt_already_finished", 409], ["interrupt_provider_unavailable", 503], ["session_missing", 404]] as const) {
+    for (const [next, status] of [["interrupt_not_owned", 409], ["active_turn_changed", 409], ["interrupt_already_finished", 409], ["interrupt_provider_unavailable", 503], ["interrupt_provider_unverified", 409], ["session_missing", 404]] as const) {
       outcome = next;
       const response = await request({ expectedTurnId: "turn-secret" });
       expect(response.status).toBe(status);
       expect((await response.json()).data.errorCode).toBe(next);
     }
     const audits = db.query("SELECT action,detail_json AS detail FROM web_audit WHERE action='codex_turn_interrupt' ORDER BY created_at").all() as Array<{ action: string; detail: string }>;
-    expect(audits.length).toBe(6);
+    expect(audits.length).toBe(7);
     expect(audits.every((item) => item.detail.includes("thread-owned"))).toBe(true);
     expect(JSON.stringify(audits)).not.toContain("turn-secret");
     expect(JSON.stringify(audits)).not.toContain("turn-a");

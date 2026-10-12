@@ -29,6 +29,8 @@ export interface CodexReadThread {
   originator: string | null;
   parentThreadId: string | null;
   threadSource: unknown;
+  model?: string | null;
+  reasoningEffort?: string | null;
   creationClient: CreationClient;
 }
 
@@ -69,6 +71,8 @@ interface ThreadWire {
   originator?: unknown;
   parentThreadId?: unknown;
   threadSource?: unknown;
+  model?: unknown;
+  reasoningEffort?: unknown;
 }
 
 interface TurnWire {
@@ -168,6 +172,8 @@ function normalizeThread(value: ThreadWire): CodexReadThread | null {
     originator,
     parentThreadId,
     threadSource,
+    model: boundedString(value.model, 200),
+    reasoningEffort: boundedString(value.reasoningEffort, 80),
     creationClient: classifyCreationClient(sourceForClassification, originator),
   };
 }

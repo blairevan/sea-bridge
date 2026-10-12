@@ -79,10 +79,42 @@ test("shared Action ownership blocks Web continuation even when the first turn o
   expect(queues).toBe(1);
 });
 
+test("Codex session metadata uses real owned/live/thread facts and catalog only enriches the model name", async () => {
+  const thread = {
+    id: "thread-meta", title: "metadata", updatedAtMs: 100, rolloutPath: null,
+    model: "snapshot-model", reasoningEffort: "medium", sandboxPolicy: null, approvalMode: null,
+  };
+  const source = new CodexWebSource({
+    threads: { listActive: () => [thread], getThread: () => thread },
+    catalogs: {
+      async listProjects() { return []; },
+      async listModels() { return [{ id: "owned-model", displayName: "Owned Model" }]; },
+    },
+    actions: {
+      async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
+      ownsThread: () => true,
+      ownedTurn: () => ({
+        turnId: "turn-meta", state: "running" as const, terminalObserved: false,
+        metadata: { model: "owned-model", sandbox: "danger-full-access" as const, approvalPolicy: "never" as const },
+      }),
+    },
+    sessionMetadata: () => ({ model: "hook-model", metadataObservedAt: 200 }),
+    queue: { async queue() { throw new Error("unused"); } },
+    sessionRoots: [], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+
+  await source.models();
+  expect((await source.sessions())[0]?.sessionMeta).toEqual({
+    model: { id: "owned-model", displayName: "Owned Model" },
+    reasoningEffort: "medium",
+    executionPolicy: { sandbox: "danger_full_access", approval: "never" },
+  });
+});
+
 test("owned history exposes exact interrupt control while non-owned running stays unavailable", async () => {
   const fixture = "tests/fixtures/codex-rollout-web/visible.jsonl";
-  let owner: { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean } | null = {
-    turnId: "turn-owned", state: "running", terminalObserved: false,
+  let owner: { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean; metadata: { model: string | null; sandbox: "danger-full-access" | null; approvalPolicy: "never" | null } } | null = {
+    turnId: "turn-owned", state: "running", terminalObserved: false, metadata: { model: "model", sandbox: "danger-full-access", approvalPolicy: "never" },
   };
   const requested: Array<{ threadId: string; expectedTurnId: string }> = [];
   const source = new CodexWebSource({
@@ -95,7 +127,12 @@ test("owned history exposes exact interrupt control while non-owned running stay
       async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
       ownsThread: () => Boolean(owner),
       ownedTurn: () => owner,
-      async interruptOwnedTurn(input) { requested.push(input); return { status: "interrupting" as const }; },
+    },
+    interruptRouter: {
+      capability: () => owner && !owner.terminalObserved
+        ? owner.state === "interrupting" ? { status: "interrupting" as const } : { status: "available" as const }
+        : { status: "unavailable" as const, reason: "provider_unverified" as const },
+      async interrupt(input) { requested.push(input); return { status: "interrupting" as const }; },
     },
     queue: { async queue() { throw new Error("unused"); } },
     sessionRoots: ["tests/fixtures/codex-rollout-web"], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
@@ -103,32 +140,61 @@ test("owned history exposes exact interrupt control while non-owned running stay
 
   expect(await source.history("thread", null, 20)).toMatchObject({
     sessionState: "running",
-    turnControl: { activeTurnId: "turn-owned", interrupt: { status: "available", scope: "sea_bridge_owned_turn" } },
+    turnControl: { activeTurnId: "turn-owned", interrupt: { status: "available", scope: "exact_codex_turn" } },
   });
   expect(await source.interrupt("thread", "turn-owned")).toEqual({ status: "interrupting" });
   expect(requested).toEqual([{ threadId: "thread", expectedTurnId: "turn-owned" }]);
 
-  owner = { turnId: "turn-owned", state: "interrupting", terminalObserved: false };
+  owner = { turnId: "turn-owned", state: "interrupting", terminalObserved: false, metadata: { model: "model", sandbox: "danger-full-access", approvalPolicy: "never" } };
   expect((await source.history("thread", null, 20)).turnControl).toEqual({
-    activeTurnId: "turn-owned", interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" },
+    activeTurnId: "turn-owned", interrupt: { status: "interrupting", scope: "exact_codex_turn" },
   });
-  owner = { turnId: "turn-owned", state: "running", terminalObserved: true };
+  owner = { turnId: "turn-owned", state: "running", terminalObserved: true, metadata: { model: "model", sandbox: "danger-full-access", approvalPolicy: "never" } };
   expect((await source.history("thread", null, 20)).turnControl).toEqual({
-    activeTurnId: null, interrupt: { status: "unavailable", reason: "not_owned" },
+    activeTurnId: null, interrupt: { status: "unavailable", reason: "turn_unknown" },
   });
 });
 
-test("Codex interrupt maps exact owner race outcomes to stable source errors", async () => {
-  const statuses = ["not_owned", "turn_changed", "already_finished"] as const;
-  const expected = ["interrupt_not_owned", "active_turn_changed", "interrupt_already_finished"];
+test("verified router capability can expose interrupt for a non-owned exact active turn", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = mkdtempSync(join(tmpdir(), "web-external-interrupt-")); const file = join(root, "fixture.jsonl");
+  writeFileSync(file, JSON.stringify({ timestamp: "2026-10-12T04:00:00Z", type: "event_msg", payload: { type: "task_started", turn_id: "external-turn" } }));
+  const source = new CodexWebSource({
+    threads: {
+      listActive: () => [{ id: "external", title: "external", updatedAtMs: 1, rolloutPath: file }],
+      getThread: () => ({ id: "external", title: "external", updatedAtMs: 1, rolloutPath: file }),
+    },
+    catalogs: { async listProjects() { return []; }, async listModels() { return []; } },
+    actions: { async startThreadAndTurn(): Promise<never> { throw new Error("unused"); } },
+    interruptRouter: {
+      capability: (target) => target.expectedTurnId === "external-turn" ? { status: "available" as const } : { status: "unavailable" as const, reason: "provider_unverified" as const },
+      async interrupt() { return { status: "interrupting" as const }; },
+    },
+    queue: { async queue() { throw new Error("unused"); } },
+    sessionRoots: [root], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+  try {
+    expect((await source.history("external", null, 20)).turnControl).toEqual({
+      activeTurnId: "external-turn",
+      interrupt: { status: "available", scope: "exact_codex_turn" },
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Codex interrupt maps router outcomes to stable source errors", async () => {
+  const statuses = ["provider_unverified", "turn_changed", "already_finished", "provider_unavailable"] as const;
+  const expected = ["interrupt_provider_unverified", "active_turn_changed", "interrupt_already_finished", "interrupt_provider_unavailable"];
   for (const [index, status] of statuses.entries()) {
     const source = new CodexWebSource({
       threads: { listActive: () => [], getThread: () => ({ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: null }) },
       catalogs: { async listProjects() { return []; }, async listModels() { return []; } },
       actions: {
         async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
-        ownedTurn: () => status === "not_owned" ? null : { turnId: "turn", state: "running" as const, terminalObserved: status === "already_finished" },
-        async interruptOwnedTurn() { return { status }; },
+      },
+      interruptRouter: {
+        capability: () => ({ status: "unavailable" as const, reason: "provider_unverified" as const }),
+        async interrupt() { return { status }; },
       },
       queue: { async queue() { throw new Error("unused"); } },
       sessionRoots: [], pathExists: () => true, queueUsable: true, pendingApproval: () => false,

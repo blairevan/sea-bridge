@@ -472,12 +472,12 @@ test("mobile selection reveals the detail before positioning the latest history"
   expect(position).toBe(1000);
 });
 
-test("composer exposes interrupt only for an exact owned turn and keeps ordinary running sends separate", async () => {
+test("composer mirrors Codex: draft sends, empty active composer stops, and unsupported stop stays disabled", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   const elements = new Map<string, any>([
     ["composer-session-status", { textContent: "" }],
-    ["send-button", { textContent: "", disabled: false, type: "submit", dataset: {} }],
+    ["send-button", { textContent: "", disabled: false, type: "submit", title: "", dataset: {} }],
     ["prompt", { value: "" }],
   ]);
   const ui = runInNewContext(script.slice(0, end) + "\n({ state, exactInterruptTarget, syncComposerControl })", {
@@ -487,25 +487,86 @@ test("composer exposes interrupt only for an exact owned turn and keeps ordinary
     exactInterruptTarget(session?: any): string | null;
     syncComposerControl(now?: number): void;
   };
+  const button = elements.get("send-button"); const prompt = elements.get("prompt");
   ui.state.paused = false;
   ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
-    activeTurnId: "turn-a", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+    activeTurnId: "turn-a", interrupt: { status: "available", scope: "exact_codex_turn" },
   } };
   ui.syncComposerControl(1000);
   expect(ui.exactInterruptTarget()).toBe("turn-a");
-  expect(elements.get("send-button")).toMatchObject({ textContent: "⏹ 中断", disabled: false, type: "button", dataset: { mode: "interrupt" } });
+  expect(button).toMatchObject({ textContent: "⏹ 中断", disabled: false, type: "button", title: "中断当前任务", dataset: { mode: "interrupt" } });
 
-  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: true, turnControl: {
-    activeTurnId: "turn-b", interrupt: { status: "unavailable", reason: "not_owned" },
+  prompt.value = "继续处理";
+  ui.syncComposerControl(1000);
+  expect(button).toMatchObject({ textContent: "↑ 发送", disabled: true, type: "submit", title: "", dataset: { mode: "send" } });
+
+  ui.state.selected.sendEnabled = true;
+  ui.syncComposerControl(1000);
+  expect(button).toMatchObject({ textContent: "↑ 发送", disabled: false, type: "submit", dataset: { mode: "send" } });
+
+  ui.state.selected = { source: "codex", id: "external", state: "running", sendEnabled: true, turnControl: {
+    activeTurnId: "turn-b", interrupt: { status: "unavailable", reason: "provider_unverified" },
   } };
-  elements.get("prompt").value = "排队下一条";
+  prompt.value = "";
   ui.syncComposerControl(1000);
   expect(ui.exactInterruptTarget()).toBeNull();
-  expect(elements.get("send-button")).toMatchObject({ textContent: "↑ 发送", disabled: false, type: "submit", dataset: { mode: "send" } });
+  expect(button).toMatchObject({ textContent: "⏹ 中断", disabled: true, type: "button", title: "当前会话不支持远程中断", dataset: { mode: "interrupt" } });
 
-  ui.state.selected.turnControl = { activeTurnId: "turn-a", interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" } };
+  prompt.value = "排队下一条";
   ui.syncComposerControl(1000);
-  expect(elements.get("send-button")).toMatchObject({ textContent: "正在中断…", disabled: true, type: "button" });
+  expect(button).toMatchObject({ textContent: "↑ 发送", disabled: false, type: "submit", title: "", dataset: { mode: "send" } });
+
+  prompt.value = ""; ui.state.paused = true;
+  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
+    activeTurnId: "turn-a", interrupt: { status: "available", scope: "exact_codex_turn" },
+  } };
+  ui.syncComposerControl(1000);
+  expect(button).toMatchObject({ textContent: "⏹ 中断", disabled: true, type: "button", dataset: { mode: "interrupt" } });
+
+  ui.state.paused = false; prompt.value = "停止后再处理";
+  ui.state.selected.turnControl = { activeTurnId: "turn-a", interrupt: { status: "interrupting", scope: "exact_codex_turn" } };
+  ui.syncComposerControl(1000);
+  expect(button).toMatchObject({ textContent: "正在中断…", disabled: true, type: "button", dataset: { mode: "interrupt" } });
+});
+
+test("composer metadata displays only server-proven fields and supports partial metadata", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const meta = new ElementFixture("div");
+  const elements = new Map<string, any>([
+    ["composer-session-meta", meta],
+    ["composer-session-status", { textContent: "" }],
+    ["send-button", { textContent: "", disabled: false, type: "submit", dataset: {} }],
+    ["prompt", { value: "" }],
+  ]);
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, syncComposerControl })", {
+    document: {
+      getElementById: (id: string) => elements.get(id) ?? null,
+      createElement: (tag: string) => new ElementFixture(tag),
+    },
+  }) as { state: any; syncComposerControl(now?: number): void };
+
+  ui.state.paused = false;
+  ui.state.selected = {
+    source: "codex", id: "thread", state: "idle", sendEnabled: true,
+    sessionMeta: {
+      model: { id: "gpt-5.6", displayName: "GPT-5.6" },
+      reasoningEffort: "medium",
+      executionPolicy: { sandbox: "danger_full_access", approval: "never" },
+    },
+  };
+  ui.syncComposerControl(1000);
+  expect(meta.hidden).toBe(false);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["GPT-5.6", "中", "Full Access", "免审批"]);
+
+  ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" } };
+  ui.syncComposerControl(1000);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
+
+  ui.state.selected.sessionMeta = null;
+  ui.syncComposerControl(1000);
+  expect(meta.hidden).toBe(true);
+  expect(meta.children).toEqual([]);
 });
 
 test("interrupt request keeps the click-time turn id even if polling advances to a new turn", async () => {
@@ -528,11 +589,11 @@ test("interrupt request keeps the click-time turn id even if polling advances to
   }) as { state: any; interruptSelectedTurn(): Promise<void> };
   ui.state.paused = false; ui.state.authEpoch = 1; ui.state.viewEpoch = 2;
   ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
-    activeTurnId: "turn-a", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+    activeTurnId: "turn-a", interrupt: { status: "available", scope: "exact_codex_turn" },
   } };
   const pending = ui.interruptSelectedTurn(); await started;
   ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
-    activeTurnId: "turn-b", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+    activeTurnId: "turn-b", interrupt: { status: "available", scope: "exact_codex_turn" },
   } };
   resolveApi({ status: "interrupting" }); await pending;
   expect(calls).toEqual([{ path: "/api/sessions/codex/thread/interrupt", method: "POST", body: { expectedTurnId: "turn-a" } }]);
@@ -1051,13 +1112,13 @@ test("loaded message images open an accessible preview and privacy clearing clos
   const nodes = new Map<string, ElementFixture>(); let opened = 0; let closed = 0;
   const dialog = Object.assign(new ElementFixture("dialog"), { open: false, showModal() { this.open = true; opened++; }, close() { this.open = false; closed++; } });
   nodes.set("image-dialog", dialog);
-  const ui = runInNewContext(script.slice(0, end) + "\n({ renderUserMessage, renderMarkdown, closeImagePreview, clearSensitive })", {
+  const ui = runInNewContext(script.slice(0, end) + "\n({ renderUserMessage, renderMarkdown, closeImagePreview, clearSensitive, state })", {
     URL, location: { origin: "http://127.0.0.1:7310" }, document: {
       getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id); },
       createElement: (tag: string) => new ElementFixture(tag),
       createTextNode(text: string) { const node = new ElementFixture("#text"); node.textContent = text; return node; },
     },
-  }) as { renderUserMessage(message: { id: string; text: string }, session: { id: string; source: string }): ElementFixture; renderMarkdown(text: string): ElementFixture; closeImagePreview(): void; clearSensitive(): void };
+  }) as { state: any; renderUserMessage(message: { id: string; text: string }, session: { id: string; source: string }): ElementFixture; renderMarkdown(text: string): ElementFixture; closeImagePreview(): void; clearSensitive(): void };
   const text = '# Files mentioned by the user:\n\n## image.jpg: /tmp/codex-remote-attachments/thread/image.jpg\n\n## My request:\nInspect.';
   const root = ui.renderUserMessage({ id: "rollout-1", text }, { id: "thread", source: "codex" });
   flatten(root).find((node) => node.tag === "button")!.onclick?.();
@@ -1065,7 +1126,9 @@ test("loaded message images open an accessible preview and privacy clearing clos
   expect(typeof image.onclick).toBe("function"); image.onclick?.();
   expect(opened).toBe(1); expect(nodes.get("image-dialog-image")?.src).toBe(new URL(image.src, "http://127.0.0.1:7310").href);
   expect(image.attributes.get("role")).toBe("button");
+  ui.state.selected = { source: "codex", id: "thread", state: "idle", sendEnabled: true, sessionMeta: { model: { id: "gpt-5.6" } }, turnControl: { activeTurnId: "turn", interrupt: { status: "available", scope: "exact_codex_turn" } } };
   ui.clearSensitive(); expect(closed).toBe(1); expect(nodes.get("image-dialog-image")?.src).toBe("");
+  expect(ui.state.selected).toMatchObject({ sessionMeta: null, turnControl: null, sendEnabled: false });
   const markdown = ui.renderMarkdown("![sample](https://example.test/image.jpg)");
   flatten(markdown).find((node) => node.tag === "button")!.onclick?.();
   flatten(markdown).find((node) => node.tag === "img")!.onclick?.(); expect(opened).toBe(2);

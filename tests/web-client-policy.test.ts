@@ -7,9 +7,9 @@ test("an in-flight sensitive response cannot repopulate the page after SSE disco
   if (boundary < 0) throw new Error("UI fixture boundary missing");
   let resolveFetch: (response: Response) => void = () => { throw new Error("request not started"); };
   const pending = new Promise<Response>((resolve) => { resolveFetch = resolve; });
-  const nodes = new Map<string, { textContent: string; removeAttribute: (name: string) => void; replaceChildren: () => void }>();
+  const nodes = new Map<string, { textContent: string; hidden: boolean; disabled: boolean; type: string; value: string; dataset: Record<string, string>; removeAttribute: (name: string) => void; replaceChildren: (...items: unknown[]) => void }>();
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, api, clearSensitive })", {
-    document: { cookie: "", getElementById(id: string) { let value = nodes.get(id); if (!value) { value = { textContent: "", removeAttribute(_name: string) {}, replaceChildren() {} }; nodes.set(id, value); } return value; } },
+    document: { cookie: "", getElementById(id: string) { let value = nodes.get(id); if (!value) { value = { textContent: "", hidden: false, disabled: false, type: "", value: "", dataset: {}, removeAttribute(_name: string) {}, replaceChildren(..._items: unknown[]) {} }; nodes.set(id, value); } return value; } },
     fetch: () => pending, URLSearchParams,
   }) as { state: { version: number; paused: boolean }; api: (path: string) => Promise<unknown>; clearSensitive: () => void };
   harness.state.version = 1; harness.state.paused = false;

@@ -2,7 +2,7 @@
 
 - **创建日期**: 2026-10-12
 - **最后修订**: 2026-10-12
-- **状态**: 已评审并修订（Revised / Ready for Implementation Planning）
+- **状态**: Phase A-D 已实现；Phase E provider/router 与 owned provider 已实现，目标 Mac external provider Contract Gate 已完成并判定 FAIL，Desktop / CLI / queue external active-writer interrupt 当前保持 fail-closed
 - **目标组件**: Sea-Bridge 会话详情页、输入控制器、Codex Web Source、Codex Action Client
 
 ---
@@ -23,16 +23,16 @@ Sea-Bridge 部署在本地 Mac 上，通过手机或其他浏览器远程查看�
 本次升级的核心目标，是让长任务等待、长会话定位和移动端连续操作更接近 Codex 原生体验，同时继续遵守 Sea-Bridge 已有的几个关键约束：
 
 1. **任何运行状态都必须来自已验证证据，不能由前端猜测。**
-2. **不能因为存在官方 `turn/interrupt` RPC，就推导出 Sea-Bridge 可以跨 App Server 实例中断 Desktop / CLI 正在执行的 turn。**
+2. **产品最终目标是所有具备精确 active-turn 证据的 Codex running 会话都可中断；但任何具体 interrupt provider 都必须先通过对应 writer/版本 Contract Gate，不能仅因存在官方 `turn/interrupt` RPC 就假设跨实例安全。**
 3. **不能把 rollout 中的 reasoning、工具参数、本地路径或任意事件正文直接暴露到 Web。**
-4. **模型、推理档位、权限等信息只有在来源提供可靠契约时才展示；未知就隐藏或明确标记未知。**
+4. **模型、推理档位、权限等信息必须来自逐字段可追溯的会话级事实；现已建立正式 Session Metadata Contract，未知字段继续隐藏，不从默认配置推断。**
 5. **快捷操作不能让助手正文中的隐藏 payload 绕过用户对实际发送内容的感知。**
 
 升级拆成四个体验模块：
 
 1. **运行态活动卡片 (Live Activity Card)**：先提供可靠的耗时、状态和当前轮次；微观工具活动只有在建立安全投影后再启用。
 2. **快捷操作胶囊 (Quick Action Pills)**：从助手回复中提取明确的可继续选项，第一阶段以“填入输入框”为默认行为，避免隐藏的一键执行语义。
-3. **输入框控制台化 (Composer Hub)**：整合可靠的运行态与能力提示；中断按钮只在当前 turn 具备精确且可执行的 interrupt provider 时出现。
+3. **输入框控制台化 (Composer Hub)**：整合可靠的运行态与能力提示；主按钮复用 Codex 原生单按钮交互——有草稿时显示发送，空草稿且任务 active 时显示停止形态；只有当前 turn 具备精确且可执行的 interrupt provider 时停止按钮才可点击。
 4. **已加载轮次导航轨 (Loaded Turn Rail)**：帮助长会话快速定位，但不伪造全局轮次数量。
 
 ---
@@ -41,17 +41,21 @@ Sea-Bridge 部署在本地 Mac 上，通过手机或其他浏览器远程查看�
 
 原始方案方向正确，但存在 5 个需要在编码前修正的问题。
 
-### 2.1 `turn/interrupt` 不能直接作为 Desktop 同会话中断能力
+### 2.1 中断能力必须 Provider 化，不能把当前 owning-session 实现当成最终产品边界
 
-现有 `CodexAppServerClient.startThreadAndTurn()` 会启动一个独立 App Server session，并在 Sea-Bridge 创建的首轮 turn 完成前持续持有 writer ownership；完成后执行 `thread/unsubscribe` 并关闭该 session。
+现有 `CodexAppServerClient.startThreadAndTurn()` 会启动一个独立 App Server session，并在 Sea-Bridge 创建的首轮 turn 完成前持续持有 writer ownership；完成后执行 `thread/unsubscribe` 并关闭该 session。Phase B 已在真实目标机证明：**同一个 owning `AppServerSession`** 可以对 exact active turn 安全调用 `turn/interrupt`，因此 v1.1.8 已具备第一种可靠 provider。
 
-Desktop、CLI 或 `codex queue` 启动的 turn 并不由这个 Action session 持有。过去的同会话设计已经明确：在没有现场证明的 provider contract 前，禁止启动第二个 App Server 对正在被其他实例执行的 thread 做 `thread/resume / turn/steer / turn/interrupt`。
+但产品目标不应停留在“只有 Sea-Bridge 创建的首轮能停止”。Desktop、CLI 或 `codex queue` 启动的 turn 也应在满足 exact active-turn 与 provider contract 后提供同一停止体验。
 
-因此本次只允许：
+最佳实践是引入统一 `InterruptProvider` 层：
 
-- **第一阶段**：尝试支持 Sea-Bridge 自己持有的首轮 Action turn，在**同一个 AppServerSession** 内发出 `turn/interrupt`；
-- **Desktop / CLI / queue 发起的 turn**：继续视为 `interrupt unavailable`，直到单独完成 provider PoC 和 contract gate；
-- 不修改 `DesktopSameSessionAdapter.interrupt()` 为“普遍可用”，也不把 Headless/Action interrupt 冒充 Desktop 同会话 interrupt。
+- `OwnedAppServerInterruptProvider`：v1.1.8 已实现，复用原 owning session；
+- `ExternalCodexInterruptProvider`：目标 Mac / `codex-cli 0.147.0` 已完成真实 Contract Gate，跨实例 `turn/interrupt` / `turn/steer` 返回 `thread not found`，`thread/resume` 返回 `already has an active writer`；Gate 已判定 **FAIL**，因此当前不实现、不注册该 provider；
+- Web 不关心 provider 类型，只消费按会话/turn 投影出的 capability；
+- 任一 provider 都必须绑定点击瞬间的 `expectedTurnId`，不得在请求到达后重新选择“当前 active turn”；
+- `DesktopSameSessionAdapter.interrupt()` 继续保持 unavailable，不能用第二 App Server 猜测性 takeover；只有未来 Codex 官方新增共享控制总线、writer-safe attach/control 等新契约后，才重新执行 Contract Gate。
+
+因此，“Desktop / CLI / queue 外部 active writer 当前不可跨实例中断”已经是 **当前目标宿主与 Codex 0.147.0 的实测架构边界**，不是待补代码。未来若上游控制契约变化，应重新 Gate，而不是复用本次失败路径。
 
 ### 2.2 当前 Web 数据契约不支持“正在读取某文件”等微观活动
 
@@ -66,11 +70,23 @@ Desktop、CLI 或 `codex queue` 启动的 turn 并不由这个 Action session �
 
 因此第一阶段活动卡片只能展示可靠的粗粒度信息；若以后增加微观活动，必须单独设计 allowlist 投影，不允许直接把 rollout 行或工具参数传到浏览器。
 
-### 2.3 “模型 / 推理档位 / 权限徽标”当前缺少现成会话级事实
+### 2.3 “模型 / 推理档位 / 权限徽标”已经建立正式 Session Metadata Contract
 
-当前 Web Source 的 `WebSession` 没有会话级 `model / reasoningEffort / sandbox / approvalPolicy`。模型目录只证明“可选择哪些模型”，不能证明一个历史会话当前正在使用哪个模型。
+v1.1.8 的 `WebSession` 尚未投影会话级 `model / reasoningEffort / sandbox / approvalPolicy`；Phase D 已补齐 `WebSessionMeta` 与后端 resolver。原先 Phase A 的保守决定仍然正确：模型目录只证明“可选择哪些模型”，不能证明一个历史会话当前正在使用哪个模型。
 
-因此第一阶段不能硬编码类似 `agy/gemini-3.8-flash-medium · 中`，也不能把 Sea-Bridge 自身启动参数错误描述成 Desktop 当前会话权限。
+但已有证据表明真实数据来源并非不存在：
+
+- Codex Hook envelope 已包含 `model`、`permission_mode`；
+- 已取证的 native `threads` schema 出现过 `model`、`reasoning_effort`、`sandbox_policy`、`approval_mode`；
+- Sea-Bridge 自己创建的 Action thread 还知道实际 `thread/start` / `turn/start` 参数。
+
+当前实现已经建立正式 `WebSessionMeta` 聚合契约，并坚持不从默认配置或 model catalog 猜测：
+
+1. 每个字段独立取证、独立缺省，禁止“部分字段可读就整组补默认值”；
+2. active turn 的实时事实优先于较旧的 thread snapshot，但必须保留 evidence/freshness 语义；
+3. native schema 使用固定 allowlist projection + schema capability probing，不接受浏览器提供列名；
+4. Hook 的 `permission_mode` 不能未经验证直接等价映射成 `sandbox_policy + approval_mode`；若语义未证明，应保留为独立事实或不展示；
+5. catalog 只用于把真实 model id 映射成人类可读名称，catalog 不可用时可显示真实 id，但不能改变事实值。
 
 ### 2.4 一键直发助手生成的隐藏 prompt 风险过高
 
@@ -95,9 +111,14 @@ Web history 是分页、受限、证据保守的读取模型，`completeUserHist
        │
        │ GET sessions/history     现有 3s poll
        │ POST messages            现有发送链路
-       │ POST interrupt            仅 capability 允许时
+       │ POST interrupt           统一 exact-turn API
        ▼
 [ Web HTTP / CodexWebSource ]
+       │
+       ├── SessionMetadataResolver
+       │      ├── App Server thread catalog (model / reasoningEffort)
+       │      ├── fresh Hook allowlist metadata
+       │      └── exact owned Action parameters
        │
        ├── ReadService / rollout safe projection
        │      └── history + lifecycle + timing
@@ -105,12 +126,17 @@ Web history 是分页、受限、证据保守的读取模型，`completeUserHist
        ├── ProcessCodexQueueClient
        │      └── 非首轮续发
        │
-       └── Codex Action Client
-              └── Sea-Bridge 创建首轮的 owning AppServerSession
-                    ├── turn/start
-                    ├── turn/interrupt   (仅 owner turn，需 gate)
-                    └── thread/unsubscribe
+       └── InterruptRouter
+              ├── OwnedAppServerInterruptProvider      ✅ v1.1.8
+              │      └── owning AppServerSession -> turn/interrupt
+              └── ExternalCodexInterruptProvider      ⛔ Gate FAIL / not registered
+                     └── Desktop / CLI / queue active writer isolated in codex-cli 0.147.0
 ```
+
+这里有两个重要架构原则：
+
+1. **Web API 稳定，provider 可演进**：前端永远发送 `threadId + expectedTurnId`，不直接选择“owned / desktop / cli”实现；provider 选择由后端基于证据完成。
+2. **Metadata 与控制解耦**：能读取模型/权限不代表能控制该 turn；能识别 running 也不代表 interrupt provider 已可用。每项 capability 独立取证。
 
 ### 3.1 能力必须按会话、按 turn 暴露
 
@@ -121,8 +147,9 @@ interface WebTurnControl {
   activeTurnId: string | null;
   activeTurnStartedAt?: number;
   interrupt:
-    | { status: "available"; scope: "sea_bridge_owned_turn" }
-    | { status: "unavailable"; reason: "not_owned" | "turn_unknown" | "provider_unavailable" };
+    | { status: "available"; scope: "exact_codex_turn" }
+    | { status: "interrupting"; scope: "exact_codex_turn" }
+    | { status: "unavailable"; reason: "turn_unknown" | "provider_unavailable" | "provider_unverified" };
 }
 ```
 
@@ -130,8 +157,39 @@ interface WebTurnControl {
 
 - `activeTurnId` 只有在来源能精确绑定当前 active turn 时才返回；
 - `running` 不自动意味着 `interrupt.available`；
-- `owners.has(threadId)` 只能证明 Sea-Bridge Action ownership，不能证明任意 Desktop turn 的控制权；
+- provider 身份完全留在后端，不向 Web 暴露 `owned_app_server / external_codex`、AppServerSession、socket、路径等实现细节；Web 只知道这是经过验证的 `exact_codex_turn` 控制能力；
+- 当前只有 owned App Server provider 可用；目标 Mac / `codex-cli 0.147.0` 的 external provider Gate 已失败，因此 non-owned active turn 明确返回 `provider_unverified`；只有上游控制契约发生实质变化后才重新 Gate；
+- provider 选择不能只看 creation client，必须以**当前 active turn 的可控证据**为准；
 - 对 dsh 不复用 Codex 中断设计，除非 dsh Host 未来显式增加对应 contract。
+
+### 3.2 Session Metadata Resolver：逐字段事实聚合（已实现）
+
+已增加内部 `SessionMetadataResolver`，对 Web 暴露稳定的 `WebSessionMeta`，前端不直接拼接 Hook、native DB 和 Action 参数：
+
+```typescript
+interface WebSessionMeta {
+  model?: {
+    id: string;
+    displayName?: string;
+  };
+  reasoningEffort?: string;
+  executionPolicy?: {
+    sandbox?: "danger_full_access" | "workspace_write" | "read_only";
+    approval?: "never" | "on_request";
+  };
+}
+```
+
+实现中的合并优先级按**字段语义 + freshness + scope**，而不是把整组 metadata 从某个来源覆盖：
+
+- Sea-Bridge owned active turn：实际 Action 启动参数是该 turn 的强事实，提供 model / sandbox / approval；
+- fresh Hook `model`：可作为当前 active turn 的实时 model 事实；
+- App Server thread catalog：提供持久 session snapshot 的 `model / reasoningEffort`，并缓存到 Sea-Bridge 自有 catalog；
+- model catalog 只补充 display name，不参与事实选择；
+- Hook `permission_mode` 虽以 allowlist 形式保存，但在语义映射完成真实取证前，不直接填入 `executionPolicy`；
+- 任何冲突无法可靠裁决时宁可省略该字段，不猜测。
+
+`CodexThreadStore` 同时支持 native `model / reasoning_effort / sandbox_policy / approval_mode` 的固定 allowlist 投影，作为兼容/诊断与 contract 验证能力；**生产 Web 数据路径不会因此重新依赖 native SQLite**。Native DB schema 只探测代码内固定列名，禁止拼接来自请求的列名。
 
 ---
 
@@ -278,47 +336,54 @@ interface WebTurnControl {
 
 ### 6.3 模型、推理档位、权限
 
-第一阶段：
+v1.1.8 保持不显示伪造 metadata；Phase D 已将它提升为正式能力，并继续坚持字段级 fail-closed。
 
-- **不在已有会话 Composer 中显示模型和推理档位**，除非后端新增可信会话级 metadata；
-- 新建会话弹窗继续展示模型选择；
-- 不显示笼统的 `🛡️ 完全访问`，因为这可能把 Sea-Bridge Action 配置误解为 Desktop 当前会话权限。
+展示规则：
 
-后续若增加 `sessionMeta`，建议结构为：
+- `model`：只有 resolver 得到真实 model id 时展示；若 catalog 可用，用 catalog 补 display name，catalog 不可用则显示真实 id；
+- `reasoningEffort`：只有 App Server thread snapshot 或其他已验证来源给出时展示；
+- `executionPolicy`：只展示已经证明语义等价的 `sandbox / approval` 字段；不能把 Hook `permission_mode` 直接翻译成“完全访问”；
+- 字段可以部分存在，例如只显示 `GPT-5.6`，不能因为 reasoning 缺失就隐藏 model，也不能补一个默认“中”；
+- 新建会话弹窗继续展示可选模型目录，但“可选模型”与“当前会话真实模型”是两条不同事实链。
 
-```typescript
-interface WebSessionMeta {
-  model?: { id: string; displayName: string };
-  reasoningEffort?: string;
-  executionPolicy?: {
-    sandbox: "danger_full_access" | "workspace_write" | "read_only" | "unknown";
-    approval: "never" | "on_request" | "unknown";
-    scope: "this_turn" | "this_session";
-  };
-}
+推荐视觉保持弱提示，不抢占输入：
+
+```text
+GPT-5.6 · 中 · Full Access
 ```
 
-UI 只能展示实际存在的字段，不能从 model catalog 或本机默认配置反推历史会话事实。
+其中每一段都必须来自独立真实字段；缺哪段就省略哪段。UI 不展示 provenance/source 等内部诊断信息，必要时只在诊断页提供。
 
 ### 6.4 主按钮状态机
 
-#### Idle
+Composer 使用与 Codex 一致的**单主按钮**，不并排放置 Send / Stop 两个按钮。按钮语义首先响应用户当前是否有草稿，再由后端 capability 决定能否执行：
 
-- 输入为空：发送按钮 disabled；
-- 输入有内容且 source 允许发送：`↑ 发送`。
+#### Interrupting
 
-#### Running + interrupt unavailable
+- 已经发出 exact-turn interrupt 请求后，无论输入框里是否又出现草稿，主按钮保持 `正在中断…` 且 disabled；
+- 只有 matching terminal evidence 到达后才退出该状态。
 
-- 保持输入能力是否可用由现有 source `sendEnabled` 决定；
-- 主按钮不能伪装成 `中断`；
-- 可显示灰色状态提示 `当前任务运行中 · 暂不支持远程中断`。
+#### 有草稿
 
-#### Running + exact interrupt available
+- 主按钮始终显示 `↑ 发送`；
+- 是否可点击继续由现有 `sendEnabled`、连接状态和 `state.pending` 决定；
+- running 本身不能把一个本来允许 queue/send 的会话禁用；
+- Sea-Bridge-owned 首轮如果当前 `sendEnabled=false`，仍显示发送形态但保持 disabled，不因为 UI 对齐而偷偷引入未经验证的 `turn/steer`。
 
-- 主按钮显示 `⏹ 中断`；
-- 点击时捕获当前**精确 `turnId`**；
-- 进入 `interrupting` 状态后按钮 disabled；
-- 只有观察到该 turn 的真实终态后才切回 Idle。
+#### 无草稿 + active（`running` / `waiting_external_approval`）
+
+- 主按钮显示 `⏹ 中断`，保持所有 active Codex 会话视觉结构一致；
+- exact interrupt provider available：按钮可点击，点击时捕获当前**精确 `turnId`**；
+- provider unavailable / unverified / turn unknown：仍显示停止形态，但 disabled，并提示 `当前会话不支持远程中断`；
+- offline / reconnecting：停止按钮 disabled；
+- external Desktop / CLI / queue active writer 因目标 Mac Gate FAIL，属于上述 disabled stop 状态，不显示假的可用能力。
+
+#### 无草稿 + Idle / Unknown
+
+- 主按钮显示 `↑ 发送` 且 disabled；
+- 不因为历史上存在 active turn 或 stale capability 而继续显示可用停止。
+
+该状态机保持一个主按钮，并明确区分“按钮形态”与“能力可用性”：**显示 `⏹` 不等于后端存在 interrupt provider，只有 enabled 才代表可执行。**
 
 ---
 
@@ -370,9 +435,9 @@ UI 只能展示实际存在的字段，不能从 model catalog 或本机默认�
 
 ## 8. 中断能力详细设计
 
-### 8.1 先做 contract gate
+### 8.1 Owned provider Contract Gate（已完成）
 
-在实现 Web 按钮前，必须先用当前目标机 Codex 版本证明：
+v1.1.8 在实现 Web 按钮前，已用目标机 `codex-cli 0.147.0` 证明：
 
 1. Sea-Bridge `startThreadAndTurn()` 的 owning `AppServerSession` 在 turn 活跃期间可以并发调用 `turn/interrupt`；
 2. RPC 参数是精确 `threadId + turnId`；
@@ -382,7 +447,7 @@ UI 只能展示实际存在的字段，不能从 model catalog 或本机默认�
 6. Desktop 随后能重新打开该 thread，不出现残留 writer；
 7. 连续点击 / 网络重复请求不会误中断后续新 turn。
 
-PoC 失败则本次 UI 保持 interrupt unavailable，不用第二个 App Server 兜底。
+该 Gate 已通过，因此 `OwnedAppServerInterruptProvider` 可作为 v1.1.8 的正式 provider。这个 PASS **只证明 owning-session 路径**，不能自动推广为 Desktop / CLI / queue 的跨实例 contract。
 
 ### 8.2 Action Client 内部所有权表
 
@@ -450,10 +515,12 @@ X-Sea-Bridge-CSRF: ...
 稳定错误：
 
 - `404 session_missing`
-- `409 interrupt_not_owned`
+- `409 interrupt_provider_unverified`
 - `409 active_turn_changed`
 - `409 interrupt_already_finished`
 - `503 interrupt_provider_unavailable`
+
+`interrupt_not_owned` 仅作为 v1.1.8/兼容错误映射保留，不再作为新的 Web capability 语义；“非 owned”不等于永久不可控。
 
 如果前端刷新后已经确认会话 idle，可直接隐藏按钮，不必发请求。
 
@@ -470,7 +537,7 @@ T2 turn B 开始
 T3 中断请求到达后端
 ```
 
-后端必须返回 `active_turn_changed / not_owned`，绝不能自动把目标切换到 turn B。
+后端必须返回 `active_turn_changed`（或在 provider 尚未验证时 `interrupt_provider_unverified`），绝不能自动把目标切换到 turn B。
 
 ### 8.5 与 provisional interrupted 的兼容
 
@@ -481,6 +548,67 @@ T3 中断请求到达后端
 - 官方终态带可信 completion evidence；
 - 精确 Interrupt Hook 对应同一个 turn；
 - owning Action session 收到同 turn 的正式 terminal 通知并满足现有 contract。
+
+### 8.6 Universal Interrupt Provider 架构（Router/owned provider 已实现）
+
+当前实现没有在 `CodexWebSource` 里堆更多 `if (desktop/cli)` 分支，而是增加统一后端路由：
+
+```typescript
+interface InterruptRequest {
+  threadId: string;
+  expectedTurnId: string;
+}
+
+interface InterruptProvider {
+  id: "owned_app_server" | "external_codex";
+  capability(input: InterruptRequest): Promise<
+    | { status: "available" }
+    | { status: "unavailable"; reason: string }
+  >;
+  interrupt(input: InterruptRequest): Promise<
+    | { status: "interrupting" }
+    | { status: "turn_changed" }
+    | { status: "already_finished" }
+  >;
+}
+```
+
+`InterruptRouter` 负责：
+
+1. 先用 exact `threadId + expectedTurnId` 查询已验证 provider；
+2. owned registry 精确匹配时优先 `owned_app_server`；
+3. 非 owned running turn 只有在 `external_codex` 对当前目标机/版本已通过 Gate 后才可用；
+4. 没有 provider 时返回 `provider_unverified / provider_unavailable`，绝不能尝试“先 resume 看看”；
+5. provider 选定后本次请求固定绑定该 provider 和 `expectedTurnId`，中途不得切换到另一 provider 或另一个 turn；
+6. 最终 interrupted 仍由 terminal evidence 确认，provider RPC success 只代表接纳。
+
+#### External provider Contract Gate — VERIFIED / FAIL
+
+2026-10-12 已在目标宿主 `Darwin MacBookProM5Nvy.local 25.5.0 arm64`、`codex-cli 0.147.0` 上完成双 App Server 实测：
+
+1. Writer A 持有外部 active thread / turn；
+2. Writer B 直发 `turn/interrupt(threadId, expectedTurnId)`：返回 `-32600 thread not found`；
+3. Writer B 尝试 `thread/resume`：返回 `-32600 already has an active writer`；
+4. Writer B 尝试 `turn/steer`：同样返回 `-32600 thread not found`；
+5. `~/.codex/app-server-control/app-server-control.sock` 不存在，当前官方部署没有跨进程共享控制总线；
+6. 结论：独立 App Server 无法在 writer-safe 前提下介入外部活跃 thread，Contract Gate 判定 **FAIL**。
+
+生产裁决已经固定：
+
+- 不注册 `ExternalCodexInterruptProvider`；
+- non-owned external active turn 返回 `provider_unverified` 并 fail closed；
+- 不尝试 resume 后重试 interrupt，不尝试 steer 替代 interrupt；
+- 不用 kill / pkill / SIGINT 整个进程冒充 turn interrupt；
+- 只有未来 Codex 官方引入新的共享控制或 writer-safe attach/control contract 时，才重新执行新的目标机 Gate。
+
+#### 不采用的方案
+
+- 不直接把 `DesktopSameSessionAdapter.interrupt()` 改成“启动第二 App Server 然后 resume/interrupt”；
+- 不通过 kill Codex/Desktop 进程实现“停止”；
+- 不根据 thread creation client 直接推断 provider 可用；
+- 不使用“当前最新 active turn”替代客户端点击时的 `expectedTurnId`。
+
+这样可以实现最终产品目标——**所有有精确 active-turn 证据且存在已验证 provider 的 Codex running 会话都显示同一个停止按钮**——同时不牺牲 writer 安全。
 
 ---
 
@@ -515,7 +643,7 @@ SSE / HTTP 失联后：
 
 ## 10. 实施顺序
 
-建议分 4 个小阶段，避免一次把 UI 与执行控制绑死。
+Phase A-C 已由 v1.1.8 完成；本轮又完成了 Phase D 以及 Phase E 的 Router/owned-provider 基础。External provider 的真实目标 Mac Contract Gate 也已完成并判定 FAIL，因此当前 Phase E 的正确收口是：owned provider 保持可用，external active-writer provider 明确不注册并 fail closed。后续不再把“补 external provider”作为当前版本待办；只有上游控制契约变化后才重新立项验证。
 
 ### Phase A：纯 UI / 已有数据
 
@@ -540,12 +668,30 @@ SSE / HTTP 失联后：
 - HTTP endpoint；
 - 前端精确 turn 中断状态机。
 
-### Phase D：可选增强
+### Phase D：Session Metadata Contract — DONE
+
+- 生产路径从 App Server thread catalog 读取 `model / reasoningEffort` 并缓存到 Sea-Bridge catalog；
+- `CodexThreadStore` 同步支持 native metadata 的固定 allowlist 投影，作为兼容/诊断能力；
+- Hook/session state 只保存 allowlist metadata，不保存 tool input / prompt / reasoning；
+- `SessionMetadataResolver` 按字段 freshness/scope 合并 Action、Hook、thread snapshot；
+- WebSource 投影 `WebSessionMeta`；
+- Composer 逐字段显示模型 / reasoning / execution policy，未知字段不补默认值。
+
+### Phase E：Universal Codex Interrupt — DONE WITH VERIFIED EXTERNAL LIMITATION
+
+- `InterruptRouter` / provider interface 已实现；
+- v1.1.8 owned-turn 能力已包装为 `OwnedAppServerInterruptProvider`；
+- Web 已收敛到 provider-independent `exact_codex_turn` capability 与同一个 `POST .../interrupt`；
+- provider selection / no-fallback-after-dispatch / stale-turn 防护已有自动化测试；
+- 目标 Mac / `codex-cli 0.147.0` 的 external provider Contract Gate 已执行并判定 FAIL，证明独立 App Server 无法 writer-safe 控制外部 active writer；
+- production 不注册 `ExternalCodexInterruptProvider`，non-owned external active turn 明确 `provider_unverified` fail closed；未来只有上游控制 contract 发生实质变化后才重新 Gate。
+
+### Phase F：可选增强
 
 - 安全微活动 projection；
-- 会话级 model / reasoning / execution policy metadata；
 - 用户显式开启的一键直发快捷操作；
-- Desktop/CLI active interrupt provider（仅在独立 contract gate 通过后）。
+- dsh interrupt（需独立 Host contract）；
+- 其他不影响核心控制正确性的体验增强。
 
 ---
 
@@ -573,9 +719,10 @@ SSE / HTTP 失联后：
 
 1. 现有 1～3 行自动扩展无回归；
 2. iPhone 软键盘弹出时 header/nav 行为无回归；
-3. 未知模型 / reasoning / 权限不会显示伪造值；
-4. running 但 interrupt unavailable 时不显示可点击中断按钮；
-5. operation `delivery_unknown` 仍保留“结果待确认”，不会被 running 状态掩盖。
+3. 未知模型 / reasoning / 权限不会显示伪造值；已取证字段允许独立显示；
+4. running / waiting approval 且空草稿时显示 `⏹ 中断` 形态；没有已验证 provider 时按钮 disabled，有 verified provider 时才可点击；
+5. active 会话出现非空草稿后主按钮立即切换为 `↑ 发送`，enabled 状态继续服从 `sendEnabled / paused / pending`；
+6. operation `delivery_unknown` 仍保留“结果待确认”，不会被 running 状态掩盖。
 
 ### 11.4 轮次轨
 
@@ -595,13 +742,41 @@ SSE / HTTP 失联后：
 5. 真正 interrupted 后释放 writer，Desktop 可正常接管；
 6. turn 已完成时不误停后续 turn；
 7. 双击 / 重复请求幂等，不中断新的 turn；
-8. Desktop / CLI / queue 启动的非 owned turn 不显示可用中断按钮；
-9. 不通过第二 App Server 强行 resume/interrupt 非 owned thread；
-10. 现有 provisional interrupted → completed correction 逻辑无回归。
+8. Phase E external provider Gate 已在目标 Mac 判定 FAIL，因此 Desktop / CLI / queue 启动的 non-owned active turn 在空草稿时只显示 disabled 停止形态；有草稿时仍按现有 queue/send 语义显示发送；
+9. 不通过已证明不可行的第二 App Server resume/interrupt 路径强行介入 non-owned thread；
+10. owned active turn 有草稿时主按钮切为发送；若 `sendEnabled=false` 则保持 disabled，不引入未经验证 steer；
+11. 现有 provisional interrupted → completed correction 逻辑无回归。
+
+### 11.6 Session Metadata Contract
+
+1. App Server thread metadata 缺失时仍可正常读取基础 thread；native compatibility store 缺少任一可选 metadata 列也不影响基础读取；
+2. 只有真实存在的 metadata 才进入 resolver；生产 thread snapshot 当前使用 `model / reasoningEffort`，owned Action 可提供 sandbox/approval；
+3. Hook `model` 可作为 fresh active-turn model 事实，但 `permission_mode` 未经映射验证不能伪装成 sandbox/approval；
+4. Sea-Bridge owned turn 的实际 Action 参数可作为该 turn 强事实；
+5. conflicting/stale evidence 无法裁决时省略字段，不猜测；
+6. model catalog 只做 display-name enrichment，目录失败不改变 model id；
+7. Web response 不包含 native DB path、Hook transcript path、tool input、prompt、reasoning；
+8. Composer 可以只显示部分 metadata，例如只有 model，不补默认 reasoning；
+9. 不同 Codex schema profile 有 fixture / target-machine 验证。
+
+### 11.7 Universal Codex Interrupt
+
+对每个新 external provider：
+
+1. Contract Gate 必须在真实目标机、真实 Codex 版本上完成；
+2. capability 必须绑定 exact active `threadId + turnId`；
+3. stale A interrupt 在 B 已开始后不得停止 B；
+4. provider RPC 接纳后 UI 保持 interrupting，直到 terminal evidence；
+5. Desktop / CLI / queue 原 writer 不出现双 writer、死锁或残留 ownership；
+6. provider unavailable / unsupported version 必须 fail closed；
+7. Web endpoint 与按钮不因 provider 类型改变；
+8. provider 选择在请求开始后固定，不能中途 fallback 到另一个 provider；
+9. 不以 kill process / signal 作为正常 interrupt fallback；
+10. external provider Gate 全部未通过时，v1.1.8 owned provider 行为保持无回归。
 
 ---
 
-## 12. 预期修改范围
+## 12. 实际修改范围与剩余范围
 
 Phase A 预计主要修改：
 
@@ -623,14 +798,49 @@ Phase B / C 若 contract gate 通过，预计修改：
 - `tests/web-codex-source.test.ts`
 - Web HTTP / frontend 相关测试
 
-本设计**不要求**把 `src/desktop/same-session-adapter.ts` 的 `UNAVAILABLE_DESKTOP_INTERRUPT` 直接改成可用。只有未来证明真正的 Desktop 同会话主动 interrupt provider 后，再单独修改该 capability。
+Phase D 已增加/调整：
+
+- `src/desktop/codex-read-service.ts` / `src/desktop/codex-catalog-store.ts`：生产 thread model/reasoning 投影与缓存；
+- `src/desktop/codex-thread-store.ts`：native metadata 固定 allowlist 兼容投影；
+- `src/desktop/session-state.ts` / Hook provider：保存 allowlist live metadata；
+- `src/desktop/session-metadata-resolver.ts`：字段级事实聚合；
+- `src/web/sources/types.ts` / `src/web/sources/codex.ts`：投影 `WebSessionMeta`；
+- `src/web/public/app.js` / `app.css` / `index.html`：Composer metadata badges；
+- additive DB migration 与 schema/resolver/privacy/UI tests。
+
+Phase E 已增加/调整：
+
+- `src/desktop/interrupt-provider.ts`：`InterruptProvider`、`InterruptRouter`、`OwnedAppServerInterruptProvider`；
+- `src/web/sources/codex.ts`：provider-independent capability / router dispatch；
+- Web HTTP endpoint 保持不变，并增加 `interrupt_provider_unverified` 稳定错误；
+- provider pinning、no fallback after dispatch、stale-turn 和 non-owned verified capability tests。
+
+Phase E 当前收口：
+
+- 真实目标 Mac Contract Gate 已完成，跨实例 external provider 在 `codex-cli 0.147.0` 上判定 FAIL；
+- 不新增、不注册 `ExternalCodexInterruptProvider`；
+- `src/desktop/same-session-adapter.ts` 保留 `UNAVAILABLE_DESKTOP_INTERRUPT`；
+- 只有未来上游新增共享控制总线或 writer-safe attach/control contract 后，才重新 Gate 并评估是否移除该 unavailable。
+
+因此 `UNAVAILABLE_DESKTOP_INTERRUPT` **当前不是“尚未实现”的占位，而是基于真实目标机 Gate 的明确安全结果**。
 
 ---
 
 ## 13. 最终设计裁决
 
-本次布局升级可以实施，但需要把“视觉上像 Codex”和“控制能力真的等价于 Codex Desktop”严格分开。
+v1.1.8 已正确完成 Phase A-C；当前工作区已继续完成 Phase D 与 Phase E provider/router，并完成 external provider 目标机 Gate。当前结论不是“继续等待同一路径实现 Universal Interrupt”，而是明确接受 Codex 0.147.0 的单 writer 隔离：owned turn 可中断，external active-writer turn fail closed。
 
-第一阶段优先交付低风险、高收益的体验升级：**活动耗时、Composer 重构、快捷填入、已加载轮次导航**。中断功能只针对 Sea-Bridge 自己持有并能精确绑定的 Action turn，在同一个 AppServerSession contract 被真实证明后开放。
+最终产品目标明确为：
 
-微观工具活动、历史会话模型/推理档位、Desktop/CLI 主动中断都属于需要独立数据契约或 provider 取证的增强项。在取证完成前隐藏能力，比展示一个看似完整但语义错误的 UI 更可靠。
+1. **Composer 展示真实会话 metadata**：model / reasoning / execution policy 逐字段取证、逐字段显示，不猜默认值；
+2. **所有可精确定位 active turn 且存在已验证 provider 的 Codex running 会话统一支持中断**，不要求用户理解 Web / Telegram / Desktop / CLI / queue 的来源差异；
+3. Web 始终使用稳定的 exact-turn API，metadata resolver 与 interrupt router 在后端吸收 Codex 版本和来源差异；
+4. 每新增一种事实来源或控制 provider，都先建立 contract、fixture、真实目标机 Gate，再开放 capability；
+5. 安全不是“永久隐藏能力”，而是“未验证时 fail closed，验证通过后通过统一契约开放”。
+
+因此后续优先级已经收敛为：
+
+- **无当前 P1 external interrupt 实现项**：本轮 Gate 已失败，保持安全边界；仅在 Codex 上游控制契约变化时重新评估；
+- **P2：Phase F 安全微活动 / opt-in 一键直发等体验增强**。
+
+微观工具活动继续保持严格 allowlist；快捷胶囊默认仍只填入输入框。这两项当前设计无需改变。

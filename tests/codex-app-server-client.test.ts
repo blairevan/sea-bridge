@@ -140,7 +140,7 @@ describe("CodexAppServerClient", () => {
     });
     expect(events).toEqual(["start:owned"]);
     expect(client.ownsThread("owned")).toBe(true);
-    expect(client.ownedTurn("owned")).toEqual({ turnId: "turn", state: "running", terminalObserved: false });
+    expect(client.ownedTurn("owned")).toMatchObject({ turnId: "turn", state: "running", terminalObserved: false });
     proc.send({ method: "turn/completed", params: { threadId: "owned", turn: { id: "turn" } } });
     await Promise.all([client.close(), client.close()]);
     await Bun.sleep(5);
@@ -153,13 +153,14 @@ describe("CodexAppServerClient", () => {
     let proc!: MockProcess; let interruptCalls = 0;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
-      if (message.method === "thread/start") return proc.send({ id: message.id, result: { thread: { id: "owned" } } });
+      if (message.method === "thread/start") return proc.send({ id: message.id, result: { thread: { id: "owned" }, model: "gpt-5.6" } });
       if (message.method === "turn/start") return proc.send({ id: message.id, result: { turn: { id: "turn-a" } } });
       if (message.method === "turn/interrupt") { interruptCalls++; return proc.send({ id: message.id, result: {} }); }
       if (message.method === "thread/unsubscribe") return proc.send({ id: message.id, result: { status: "unsubscribed" } });
     });
     const client = new CodexAppServerClient("/codex", { spawner: () => proc as unknown as ChildProcessWithoutNullStreams });
     await client.startThreadAndTurn({ projectId: "project", cwd: "/repo", prompt: "hello" });
+    expect(client.ownedTurn("owned")?.metadata).toEqual({ model: "gpt-5.6", sandbox: "danger-full-access", approvalPolicy: "never" });
 
     expect(await client.interruptOwnedTurn({ threadId: "owned", expectedTurnId: "wrong" })).toEqual({ status: "turn_changed" });
     expect(interruptCalls).toBe(0);
@@ -168,7 +169,7 @@ describe("CodexAppServerClient", () => {
     expect(await client.interruptOwnedTurn({ threadId: "owned", expectedTurnId: "turn-a" })).toEqual({ status: "interrupting" });
     expect(await client.interruptOwnedTurn({ threadId: "owned", expectedTurnId: "turn-a" })).toEqual({ status: "interrupting" });
     expect(interruptCalls).toBe(1);
-    expect(client.ownedTurn("owned")).toEqual({ turnId: "turn-a", state: "interrupting", terminalObserved: false });
+    expect(client.ownedTurn("owned")).toMatchObject({ turnId: "turn-a", state: "interrupting", terminalObserved: false });
 
     proc.send({ method: "turn/completed", params: { threadId: "owned", turn: { id: "turn-a", status: "interrupted", completedAt: 1 } } });
     await Bun.sleep(1);
@@ -189,7 +190,7 @@ describe("CodexAppServerClient", () => {
     await client.startThreadAndTurn({ projectId: "project", cwd: "/repo", prompt: "hello" });
     await expect(client.interruptOwnedTurn({ threadId: "owned", expectedTurnId: "turn-a" })).rejects.toThrow("interrupt_provider_unavailable");
     expect(interruptCalls).toBe(1);
-    expect(client.ownedTurn("owned")).toEqual({ turnId: "turn-a", state: "running", terminalObserved: false });
+    expect(client.ownedTurn("owned")).toMatchObject({ turnId: "turn-a", state: "running", terminalObserved: false });
     expect(await client.interruptOwnedTurn({ threadId: "owned", expectedTurnId: "turn-b" })).toEqual({ status: "turn_changed" });
     expect(interruptCalls).toBe(1);
     await client.close();

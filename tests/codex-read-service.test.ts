@@ -53,6 +53,8 @@ function thread(id: string, overrides: Record<string, unknown> = {}) {
     originator: "codex-tui",
     parentThreadId: null,
     threadSource: "user",
+    model: "gpt-5.6",
+    reasoningEffort: "high",
     ...overrides,
   };
 }
@@ -88,6 +90,7 @@ describe("CodexReadService", () => {
 
     expect(threads.map((item) => item.id)).toEqual(["a", "b"]);
     expect(threads[0]?.creationClient).toEqual({ kind: "cli", evidence: "originator" });
+    expect(threads[0]).toMatchObject({ model: "gpt-5.6", reasoningEffort: "high" });
     expect(threads[1]?.creationClient).toEqual({ kind: "desktop", evidence: "originator" });
     expect(turns).toEqual([{ id: "turn", status: "completed", startedAtMs: 30_000, completedAtMs: 31_000, itemsView: "summary" }]);
     expect(envs).toHaveLength(1);

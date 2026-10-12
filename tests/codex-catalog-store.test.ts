@@ -15,6 +15,8 @@ function item(id: string, updatedAtMs: number): CodexReadThread {
     originator: "codex-tui",
     parentThreadId: null,
     threadSource: "user",
+    model: `model-${id}`,
+    reasoningEffort: "medium",
     creationClient: { kind: "cli", evidence: "originator" },
   };
 }
@@ -25,6 +27,7 @@ describe("CodexCatalogStore", () => {
     const store = new CodexCatalogStore(state, "/home/codex");
     store.commitFull([item("a", 10), item("b", 20)], 100);
     expect(store.listActive().map((thread) => thread.id)).toEqual(["b", "a"]);
+    expect(store.getThread("a")).toMatchObject({ model: "model-a", reasoningEffort: "medium" });
 
     store.commitFull([item("b", 30)], 200);
     expect(store.listActive().map((thread) => thread.id).sort()).toEqual(["a", "b"]);

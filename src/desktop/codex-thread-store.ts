@@ -7,6 +7,10 @@ export interface CodexThread {
   title: string;
   updatedAtMs: number;
   creationClient?: CreationClient;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  sandboxPolicy?: string | null;
+  approvalMode?: string | null;
 }
 
 export interface CodexThreadReader {
@@ -37,25 +41,40 @@ function threadTitle(row: { id: string; name: string | null; title: string | nul
   return title || `未命名会话 · ${row.id.slice(-8)}`;
 }
 
-/** Fixed projections cover old schemas without accepting dynamically supplied column names. */
-const PROVENANCE_PROFILES = [
-  "NULL AS source, NULL AS originator",
-  "source, NULL AS originator",
-  "NULL AS source, originator",
-  "source, originator",
-] as const;
+/** Fixed allowlist projections cover old schemas without accepting dynamically supplied column names. */
+const OPTIONAL_COLUMNS = {
+  source: "source",
+  originator: "originator",
+  model: "model",
+  reasoning_effort: "reasoning_effort",
+  sandbox_policy: "sandbox_policy",
+  approval_mode: "approval_mode",
+} as const;
+
+type OptionalColumn = keyof typeof OPTIONAL_COLUMNS;
+
+function optionalProjection(names: Set<string>): string {
+  return (Object.entries(OPTIONAL_COLUMNS) as Array<[OptionalColumn, string]>)
+    .map(([column, sql]) => names.has(column) ? sql : `NULL AS ${column}`)
+    .join(",");
+}
+
+function boundedMetadata(value: unknown, max = 200): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= max ? normalized : null;
+}
 
 /** Read native user-facing thread metadata while retaining diagnostic point lookups. */
 export class CodexThreadStore implements CodexThreadReader {
   /** Accept the existing Codex state database location. */
   constructor(private readonly path: string) {}
 
-  /** Probe only the two optional columns and select one of four fixed SQL profiles. */
+  /** Probe only an internal fixed allowlist of optional columns. */
   private projection(db: Database): string {
     const columns = db.query("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
     const names = new Set(columns.map((column) => column.name));
-    const profile = (names.has("source") ? 1 : 0) + (names.has("originator") ? 2 : 0);
-    return PROVENANCE_PROFILES[profile] ?? PROVENANCE_PROFILES[0];
+    return optionalProjection(names);
   }
 
   /** Retry once if the schema changes between capability probing and query preparation. */
@@ -73,7 +92,7 @@ export class CodexThreadStore implements CodexThreadReader {
     try {
       const row = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE id=?`,
-      ).get(threadId)) as { source: unknown; originator: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number } | null;
+      ).get(threadId)) as { source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number } | null;
       if (!row) return null;
       return {
         id: row.id,
@@ -81,6 +100,10 @@ export class CodexThreadStore implements CodexThreadReader {
         title: threadTitle(row),
         updatedAtMs: Number(row.recency_at_ms),
         creationClient: classifyCreationClient(row.source, row.originator),
+        model: boundedMetadata(row.model),
+        reasoningEffort: boundedMetadata(row.reasoning_effort, 80),
+        sandboxPolicy: boundedMetadata(row.sandbox_policy, 80),
+        approvalMode: boundedMetadata(row.approval_mode, 80),
       };
     } finally {
       db.close(false);
@@ -93,13 +116,17 @@ export class CodexThreadStore implements CodexThreadReader {
     try {
       const rows = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE archived=0 AND COALESCE(thread_source, '')<>'subagent' ORDER BY recency_at_ms ASC`,
-      ).all()) as Array<{ source: unknown; originator: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number }>;
+      ).all()) as Array<{ source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number }>;
       return rows.map((row) => ({
         id: row.id,
         rolloutPath: row.rollout_path,
         title: threadTitle(row),
         updatedAtMs: Number(row.recency_at_ms),
         creationClient: classifyCreationClient(row.source, row.originator),
+        model: boundedMetadata(row.model),
+        reasoningEffort: boundedMetadata(row.reasoning_effort, 80),
+        sandboxPolicy: boundedMetadata(row.sandbox_policy, 80),
+        approvalMode: boundedMetadata(row.approval_mode, 80),
       }));
     } finally {
       db.close(false);

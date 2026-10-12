@@ -101,6 +101,46 @@ describe("CodexHookProvider", () => {
     state.close();
   });
 
+  test("stores only allowlisted hook metadata for a fresh observed session", async () => {
+    const state = new StateDb(":memory:");
+    const sessions = new SessionStateStore(state);
+    const provider = new CodexHookProvider(
+      sessions,
+      new ContinuationQueue(state),
+      { request: async () => null } as any,
+      logger,
+      { activeSessionTtlMs: 60_000, requireFreshTranscript: false },
+    );
+    await provider.handle(envelope({
+      session_id: "s-meta",
+      turn_id: "t-meta",
+      hook_event_name: "UserPromptSubmit",
+      model: "gpt-5.6",
+      permission_mode: "default",
+      prompt: "must not persist",
+      tool_input: { secret: "must not persist" },
+    }));
+    expect(sessions.getById("s-meta")).toMatchObject({
+      model: "gpt-5.6",
+      permissionMode: "default",
+    });
+    const firstMetadataAt = sessions.getById("s-meta")?.metadataObservedAt;
+    await Bun.sleep(2);
+    await provider.handle(envelope({
+      session_id: "s-meta",
+      turn_id: "t-meta",
+      hook_event_name: "PostToolUse",
+      permission_mode: "full-auto",
+    }));
+    expect(sessions.getById("s-meta")?.metadataObservedAt).toBe(firstMetadataAt);
+    const columns = state.db.query("PRAGMA table_info(observed_sessions)").all() as Array<{ name: string }>;
+    expect(columns.map((item) => item.name)).not.toContain("prompt");
+    expect(columns.map((item) => item.name)).not.toContain("tool_input");
+    const event = state.db.query("SELECT payload_redacted_json AS payload FROM desktop_hook_events WHERE session_id='s-meta'").get() as { payload: string | null };
+    expect(event.payload).toBeNull();
+    state.close();
+  });
+
   test("PermissionRequest emits official allow shape only after same-turn freshness proof", async () => {
     const state = new StateDb(":memory:");
     const sessions = new SessionStateStore(state);

@@ -1,5 +1,12 @@
 import { Database } from "bun:sqlite";
 
+/** Add only fixed, code-owned columns; never accept schema identifiers from runtime input. */
+function ensureColumn(db: Database, table: "observed_sessions" | "desktop_codex_catalog", column: string, definition: string): void {
+  const columns = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some((item) => item.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 function migrateDshBridgeTables(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS dsh_message_links (
@@ -324,6 +331,12 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_pending_new_thread_expiry
         ON pending_new_thread_prompts(status, expires_at);
     `);
+
+    ensureColumn(this.db, "observed_sessions", "model", "TEXT");
+    ensureColumn(this.db, "observed_sessions", "permission_mode", "TEXT");
+    ensureColumn(this.db, "observed_sessions", "metadata_observed_at", "INTEGER");
+    ensureColumn(this.db, "desktop_codex_catalog", "model", "TEXT");
+    ensureColumn(this.db, "desktop_codex_catalog", "reasoning_effort", "TEXT");
 
     migrateDshBridgeTables(this.db);
   }

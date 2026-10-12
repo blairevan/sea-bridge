@@ -434,6 +434,11 @@ export class CodexAppServerClient {
     state: "starting" | "running" | "interrupting";
     session: AppServerSession;
     terminalObserved: boolean;
+    metadata: {
+      model: string | null;
+      sandbox: "danger-full-access" | "workspace-write" | "read-only" | null;
+      approvalPolicy: "never" | "on-request" | null;
+    };
   }>();
   private readonly finishedTurns = new Map<string, { turnId: string; finishedAt: number }>();
   private readonly permissionsResolver: () => ResolvedDesktopPermissions;
@@ -457,9 +462,19 @@ export class CodexAppServerClient {
   }
 
   /** Expose exact ownership evidence without leaking the owning AppServerSession. */
-  ownedTurn(threadId: string): { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean } | null {
+  ownedTurn(threadId: string): {
+    turnId: string | null;
+    state: "starting" | "running" | "interrupting";
+    terminalObserved: boolean;
+    metadata: { model: string | null; sandbox: "danger-full-access" | "workspace-write" | "read-only" | null; approvalPolicy: "never" | "on-request" | null };
+  } | null {
     const owned = this.ownedTurns.get(threadId);
-    return owned ? { turnId: owned.turnId, state: owned.state, terminalObserved: owned.terminalObserved } : null;
+    return owned ? {
+      turnId: owned.turnId,
+      state: owned.state,
+      terminalObserved: owned.terminalObserved,
+      metadata: { ...owned.metadata },
+    } : null;
   }
 
   /** Interrupt only the exact turn held by this client on its existing owning session. */
@@ -612,7 +627,17 @@ export class CodexAppServerClient {
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
       ownedThreadId = threadId;
       this.finishedTurns.delete(threadId);
-      this.ownedTurns.set(threadId, { turnId: null, state: "starting", session, terminalObserved: false });
+      this.ownedTurns.set(threadId, {
+        turnId: null,
+        state: "starting",
+        session,
+        terminalObserved: false,
+        metadata: {
+          model: threadResponse?.model ?? params.model ?? null,
+          sandbox: permissions.threadStart.sandbox,
+          approvalPolicy: permissions.threadStart.approvalPolicy,
+        },
+      });
       params.onThreadStarted?.(threadId);
 
       const turnPermissions = permissions.turnStart(params.cwd);
@@ -631,7 +656,17 @@ export class CodexAppServerClient {
       if (!turnId) throw new Error("app_server_turn_start_missing_id");
 
       ownedTurnId = turnId;
-      this.ownedTurns.set(threadId, { turnId, state: "running", session, terminalObserved: false });
+      this.ownedTurns.set(threadId, {
+        turnId,
+        state: "running",
+        session,
+        terminalObserved: false,
+        metadata: {
+          model: threadResponse?.model ?? params.model ?? null,
+          sandbox: permissions.threadStart.sandbox,
+          approvalPolicy: turnPermissions.approvalPolicy,
+        },
+      });
       handedToBackground = true;
       void session.waitForNotification(
         (message) => message.method === "turn/completed"

@@ -80,6 +80,25 @@ test("optional schema changes are observed without restarting the store", () => 
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("optional native metadata is projected field-wise and bounded", () => {
+  const { root, db, store } = fixture();
+  try {
+    db.exec("ALTER TABLE threads ADD COLUMN model TEXT");
+    db.exec("ALTER TABLE threads ADD COLUMN reasoning_effort TEXT");
+    db.exec("ALTER TABLE threads ADD COLUMN sandbox_policy TEXT");
+    db.exec("ALTER TABLE threads ADD COLUMN approval_mode TEXT");
+    db.exec("INSERT INTO threads(id,rollout_path,title,recency_at_ms,archived,model,reasoning_effort,sandbox_policy,approval_mode) VALUES('one','/fixture','one',1,0,'gpt-5.6','high','danger-full-access','never')");
+    expect(store.getThread("one")).toMatchObject({
+      model: "gpt-5.6",
+      reasoningEffort: "high",
+      sandboxPolicy: "danger-full-access",
+      approvalMode: "never",
+    });
+    db.query("UPDATE threads SET model=? WHERE id='one'").run("x".repeat(201));
+    expect(store.getThread("one")?.model).toBeNull();
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("missing required visibility columns fail instead of exposing a broader native list", () => {
   const {root, db, store} = fixture();
   try {

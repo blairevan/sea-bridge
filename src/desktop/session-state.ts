@@ -12,6 +12,9 @@ export interface ObservedSession {
   lastSeenAt: number;
   transcriptPath: string | null;
   cwd: string | null;
+  model: string | null;
+  permissionMode: string | null;
+  metadataObservedAt: number | null;
 }
 
 function stableJson(value: unknown): string {
@@ -23,6 +26,12 @@ function stableJson(value: unknown): string {
 
 export function hookEventHash(event: CodexHookEvent): string {
   return createHash("sha256").update(stableJson(event)).digest("hex");
+}
+
+function boundedMetadata(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= max ? normalized : null;
 }
 
 function activityForEvent(eventName: string): SessionActivityState {
@@ -49,16 +58,23 @@ export class SessionStateStore {
   observeEvent(event: CodexHookEvent): void {
     const activity = activityForEvent(event.hook_event_name);
     const now = Date.now();
+    const model = boundedMetadata(event.model, 200);
+    const permissionMode = boundedMetadata(event.permission_mode, 80);
+    // Track freshness for the model independently; permission-only events must not make an older model look fresh.
+    const metadataObservedAt = model ? now : null;
     this.state.db.query(`
-      INSERT INTO observed_sessions(session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd)
-      VALUES (?,?,?,?,?,?,?)
+      INSERT INTO observed_sessions(session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd,model,permission_mode,metadata_observed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(session_id) DO UPDATE SET
         turn_id=excluded.turn_id,
         last_event=excluded.last_event,
         activity_state=CASE WHEN excluded.activity_state='unknown' THEN observed_sessions.activity_state ELSE excluded.activity_state END,
         last_seen_at=excluded.last_seen_at,
         transcript_path=COALESCE(excluded.transcript_path, observed_sessions.transcript_path),
-        cwd=COALESCE(excluded.cwd, observed_sessions.cwd)
+        cwd=COALESCE(excluded.cwd, observed_sessions.cwd),
+        model=COALESCE(excluded.model, observed_sessions.model),
+        permission_mode=COALESCE(excluded.permission_mode, observed_sessions.permission_mode),
+        metadata_observed_at=COALESCE(excluded.metadata_observed_at, observed_sessions.metadata_observed_at)
     `).run(
       event.session_id,
       event.turn_id ?? null,
@@ -67,8 +83,10 @@ export class SessionStateStore {
       now,
       event.transcript_path ?? null,
       event.cwd ?? null,
+      model,
+      permissionMode,
+      metadataObservedAt,
     );
-
   }
 
   markEventStale(eventHash: string): void {
@@ -78,7 +96,7 @@ export class SessionStateStore {
   getMostRecentlyActive(ttlMs: number): ObservedSession | null {
     const minSeen = Date.now() - ttlMs;
     const row = this.state.db.query(`
-      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd
+      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd,model,permission_mode,metadata_observed_at
       FROM observed_sessions
       WHERE activity_state='active' AND last_seen_at>=?
       ORDER BY last_seen_at DESC
@@ -95,7 +113,7 @@ export class SessionStateStore {
 
   getMostRecent(): ObservedSession | null {
     const row = this.state.db.query(`
-      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd
+      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd,model,permission_mode,metadata_observed_at
       FROM observed_sessions ORDER BY last_seen_at DESC LIMIT 1
     `).get() as any;
     return row ? this.fromRow(row) : null;
@@ -103,7 +121,7 @@ export class SessionStateStore {
 
   getById(sessionId: string): ObservedSession | null {
     const row = this.state.db.query(`
-      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd
+      SELECT session_id,turn_id,last_event,activity_state,last_seen_at,transcript_path,cwd,model,permission_mode,metadata_observed_at
       FROM observed_sessions WHERE session_id=?
     `).get(sessionId) as any;
     return row ? this.fromRow(row) : null;
@@ -118,6 +136,9 @@ export class SessionStateStore {
       lastSeenAt: Number(row.last_seen_at),
       transcriptPath: row.transcript_path ?? null,
       cwd: row.cwd ?? null,
+      model: row.model ?? null,
+      permissionMode: row.permission_mode ?? null,
+      metadataObservedAt: row.metadata_observed_at == null ? null : Number(row.metadata_observed_at),
     };
   }
 }

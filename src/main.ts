@@ -27,6 +27,7 @@ import { ProcessCodexQueueClient } from "./desktop/codex-queue-client.ts";
 import { CodexQueueDiagnostics } from "./desktop/codex-queue-diagnostics.ts";
 import { readQueueExecutionEvidence, readCodexProcesses, readRolloutOpenPids } from "./desktop/codex-queue-evidence.ts";
 import { CodexAppServerClient } from "./desktop/codex-app-server-client.ts";
+import { InterruptRouter, OwnedAppServerInterruptProvider } from "./desktop/interrupt-provider.ts";
 import { NewThreadManager } from "./desktop/new-thread-manager.ts";
 import { NewThreadStateStore } from "./state/new-thread-state-store.ts";
 import { createAppServerApprovalHandler } from "./desktop/app-server-approval-bridge.ts";
@@ -45,7 +46,7 @@ function seedCapabilities(state: StateDb): void {
     ["DESKTOP_IDLE_WAKE", "discovery_required", null, "No verified provider for fully idle Desktop conversation"],
     ["DESKTOP_CONTEXT_INJECTION", "pending_poc", "codex_hook.user_prompt_submit", "Context-only; not an idle wake provider"],
     ["DESKTOP_USER_INPUT", "discovery_required", null, "No verified pending-input response provider"],
-    ["DESKTOP_INTERRUPT", "discovery_required", null, "Interrupt hook observes completed interrupt; no active interrupt provider"],
+    ["DESKTOP_INTERRUPT", "partial", "owned_app_server", "Sea-Bridge-owned turns are verified; external active-writer control gate failed on codex-cli 0.147.0 due single-writer isolation"],
     ["DESKTOP_MESSAGE_BRIDGE", "pending_poc", "state_db_rollout_jsonl+codex_queue", "Requires Desktop notification and reply delivery PoC"],
   ];
 
@@ -115,6 +116,12 @@ async function main(): Promise<void> {
     inboundRequestHandler: createAppServerApprovalHandler(approvals, logger),
     codexHome: config.codexHome,
   });
+  // Target-Mac Gate (codex-cli 0.147.0) proved an independent App Server cannot
+  // control a thread with an active external writer. Register only the owning-session
+  // provider; any future external provider requires a new upstream contract and Gate.
+  const interruptRouter = new InterruptRouter([
+    new OwnedAppServerInterruptProvider(actionClient),
+  ]);
   const newThreadManager = new NewThreadManager(
     readService,
     new NewThreadStateStore(state),
@@ -255,6 +262,14 @@ async function main(): Promise<void> {
     readQueue: (id) => nativeQueue.read(id),
     sessionRoots, pathExists: existsSync,
     queueUsable: codexCliUsable && observerEnvironmentReady,
+    interruptRouter,
+    sessionMetadata: (id) => {
+      const observed = sessions.getById(id);
+      const freshAfter = Date.now() - config.activeSessionTtlMs;
+      if (!observed || observed.lastSeenAt < freshAfter) return null;
+      const modelFresh = observed.metadataObservedAt != null && observed.metadataObservedAt >= freshAfter;
+      return { model: modelFresh ? observed.model : null, metadataObservedAt: observed.metadataObservedAt };
+    },
     registerCreatedThread: (id) => observerStore.registerCreatedThread(id),
     pendingApproval: (id) => Boolean(state.db.query("SELECT 1 FROM pending_approvals WHERE session_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())),
     activity: (id) => {

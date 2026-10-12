@@ -38,7 +38,7 @@ export class CodexCatalogStore implements CodexThreadReader {
   listActive(): CodexThread[] {
     if (this.identityMismatch()) return [];
     const rows = this.state.db.query(`
-      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence
+      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort
       FROM desktop_codex_catalog
       ORDER BY updated_at_ms DESC,thread_id
     `).all() as Array<{
@@ -48,6 +48,8 @@ export class CodexCatalogStore implements CodexThreadReader {
       updated_at_ms: number;
       creation_client_kind: CreationClient["kind"];
       creation_client_evidence: CreationClient["evidence"];
+      model: string | null;
+      reasoning_effort: string | null;
     }>;
     return rows.map((row) => ({
       id: row.thread_id,
@@ -58,13 +60,15 @@ export class CodexCatalogStore implements CodexThreadReader {
         kind: row.creation_client_kind,
         evidence: row.creation_client_evidence,
       },
+      model: row.model,
+      reasoningEffort: row.reasoning_effort,
     }));
   }
 
   getThread(threadId: string): CodexThread | null {
     if (this.identityMismatch()) return null;
     const row = this.state.db.query(`
-      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence
+      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort
       FROM desktop_codex_catalog WHERE thread_id=?
     `).get(threadId) as {
       thread_id: string;
@@ -73,6 +77,8 @@ export class CodexCatalogStore implements CodexThreadReader {
       updated_at_ms: number;
       creation_client_kind: CreationClient["kind"];
       creation_client_evidence: CreationClient["evidence"];
+      model: string | null;
+      reasoning_effort: string | null;
     } | null;
     if (!row) return null;
     return {
@@ -84,6 +90,8 @@ export class CodexCatalogStore implements CodexThreadReader {
         kind: row.creation_client_kind,
         evidence: row.creation_client_evidence,
       },
+      model: row.model,
+      reasoningEffort: row.reasoning_effort,
     };
   }
 
@@ -169,8 +177,8 @@ export class CodexCatalogStore implements CodexThreadReader {
     this.state.db.query(`
       INSERT INTO desktop_codex_catalog(
         thread_id,title,rollout_path,created_at_ms,updated_at_ms,recency_at_ms,
-        creation_client_kind,creation_client_evidence,observed_at,missing_count
-      ) VALUES(?,?,?,?,?,?,?,?,?,0)
+        creation_client_kind,creation_client_evidence,observed_at,missing_count,model,reasoning_effort
+      ) VALUES(?,?,?,?,?,?,?,?,?,0,?,?)
       ON CONFLICT(thread_id) DO UPDATE SET
         title=excluded.title,
         rollout_path=excluded.rollout_path,
@@ -180,7 +188,9 @@ export class CodexCatalogStore implements CodexThreadReader {
         creation_client_kind=excluded.creation_client_kind,
         creation_client_evidence=excluded.creation_client_evidence,
         observed_at=excluded.observed_at,
-        missing_count=0
+        missing_count=0,
+        model=excluded.model,
+        reasoning_effort=excluded.reasoning_effort
     `).run(
       thread.id,
       thread.title,
@@ -191,6 +201,8 @@ export class CodexCatalogStore implements CodexThreadReader {
       thread.creationClient.kind,
       thread.creationClient.evidence,
       observedAt,
+      thread.model ?? null,
+      thread.reasoningEffort ?? null,
     );
   }
 

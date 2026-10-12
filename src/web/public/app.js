@@ -513,7 +513,8 @@ function clearSensitive() {
   el("messages").replaceChildren(historyTools ?? el("history-tools")); liveActivityCard = null; clearTurnNavigation();
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
-  if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false };
+  if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false, startedAt: undefined, sessionMeta: null, turnControl: null };
+  syncComposerControl();
 }
 /** Read the double-submit cookie; keep it only in the current request. */
 function csrf() { return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("sea_csrf="))?.slice(9) ?? ""; }
@@ -553,7 +554,7 @@ async function requestApi(path, method = "GET", body) {
   }
   if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -1153,7 +1154,7 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, turnControl: result.turnControl ?? null };
+    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
     renderSessionStatus();
   }
   const previousMessages = state.messages;
@@ -1417,16 +1418,44 @@ async function loadCatalogs() {
   const allowed = state.caps[source]?.createEnabled;
   el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
-/** Return the exact turn bound to an actionable owned-turn interrupt, or null for every other running state. */
+/** Keep Composer metadata factual and field-wise; missing values are omitted rather than defaulted. */
+function composerMetadataLabels(meta) {
+  if (!meta) return [];
+  const labels = [];
+  const model = meta.model?.displayName || meta.model?.id;
+  if (model) labels.push({ text: String(model), className: "composer-meta-badge" });
+  if (meta.reasoningEffort) {
+    const effort = String(meta.reasoningEffort);
+    const reasoningLabels = { minimal: "最小", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最大" };
+    labels.push({ text: reasoningLabels[effort.toLowerCase()] || effort, className: "composer-meta-badge" });
+  }
+  const sandboxLabels = { danger_full_access: "Full Access", workspace_write: "Workspace", read_only: "Read Only" };
+  const sandbox = sandboxLabels[meta.executionPolicy?.sandbox];
+  if (sandbox) labels.push({ text: sandbox, className: "composer-meta-badge policy" });
+  if (meta.executionPolicy?.approval === "on_request") labels.push({ text: "需审批", className: "composer-meta-badge policy" });
+  else if (meta.executionPolicy?.approval === "never") labels.push({ text: "免审批", className: "composer-meta-badge policy" });
+  return labels;
+}
+
+function syncComposerMetadata(session = state.selected) {
+  const target = el("composer-session-meta"); if (!target) return;
+  const labels = session?.source === "codex" ? composerMetadataLabels(session.sessionMeta) : [];
+  if (typeof target.replaceChildren === "function") target.replaceChildren(...labels.map((item) => node("span", item.text, item.className)));
+  else target.textContent = labels.map((item) => item.text).join(" · ");
+  target.hidden = labels.length === 0;
+}
+
+/** Return the exact turn bound to an actionable exact-turn interrupt, or null for every other running state. */
 function exactInterruptTarget(session = state.selected) {
   const control = session?.turnControl;
   return session?.source === "codex" && control?.interrupt?.status === "available" && typeof control.activeTurnId === "string" && control.activeTurnId
     ? control.activeTurnId : null;
 }
 
-/** Keep session/runtime facts separate from operation receipts and switch the primary control only for exact owned turns. */
+/** Mirror Codex's single primary control: a draft means send; an empty active composer means stop. */
 function syncComposerControl(now = Date.now()) {
   const session = state.selected; const status = el("composer-session-status");
+  syncComposerMetadata(session);
   if (status) {
     const activity = liveActivityPresentation(session, state.paused, now);
     status.textContent = !session ? "选择会话后可继续"
@@ -1434,18 +1463,26 @@ function syncComposerControl(now = Date.now()) {
         : labels[session.state] ?? "状态未知";
   }
   const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
+  const hasDraft = Boolean(String(prompt?.value ?? "").trim());
   const interruptTarget = exactInterruptTarget(session);
   const requestMatches = Boolean(session && state.interruptRequest?.sessionId === session.id && state.interruptRequest?.source === session.source);
   const serverInterrupting = session?.source === "codex" && session.turnControl?.interrupt?.status === "interrupting";
   if (requestMatches || serverInterrupting) {
-    send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "正在中断…"; send.disabled = true; return;
+    send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "正在中断…"; send.disabled = true; send.title = ""; return;
   }
-  if (interruptTarget) {
+  if (hasDraft) {
+    send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送"; send.title = "";
+    send.disabled = state.paused || !session?.sendEnabled || Boolean(state.pending); return;
+  }
+  const active = session?.source === "codex" && ["running", "waiting_external_approval"].includes(session.state);
+  if (active) {
     send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "⏹ 中断";
-    send.disabled = state.paused || Boolean(state.pending); return;
+    send.disabled = state.paused || Boolean(state.pending) || !interruptTarget;
+    send.title = interruptTarget ? "中断当前任务" : "当前会话不支持远程中断";
+    return;
   }
-  send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送";
-  send.disabled = state.paused || !session?.sendEnabled || Boolean(state.pending) || !String(prompt?.value ?? "").trim();
+  send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送"; send.title = "";
+  send.disabled = true;
 }
 
 /** Bind the user's stop intent to the exact turn visible at click time; never retarget or auto-retry. */
@@ -1456,7 +1493,7 @@ async function interruptSelectedTurn() {
   const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   state.interruptRequest = requestIdentity;
   if (state.selected?.id === session.id && state.selected.source === session.source && state.selected.turnControl?.activeTurnId === expectedTurnId) {
-    state.selected = { ...state.selected, turnControl: { ...state.selected.turnControl, interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" } } };
+    state.selected = { ...state.selected, turnControl: { ...state.selected.turnControl, interrupt: { status: "interrupting", scope: "exact_codex_turn" } } };
   }
   syncLiveActivityCard(); syncComposerControl();
   try {
@@ -1466,7 +1503,7 @@ async function interruptSelectedTurn() {
     notice("已请求中断，正在等待 Codex 确认终态", { kind: "info", durationMs: 10_000 });
   } catch (error) {
     if (["auth_changed", "auth_required"].includes(error?.code)) return;
-    const race = ["active_turn_changed", "interrupt_not_owned", "interrupt_already_finished"].includes(error?.code);
+    const race = ["active_turn_changed", "interrupt_not_owned", "interrupt_already_finished", "interrupt_provider_unverified"].includes(error?.code);
     if (!race && isTransportError(error)) enterDisconnected();
     else notice(error?.message || "中断请求失败", { sticky: !race, kind: race ? "warning" : "error" });
   } finally {

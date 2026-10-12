@@ -2,12 +2,14 @@ import { readCodexAttachment } from "../codex-attachment.ts";
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
 import type { CodexReadService } from "../../desktop/codex-read-service.ts";
 import type { CodexCatalogHealth } from "../../desktop/codex-catalog-store.ts";
-import type { CodexThreadReader } from "../../desktop/codex-thread-store.ts";
+import type { CodexThread, CodexThreadReader } from "../../desktop/codex-thread-store.ts";
+import type { InterruptRouter } from "../../desktop/interrupt-provider.ts";
+import { resolveSessionMetadata } from "../../desktop/session-metadata-resolver.ts";
 import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.ts";
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, WebSessionMeta, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
@@ -27,6 +29,8 @@ export interface CodexSourceDependencies {
   queueUsable: boolean;
   pendingApproval: (id: string) => boolean;
   activity?: (id: string) => { state: "active" | "idle" | "unknown"; turnId: string | null } | null;
+  sessionMetadata?: (id: string) => { model: string | null; metadataObservedAt: number | null } | null;
+  interruptRouter?: Pick<InterruptRouter, "capability" | "interrupt">;
   registerCreatedThread?: (id: string) => void;
   readQueue?: (id: string) => CodexQueueSnapshot;
 }
@@ -40,6 +44,7 @@ export class CodexWebSource implements WebSource {
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
   private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
+  private readonly modelNames = new Map<string, string>();
   private projectsReadable = false;
   private modelsReadable = false;
   private sessionsReadable = false;
@@ -105,20 +110,36 @@ export class CodexWebSource implements WebSource {
     return this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id);
   }
 
-  /** Project exact active-turn control without treating generic running evidence as interruptable. */
+  /** Resolve field-wise metadata without exposing evidence provenance or private source paths to Web. */
+  private sessionMeta(id: string, thread: CodexThread): WebSessionMeta | undefined {
+    const owned = this.actions.ownedTurn?.(id) ?? null;
+    const resolved = resolveSessionMetadata({
+      thread,
+      hook: this.deps.sessionMetadata?.(id) ?? null,
+      action: owned && !owned.terminalObserved ? owned.metadata : null,
+    });
+    if (!resolved) return undefined;
+    const displayName = resolved.model ? this.modelNames.get(resolved.model) : undefined;
+    return {
+      ...(resolved.model ? { model: { id: resolved.model, ...(displayName ? { displayName } : {}) } } : {}),
+      ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
+      ...(resolved.executionPolicy ? { executionPolicy: resolved.executionPolicy } : {}),
+    };
+  }
+
+  /** Project exact active-turn control through the server-side provider router. */
   private turnControl(id: string, activity: { state: "active" | "idle" | "unknown"; turnId: string | null } | CodexActivity | null = null): WebTurnControl {
     const owned = this.actions.ownedTurn?.(id) ?? null;
     const activeTurnId = owned && !owned.terminalObserved ? owned.turnId
       : activity?.state === "active" && activity.turnId ? activity.turnId : null;
-    if (!owned || owned.terminalObserved) return { activeTurnId, interrupt: { status: "unavailable", reason: "not_owned" } };
-    if (!owned.turnId) return { activeTurnId: null, interrupt: { status: "unavailable", reason: "turn_unknown" } };
-    if (!this.actions.interruptOwnedTurn) return { activeTurnId: owned.turnId, interrupt: { status: "unavailable", reason: "provider_unavailable" } };
-    return {
-      activeTurnId: owned.turnId,
-      interrupt: owned.state === "interrupting"
-        ? { status: "interrupting", scope: "sea_bridge_owned_turn" }
-        : { status: "available", scope: "sea_bridge_owned_turn" },
-    };
+    if (!activeTurnId) return { activeTurnId: null, interrupt: { status: "unavailable", reason: "turn_unknown" } };
+    if (!this.deps.interruptRouter) return { activeTurnId, interrupt: { status: "unavailable", reason: "provider_unverified" } };
+    const capability = this.deps.interruptRouter.capability({ threadId: id, expectedTurnId: activeTurnId });
+    if (capability.status === "available") return { activeTurnId, interrupt: { status: "available", scope: "exact_codex_turn" } };
+    if (capability.status === "interrupting") return { activeTurnId, interrupt: { status: "interrupting", scope: "exact_codex_turn" } };
+    const reason = capability.reason === "provider_unavailable" ? "provider_unavailable"
+      : capability.reason === "turn_unknown" ? "turn_unknown" : "provider_unverified";
+    return { activeTurnId, interrupt: { status: "unavailable", reason } };
   }
 
   /** Confirm idle from native lifecycle evidence while respecting approvals and first-turn ownership. */
@@ -163,8 +184,9 @@ export class CodexWebSource implements WebSource {
         const activity = cached && Date.now() - cached.readAt < 10_000 ? cached.activity : this.deps.activity?.(thread.id) ?? null;
         const owned = this.actions.ownedTurn?.(thread.id) ?? null;
         const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(thread.id);
+        const sessionMeta = this.sessionMeta(thread.id, thread);
         return {
-          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
+          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
           state: approval ? "waiting_external_approval" as const
             : ownedActive || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
           ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
@@ -197,9 +219,11 @@ export class CodexWebSource implements WebSource {
     } catch { this.projectsReadable = false; throw new Error("projects_unavailable"); }
   }
 
-  /** Discover models rather than hardcoding an account's options. */
+  /** Discover models rather than hardcoding an account's options; names only enrich an already-known model ID. */
   async models(): Promise<CatalogItem[]> {
-    try { const models = await this.modelCache.get(); this.modelsReadable = true;
+    try {
+      const models = await this.modelCache.get(); this.modelsReadable = true;
+      for (const model of models) this.modelNames.set(model.id, model.displayName);
       return models.map((model) => ({ id: model.id, name: model.displayName }));
     } catch { this.modelsReadable = false; throw new Error("models_unavailable"); }
   }
@@ -227,7 +251,9 @@ export class CodexWebSource implements WebSource {
       const queue = this.deps.readQueue?.(id);
       const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt } : {};
       const turnControl = this.turnControl(id, activity);
-      return queue ? { ...history, ...timing, turnControl, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, ...timing, turnControl, sessionState };
+      const sessionMeta = this.sessionMeta(id, thread);
+      const detail = { ...history, ...timing, ...(sessionMeta ? { sessionMeta } : {}), turnControl, sessionState };
+      return queue ? { ...detail, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : detail;
     } catch (error) {
       this.historyReadable = false;
       throw error;
@@ -242,17 +268,19 @@ export class CodexWebSource implements WebSource {
     return readCodexAttachment(id, messageId, index, { messages: message ? [message] : [], cursor: null, completeUserHistory: false });
   }
 
-  /** Interrupt only the exact Sea-Bridge-owned first turn; never resume or retarget another writer. */
+  /** Interrupt an exact turn through a verified provider selected by the server-side router. */
   async interrupt(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }> {
-    if (!this.actions.interruptOwnedTurn) throw new Error("interrupt_provider_unavailable");
-    let result: Awaited<ReturnType<NonNullable<typeof this.actions.interruptOwnedTurn>>>;
-    try { result = await this.actions.interruptOwnedTurn({ threadId: id, expectedTurnId }); }
-    catch { throw new Error("interrupt_provider_unavailable"); }
+    if (!this.deps.interruptRouter) throw new Error("interrupt_provider_unavailable");
+    const result = await this.deps.interruptRouter.interrupt({ threadId: id, expectedTurnId });
     if (result.status === "interrupting") return result;
     if (result.status === "turn_changed") throw new Error("active_turn_changed");
     if (result.status === "already_finished") throw new Error("interrupt_already_finished");
-    if (!this.deps.threads.getThread?.(id)) throw new Error("session_missing");
-    throw new Error("interrupt_not_owned");
+    if (result.status === "provider_unavailable") throw new Error("interrupt_provider_unavailable");
+    const thread = this.deps.threads.getThread?.(id)
+      ?? this.deps.threads.listActive().find((item) => item.id === id)
+      ?? null;
+    if (!thread) throw new Error("session_missing");
+    throw new Error("interrupt_provider_unverified");
   }
 
   /** Start a raw Web prompt with explicit request-local model selection. */
