@@ -5,7 +5,10 @@
 - 兼容 Codex Desktop 新版 `Files pasted by the user`：从 envelope 中只提取用户请求正文与附件 basename，隐藏粘贴 payload 和 `/Users/.../.codex/attachments/...` 等宿主绝对路径。
 - 文本等非图片附件仅显示紧凑附件卡，不再错误提供“查看图片”；图片附件继续使用现有 same-origin 预览接口。
 - `当前第 X 轮 · 已加载 N 轮` 显示期间，`↓` 回到最新按钮自动上移避让；6 秒提示隐藏后恢复原位，避免移动端浮层重叠。
-- 当前工作区版本递增至 v1.1.22，用于新的 immutable JS/CSS 缓存键；尚未 commit / push / deploy。
+- 已提交 `b372b65` 并推送；发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.22-20261012-191026`。
+- SQLite 一致性备份：`~/.config/sea-bridge/backups/20261012-191026/state.sqlite3`，`PRAGMA quick_check=ok`。
+- LaunchAgent running，PID 74268；本机首页及 `/app.js?v=1.1.22` / `/app.css?v=1.1.22` 均 HTTP 200，HTML 确认 v1.1.22。
+- 全量门禁：480 pass、0 fail、2238 expectations；typecheck、JS syntax、build、diff check 均通过。
 
 ## v1.1.21 Codex 终态错误卡片发布
 
