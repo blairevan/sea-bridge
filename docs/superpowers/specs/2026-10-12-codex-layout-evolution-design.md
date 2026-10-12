@@ -776,6 +776,7 @@ Phase A-C 已由 v1.1.8 完成；本轮又完成了 Phase D 以及 Phase E 的 R
 4. running / waiting approval 且空草稿时显示 `⏹ 中断` 形态；没有已验证 provider 时按钮 disabled，有 verified provider 时才可点击；
 5. active 会话出现非空草稿后主按钮立即切换为 `↑ 发送`，enabled 状态继续服从 `sendEnabled / paused / pending`；
 6. operation `delivery_unknown` 仍保留“结果待确认”，不会被 running 状态掩盖。
+7. 可选的浏览器本地“回车发送”偏好默认关闭；开启后普通 Enter 只提交可发送的非空草稿，Shift+Enter 保留换行，IME 组字期间不提交。
 
 ### 11.4 轮次轨
 

@@ -24,6 +24,8 @@
 
 ### 2026-10-12 实施状态
 
+- **Composer 回车发送偏好**：设置页可切换“回车发送，Shift+回车换行”，浏览器本地保存且默认关闭；普通 Enter 仅在有草稿、发送模式可用且输入法未组字时提交。加入键盘行为回归测试，版本升至 v1.1.24 以更新 immutable 静态资源键。
+
 - **Phase A 已实现**：安全活动卡片、可见选项快捷填入、已加载轮次导航、Composer 控制台化均已落地，并补充 UI / 安全 / 竞态回归测试。
 - **共享 ownership 已收口**：`CodexAppServerClient` 维护 `starting / running / interrupting` 的 exact owning turn，并保留 owning `AppServerSession`；`CodexWebSource` 读取同一事实源，因此 Web 与 Telegram 创建的 Action 首轮在 writer 释放前都不会被 Web 错误开放续发。
 - **Phase B 真实 Contract Gate 已通过**：目标宿主为 Darwin 25.5.0 arm64，真实验证使用 `/Users/zhuhaijun/.bun/bin/codex`（`codex-cli 0.147.0`）。同一 owning App Server session 对 exact active turn 调用 `turn/interrupt` 被接纳，随后同一通信流收到官方 `turn/completed(status=interrupted)` 且带 completion evidence；`thread/unsubscribe` 成功后，新建的第二个 App Server session 能 `thread/resume` 同一测试 thread 并启动下一 turn，证明 writer ownership 已释放。

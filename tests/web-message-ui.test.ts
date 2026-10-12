@@ -8,12 +8,31 @@ async function helpers(crypto: unknown): Promise<{
   extractActionPills: (value: string) => string[];
   liveActivityPresentation: (session: { state?: string; startedAt?: number; turnControl?: { interrupt?: { status?: string } } } | null, paused: boolean, now: number) => { visible: boolean; status: string; detail: string };
   loadedTurnModel: (messages: Array<{ role: string; text: string; deliveryState?: string }>) => Array<{ index: number; summary: string }>;
+  handleComposerEnter: (event: { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number; preventDefault(): void }, enabled: boolean, hasDraft: boolean, canSend: boolean, submit: () => void) => boolean;
 }> {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   if (end < 0) throw new Error("UI boundary missing");
-  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl, extractActionPills, liveActivityPresentation, loadedTurnModel })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
+  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl, extractActionPills, liveActivityPresentation, loadedTurnModel, handleComposerEnter })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
 }
+
+test("Enter-to-send submits only an enabled draft; Shift+Enter and IME composition remain untouched", async () => {
+  const { handleComposerEnter } = await helpers({});
+  let submits = 0;
+  let prevented = 0;
+  const event = (key: string, options: { shiftKey?: boolean; isComposing?: boolean } = {}) => ({ key, ...options, preventDefault: () => { prevented++; } });
+
+  expect(handleComposerEnter(event("Enter"), true, true, true, () => { submits++; })).toBe(true);
+  expect(submits).toBe(1);
+  expect(prevented).toBe(1);
+  expect(handleComposerEnter(event("Enter", { shiftKey: true }), true, true, true, () => { submits++; })).toBe(false);
+  expect(handleComposerEnter(event("Enter", { isComposing: true }), true, true, true, () => { submits++; })).toBe(false);
+  expect(handleComposerEnter({ ...event("Enter"), keyCode: 229 }, true, true, true, () => { submits++; })).toBe(false);
+  expect(handleComposerEnter(event("Enter"), false, true, true, () => { submits++; })).toBe(false);
+  expect(handleComposerEnter(event("Enter"), true, false, true, () => { submits++; })).toBe(true);
+  expect(handleComposerEnter(event("Enter"), true, true, false, () => { submits++; })).toBe(true);
+  expect(submits).toBe(1);
+});
 
 test("operation UUID works without secure-context randomUUID and retains UUID v4 bits", async () => {
   const ui = await helpers({ getRandomValues: (bytes: Uint8Array) => { bytes.fill(255); return bytes; } });

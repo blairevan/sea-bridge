@@ -80,6 +80,24 @@ function toggleTheme() {
   try { localStorage.setItem("sea-theme", next); } catch { /* The current-page selection still applies. */ }
 }
 
+/** Submit a composer draft on Enter only when the local preference and send state allow it. */
+function handleComposerEnter(event, enabled, hasDraft, canSend, submit) {
+  if (!enabled || event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return false;
+  event.preventDefault();
+  if (hasDraft && canSend) submit();
+  return true;
+}
+
+/** Read the browser-local Enter-to-send preference without blocking the composer when storage is unavailable. */
+function readEnterToSendPreference() {
+  try { return localStorage.getItem("sea-enter-to-send") === "true"; } catch { return false; }
+}
+
+/** Persist the browser-local Enter-to-send preference when storage is available. */
+function saveEnterToSendPreference(enabled) {
+  try { localStorage.setItem("sea-enter-to-send", String(enabled)); } catch { /* The current-page preference still applies. */ }
+}
+
 /** Discard the overview snapshot on logout or verified privacy-policy changes. */
 function clearOverviewCache() {
   try { localStorage.removeItem("sea-overview-v1"); } catch { /* Storage may be restricted. */ }
@@ -1950,6 +1968,15 @@ el("notice-retry").onclick = retryConnection;
 el("create-retry").onclick = retryConnection;
 el("notice-close").onclick = clearNotice;
 el("prompt").oninput = () => { resizeComposer(); syncComposerControl(); };
+el("prompt").onkeydown = (event) => handleComposerEnter(
+  event,
+  readEnterToSendPreference(),
+  Boolean(el("prompt").value.trim()),
+  el("send-button").dataset.mode === "send" && !el("send-button").disabled,
+  () => el("send-form").requestSubmit(),
+);
+el("enter-to-send").checked = readEnterToSendPreference();
+el("enter-to-send").onchange = () => saveEnterToSendPreference(el("enter-to-send").checked);
 el("prompt").addEventListener("focus", syncViewport);
 el("prompt").addEventListener("blur", syncViewport);
 window.visualViewport?.addEventListener("resize", syncViewport);
