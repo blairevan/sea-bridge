@@ -2,11 +2,17 @@ import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 
 /** Load browser helpers without event bindings or a real browser session. */
-async function helpers(crypto: unknown): Promise<{ operationUuid: () => string; safeMessageUrl: (value: string, image: boolean) => string | null }> {
+async function helpers(crypto: unknown): Promise<{
+  operationUuid: () => string;
+  safeMessageUrl: (value: string, image: boolean) => string | null;
+  extractActionPills: (value: string) => string[];
+  liveActivityPresentation: (session: { state?: string; startedAt?: number; turnControl?: { interrupt?: { status?: string } } } | null, paused: boolean, now: number) => { visible: boolean; status: string; detail: string };
+  loadedTurnModel: (messages: Array<{ role: string; text: string; deliveryState?: string }>) => Array<{ index: number; summary: string }>;
+}> {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   if (end < 0) throw new Error("UI boundary missing");
-  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
+  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl, extractActionPills, liveActivityPresentation, loadedTurnModel })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
 }
 
 test("operation UUID works without secure-context randomUUID and retains UUID v4 bits", async () => {
@@ -24,10 +30,67 @@ test("message links and images reject executable, local-file and credential URLs
   expect(ui.safeMessageUrl("http://example.test/image.png", true)).toBeNull();
 });
 
+test("quick action pills only expose short visible options outside code, quotes and tables", async () => {
+  const ui = await helpers({});
+  const text = [
+    "选项 1：继续修改代码",
+    "回复「只更新文档」执行下一步",
+    "> 选项 2：引用里的内容不能执行",
+    "```text",
+    "选项 3：代码块里的内容不能执行",
+    "```",
+    "| 选项 4：表格内容 | 说明 |",
+    "| --- | --- |",
+    ":codex-followup[可见标签]{prompt=\"隐藏危险指令\"}",
+    `选项 5：${"x".repeat(121)}`,
+    "选项 6：继续修改代码",
+  ].join("\n");
+  expect(ui.extractActionPills(text)).toEqual(["继续修改代码", "只更新文档"]);
+});
+
+test("live activity uses absolute start evidence and labels stale running state during reconnect", async () => {
+  const ui = await helpers({});
+  expect(ui.liveActivityPresentation({ state: "running", startedAt: 1_000 }, false, 66_000)).toEqual({
+    visible: true,
+    status: "执行中",
+    detail: "已运行 1 分 5 秒",
+  });
+  expect(ui.liveActivityPresentation({ state: "running", startedAt: 1_000 }, true, 66_000)).toEqual({
+    visible: true,
+    status: "连接重连中 · 最后已知执行中",
+    detail: "已运行 1 分 5 秒",
+  });
+  expect(ui.liveActivityPresentation({ state: "waiting_external_approval" }, false, 66_000)).toEqual({
+    visible: true,
+    status: "等待 Telegram 审批",
+    detail: "",
+  });
+  expect(ui.liveActivityPresentation({ state: "running", startedAt: 1_000, turnControl: { interrupt: { status: "interrupting" } } }, false, 66_000)).toEqual({
+    visible: true,
+    status: "正在中断",
+    detail: "已运行 1 分 5 秒",
+  });
+  expect(ui.liveActivityPresentation({ state: "idle", startedAt: 1_000 }, false, 66_000).visible).toBe(false);
+});
+
+test("loaded turn model counts only executed user history and never invents a global total", async () => {
+  const ui = await helpers({});
+  expect(ui.loadedTurnModel([
+    { role: "user", text: "第一轮问题" },
+    { role: "assistant", text: "回答" },
+    { role: "user", text: "排队中的问题", deliveryState: "queued" },
+    { role: "user", text: "第二轮问题\n更多内容" },
+  ])).toEqual([
+    { index: 1, summary: "第一轮问题" },
+    { index: 2, summary: "第二轮问题 更多内容" },
+  ]);
+});
+
 /** Minimal DOM fixture preserving whether text became markup or an executable element. */
 class ElementFixture {
   children: ElementFixture[] = [];
   attributes = new Map<string, string>();
+  dataset: Record<string, string> = {};
   /** Store accessibility attributes without interpreting markup. */
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   /** Remove a transient accessibility state. */
@@ -55,6 +118,74 @@ class ElementFixture {
 
 /** Flatten the fixture tree for structural security and formatting assertions. */
 function flatten(root: ElementFixture): ElementFixture[] { return [root, ...root.children.flatMap(flatten)]; }
+
+test("quick action click only fills the visible prompt and performs no network write", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  let fetches = 0;
+  const ui = runInNewContext(script.slice(0, end) + "\nresizeComposer=()=>{}; syncComposerControl=()=>{}; ({ renderActionPills })", {
+    fetch: () => { fetches++; throw new Error("quick action must not submit"); },
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as { renderActionPills(container: ElementFixture, text: string): ElementFixture };
+  const root = new ElementFixture("div"); ui.renderActionPills(root, "选项 1：继续修改代码");
+  const button = flatten(root).find((item) => item.className.split(/\s+/).includes("action-pill"));
+  if (!button?.onclick) throw new Error("action pill missing");
+  button.onclick();
+  expect((get("prompt") as ElementFixture & { value?: string }).value).toBe("继续修改代码");
+  expect(fetches).toBe(0);
+});
+
+test("turn rail observes the message scroller, excludes queued turns and disconnects stale observers", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  const observers: Array<{ options: { root: ElementFixture }; targets: ElementFixture[]; disconnected: boolean }> = [];
+  class ObserverFixture {
+    record: { options: { root: ElementFixture }; targets: ElementFixture[]; disconnected: boolean };
+    constructor(_callback: unknown, options: { root: ElementFixture }) { this.record = { options, targets: [], disconnected: false }; observers.push(this.record); }
+    observe(target: ElementFixture) { this.record.targets.push(target); }
+    disconnect() { this.record.disconnected = true; }
+  }
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, messageViews, syncTurnRail })", {
+    IntersectionObserver: ObserverFixture,
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as {
+    state: { selected: { source: string; id: string }; messages: Array<{ id: string; role: string; text: string; deliveryState?: string }>; historyCursor: string | null };
+    messageViews: Map<string, { item: ElementFixture }>;
+    syncTurnRail(): void;
+  };
+  ui.state.selected = { source: "codex", id: "thread" };
+  ui.state.historyCursor = "older";
+  ui.state.messages = [
+    { id: "u1", role: "user", text: "第一轮" },
+    { id: "a1", role: "assistant", text: "回答" },
+    { id: "q1", role: "user", text: "仍在排队", deliveryState: "queued" },
+    { id: "u2", role: "user", text: "第二轮" },
+  ];
+  const first = new ElementFixture("article"); const second = new ElementFixture("article");
+  ui.messageViews.set(JSON.stringify(["codex", "thread", "u1"]), { item: first });
+  ui.messageViews.set(JSON.stringify(["codex", "thread", "u2"]), { item: second });
+  ui.syncTurnRail();
+  expect(observers[0]?.options.root).toBe(get("messages"));
+  expect(observers[0]?.targets).toEqual([first, second]);
+  expect(get("turn-rail").children).toHaveLength(2);
+  expect(get("turn-dialog-list").children).toHaveLength(2);
+  expect(get("turn-indicator").textContent).toBe("当前第 1 轮 · 已加载 2 轮");
+  expect(get("turn-load-older").hidden).toBe(false);
+  ui.syncTurnRail();
+  expect(observers[0]?.disconnected).toBe(true);
+});
 
 test("assistant memory citations disappear from display and copy while examples and raw history remain", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
@@ -341,6 +472,75 @@ test("mobile selection reveals the detail before positioning the latest history"
   expect(position).toBe(1000);
 });
 
+test("composer exposes interrupt only for an exact owned turn and keeps ordinary running sends separate", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const elements = new Map<string, any>([
+    ["composer-session-status", { textContent: "" }],
+    ["send-button", { textContent: "", disabled: false, type: "submit", dataset: {} }],
+    ["prompt", { value: "" }],
+  ]);
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, exactInterruptTarget, syncComposerControl })", {
+    document: { getElementById: (id: string) => elements.get(id) ?? null },
+  }) as {
+    state: any;
+    exactInterruptTarget(session?: any): string | null;
+    syncComposerControl(now?: number): void;
+  };
+  ui.state.paused = false;
+  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
+    activeTurnId: "turn-a", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+  } };
+  ui.syncComposerControl(1000);
+  expect(ui.exactInterruptTarget()).toBe("turn-a");
+  expect(elements.get("send-button")).toMatchObject({ textContent: "⏹ 中断", disabled: false, type: "button", dataset: { mode: "interrupt" } });
+
+  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: true, turnControl: {
+    activeTurnId: "turn-b", interrupt: { status: "unavailable", reason: "not_owned" },
+  } };
+  elements.get("prompt").value = "排队下一条";
+  ui.syncComposerControl(1000);
+  expect(ui.exactInterruptTarget()).toBeNull();
+  expect(elements.get("send-button")).toMatchObject({ textContent: "↑ 发送", disabled: false, type: "submit", dataset: { mode: "send" } });
+
+  ui.state.selected.turnControl = { activeTurnId: "turn-a", interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" } };
+  ui.syncComposerControl(1000);
+  expect(elements.get("send-button")).toMatchObject({ textContent: "正在中断…", disabled: true, type: "button" });
+});
+
+test("interrupt request keeps the click-time turn id even if polling advances to a new turn", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  let resolveApi!: (value: { status: string }) => void; let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const request = new Promise<{ status: string }>((resolve) => { resolveApi = resolve; });
+  const calls: Array<{ path: string; method: string; body: any }> = [];
+  const notices: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    api = async (path, method, body) => { calls.push({ path, method, body }); entered(); return request; };
+    syncLiveActivityCard = () => {};
+    syncComposerControl = () => {};
+    loadHistory = async () => {};
+    notice = (text) => notices.push(text);
+    ({ state, interruptSelectedTurn })`, {
+    calls, entered, request, notices, encodeURIComponent,
+    document: { getElementById: () => null },
+  }) as { state: any; interruptSelectedTurn(): Promise<void> };
+  ui.state.paused = false; ui.state.authEpoch = 1; ui.state.viewEpoch = 2;
+  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
+    activeTurnId: "turn-a", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+  } };
+  const pending = ui.interruptSelectedTurn(); await started;
+  ui.state.selected = { source: "codex", id: "thread", state: "running", sendEnabled: false, turnControl: {
+    activeTurnId: "turn-b", interrupt: { status: "available", scope: "sea_bridge_owned_turn" },
+  } };
+  resolveApi({ status: "interrupting" }); await pending;
+  expect(calls).toEqual([{ path: "/api/sessions/codex/thread/interrupt", method: "POST", body: { expectedTurnId: "turn-a" } }]);
+  expect(ui.state.selected.turnControl.activeTurnId).toBe("turn-b");
+  expect(ui.state.interruptRequest).toBeNull();
+  expect(notices.at(-1)).toContain("等待 Codex 确认终态");
+});
+
 test("composer grows to three lines and shrinks after clearing without following older history", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -478,11 +678,11 @@ test("write acknowledgement does not erase a newer draft typed while waiting", a
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   let complete: (value: unknown) => void = () => { throw new Error("submission not started"); };
   const response = new Promise<unknown>((resolve) => { complete = resolve; });
-  const nodes: Record<string, { value: string; textContent: string; hidden: boolean; disabled: boolean; open: boolean; style: { height: string } }> = {};
+  const nodes: Record<string, { value: string; textContent: string; hidden: boolean; disabled: boolean; open: boolean; type?: string; dataset: Record<string, string>; style: { height: string } }> = {};
   const ui = runInNewContext(script.slice(0, end) + '\noperationUuid = () => "operation"; api = () => response; refresh = async () => {}; notice = () => {}; ({ state, submitWrite })', {
-    response, document: { getElementById(id: string) { return nodes[id] ??= { value: "", textContent: "", hidden: false, disabled: false, open: false, style: { height: "92px" } }; } },
+    response, document: { getElementById(id: string) { return nodes[id] ??= { value: "", textContent: "", hidden: false, disabled: false, open: false, dataset: {}, style: { height: "92px" } }; } },
   }) as { state: { selected: { id: string; source: string } }; submitWrite: (create: boolean) => Promise<void> };
-  nodes.prompt = { value: "submitted draft", textContent: "", hidden: false, disabled: false, open: false, style: { height: "92px" } };
+  nodes.prompt = { value: "submitted draft", textContent: "", hidden: false, disabled: false, open: false, dataset: {}, style: { height: "92px" } };
   ui.state.selected = { id: "session", source: "codex" };
   const sending = ui.submitWrite(false); nodes.prompt.value = "next draft";
   complete({ state: "queued", sessionId: "session", source: "codex", kind: "send" }); await sending;
@@ -763,6 +963,7 @@ test("running timer counts from native timestamp and hides on completion or miss
   const nodes = new Map<string, { hidden: boolean; textContent: string; title: string }>();
   const ui = runInNewContext(script.slice(script.indexOf("/** Keep platform labels"), script.indexOf("/** Apply a visual preference")) + "\n" + script.slice(start, end) + "\n({renderSessionStatus, formatRunningDuration})", {
     state, labels: { running: "执行中", idle: "空闲" }, Date: { now: () => now },
+    syncLiveActivityCard: () => undefined, syncComposerControl: () => undefined,
     el: (id: string) => { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "", title: "" }); return nodes.get(id); },
   });
   ui.renderSessionStatus(); expect(nodes.get("execution-timer")?.textContent).toBe("已运行 0 秒");

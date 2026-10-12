@@ -49,9 +49,9 @@ test("disconnect retains the loaded conversation read-only and preserves ambiguo
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
-  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; value: string; scrollTop: number; removeAttribute: (name: string) => void; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
+  const nodes = new Map<string, { id: string; hidden: boolean; textContent: string; open: boolean; disabled: boolean; className: string; value: string; scrollTop: number; dataset: Record<string, string>; removeAttribute: (name: string) => void; replaceChildren: () => void; close: () => void }>(); const delays: number[] = []; const cleared: string[] = [];
   const node = (id: string) => {
-    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", value: "", scrollTop: 0, removeAttribute(_name: string) {}, replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
+    if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: "", open: false, disabled: false, className: "", value: "", scrollTop: 0, dataset: {}, removeAttribute(_name: string) {}, replaceChildren() { cleared.push(id); }, close() { this.open = false; } });
     const result = nodes.get(id); if (!result) throw new Error("fixture missing"); return result;
   };
   const harness = runInNewContext(script.slice(0, boundary) + "\n({ state, enterDisconnected, clearSensitive })", {
@@ -97,13 +97,13 @@ test("successful recovery reconciles an ambiguous operation instead of replaying
   const script = await Bun.file("src/web/public/app.js").text();
   const boundary = script.indexOf('\ndocument.querySelectorAll("nav button").forEach((button) => { button.onclick');
   if (boundary < 0) throw new Error("UI fixture boundary missing");
-  const calls = { reconcile: 0, refresh: 0 }; const nodes = new Map<string, { hidden: boolean; textContent: string }>();
+  const calls = { reconcile: 0, refresh: 0 }; const nodes = new Map<string, { hidden: boolean; textContent: string; disabled?: boolean; dataset: Record<string, string> }>();
   const harness = runInNewContext(script.slice(0, boundary) + `
 validateConnection = async () => {};
 reconcilePending = async () => { calls.reconcile++; };
 refresh = async () => { calls.refresh++; };
 ({ state, finishRecovery })`, {
-    EventSource: { OPEN: 1 }, calls, document: { cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "" }); return nodes.get(id); } },
+    EventSource: { OPEN: 1 }, calls, document: { cookie: "", getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, { hidden: false, textContent: "", dataset: {} }); return nodes.get(id); } },
   }) as { state: { pending: unknown; paused: boolean; stream: { readyState: number } }; finishRecovery: () => Promise<void> };
   harness.state.pending = { operationId: "op" }; harness.state.stream = { readyState: 1 };
   await harness.finishRecovery();
@@ -172,9 +172,9 @@ test("backgrounding an unfinished SSE recovery releases its guard and resumes re
   const start = script.indexOf('document.addEventListener("visibilitychange", () => {');
   const end = script.indexOf('\nwindow.addEventListener("pageshow"', start);
   let listener: () => void = () => { throw new Error("listener missing"); };
-  const nodes = new Map<string, { hidden: boolean; textContent: string; disabled: boolean; className: string; replaceChildren: () => void }>();
+  const nodes = new Map<string, { hidden: boolean; textContent: string; disabled: boolean; className: string; dataset: Record<string, string>; replaceChildren: () => void }>();
   const document = { hidden: true, getElementById(id: string) {
-    if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: "", disabled: false, className: "", replaceChildren() {} });
+    if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: "", disabled: false, className: "", dataset: {}, replaceChildren() {} });
     return nodes.get(id);
   }, addEventListener(_name: string, fn: () => void) { listener = fn; } };
   const delays: number[] = [];

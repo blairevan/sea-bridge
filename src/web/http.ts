@@ -175,6 +175,30 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         }
         return json({ status: "open_requested" });
       }
+      const interrupt = path.match(/^\/api\/sessions\/codex\/([^/]+)\/interrupt$/);
+      if (interrupt && method === "POST") {
+        const id = text(decodeURIComponent(interrupt[1] ?? ""), 200) ?? "";
+        const body = await readAuthorizedJson(1024);
+        const expectedTurnId = text(body.expectedTurnId, 200) ?? "";
+        const source = deps.sources.codex;
+        const audit = (outcome: string): void => {
+          deps.store.audit(device.id, "codex_turn_interrupt", JSON.stringify({ threadId: id, outcome }), Date.now());
+        };
+        if (!source?.interrupt) { audit("interrupt_provider_unavailable"); throw new HttpError(503, "interrupt_provider_unavailable"); }
+        try {
+          const result = await source.interrupt(id, expectedTurnId);
+          audit(result.status);
+          return json(result);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "interrupt_provider_unavailable";
+          const stable = ["session_missing", "interrupt_not_owned", "active_turn_changed", "interrupt_already_finished", "interrupt_provider_unavailable"].includes(code)
+            ? code : "interrupt_provider_unavailable";
+          audit(stable);
+          const status = stable === "session_missing" ? 404
+            : stable === "interrupt_provider_unavailable" ? 503 : 409;
+          throw new HttpError(status, stable);
+        }
+      }
       const history = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/history$/);
       if (history && method === "GET") {
         const source = deps.sources[history[1] as "codex" | "dsh"]; if (!source) throw new HttpError(503, "source_unavailable");

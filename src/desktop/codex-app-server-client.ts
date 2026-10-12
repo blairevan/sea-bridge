@@ -429,6 +429,13 @@ export class CodexAppServerClient {
   private readonly inboundRequestHandler: AppServerInboundRequestHandler | undefined;
   private readonly sessions = new Set<AppServerSession>();
   private readonly releases = new Map<AppServerSession, Promise<boolean>>();
+  private readonly ownedTurns = new Map<string, {
+    turnId: string | null;
+    state: "starting" | "running" | "interrupting";
+    session: AppServerSession;
+    terminalObserved: boolean;
+  }>();
+  private readonly finishedTurns = new Map<string, { turnId: string; finishedAt: number }>();
   private readonly permissionsResolver: () => ResolvedDesktopPermissions;
   private readonly codexHome: string | undefined;
 
@@ -442,6 +449,49 @@ export class CodexAppServerClient {
     this.inboundRequestHandler = options.inboundRequestHandler;
     this.codexHome = options.codexHome;
     this.permissionsResolver = options.permissionsResolver ?? (() => resolveDesktopPermissions(options.codexHome));
+  }
+
+  /** Report only ownership held by this shared Action client, never infer Desktop/CLI ownership. */
+  ownsThread(threadId: string): boolean {
+    return this.ownedTurns.has(threadId);
+  }
+
+  /** Expose exact ownership evidence without leaking the owning AppServerSession. */
+  ownedTurn(threadId: string): { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean } | null {
+    const owned = this.ownedTurns.get(threadId);
+    return owned ? { turnId: owned.turnId, state: owned.state, terminalObserved: owned.terminalObserved } : null;
+  }
+
+  /** Interrupt only the exact turn held by this client on its existing owning session. */
+  async interruptOwnedTurn(params: { threadId: string; expectedTurnId: string }): Promise<
+    | { status: "interrupting" }
+    | { status: "not_owned" }
+    | { status: "turn_changed" }
+    | { status: "already_finished" }
+  > {
+    this.pruneFinishedTurns();
+    const owned = this.ownedTurns.get(params.threadId);
+    if (!owned) {
+      const finished = this.finishedTurns.get(params.threadId);
+      return finished?.turnId === params.expectedTurnId ? { status: "already_finished" } : { status: "not_owned" };
+    }
+    if (owned.turnId !== params.expectedTurnId) return { status: "turn_changed" };
+    if (owned.terminalObserved) return { status: "already_finished" };
+    if (owned.state === "interrupting") return { status: "interrupting" };
+    if (owned.state !== "running" || !owned.turnId) return { status: "turn_changed" };
+
+    owned.state = "interrupting";
+    try {
+      await owned.session.request("turn/interrupt", { threadId: params.threadId, turnId: params.expectedTurnId });
+      return { status: "interrupting" };
+    } catch (error) {
+      const current = this.ownedTurns.get(params.threadId);
+      if (current === owned && current.terminalObserved && current.turnId === params.expectedTurnId) return { status: "already_finished" };
+      const finished = this.finishedTurns.get(params.threadId);
+      if (!current && finished?.turnId === params.expectedTurnId) return { status: "already_finished" };
+      if (current === owned && current.turnId === params.expectedTurnId) current.state = "running";
+      throw new Error("interrupt_provider_unavailable", { cause: error });
+    }
   }
 
   async listProjects(): Promise<ProjectItem[]> {
@@ -539,6 +589,7 @@ export class CodexAppServerClient {
       if (await this.releaseSession(session) && ownedThreadId) {
         const releasedThread = ownedThreadId;
         ownedThreadId = null;
+        if (this.ownedTurns.get(releasedThread)?.session === session) this.ownedTurns.delete(releasedThread);
         params.onOwnershipReleased?.(releasedThread, ownedTurnId);
       }
     };
@@ -560,6 +611,8 @@ export class CodexAppServerClient {
       const threadId = threadResponse?.thread?.id;
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
       ownedThreadId = threadId;
+      this.finishedTurns.delete(threadId);
+      this.ownedTurns.set(threadId, { turnId: null, state: "starting", session, terminalObserved: false });
       params.onThreadStarted?.(threadId);
 
       const turnPermissions = permissions.turnStart(params.cwd);
@@ -578,6 +631,7 @@ export class CodexAppServerClient {
       if (!turnId) throw new Error("app_server_turn_start_missing_id");
 
       ownedTurnId = turnId;
+      this.ownedTurns.set(threadId, { turnId, state: "running", session, terminalObserved: false });
       handedToBackground = true;
       void session.waitForNotification(
         (message) => message.method === "turn/completed"
@@ -585,6 +639,10 @@ export class CodexAppServerClient {
           && message.params?.turn?.id === turnId,
         this.turnLifetimeTimeoutMs,
       ).then(async () => {
+        const owned = this.ownedTurns.get(threadId);
+        if (owned?.session === session && owned.turnId === turnId) owned.terminalObserved = true;
+        this.finishedTurns.set(threadId, { turnId, finishedAt: Date.now() });
+        this.pruneFinishedTurns();
         try {
           await session.request<ThreadUnsubscribeResponse>("thread/unsubscribe", { threadId });
         } catch {
@@ -623,6 +681,14 @@ export class CodexAppServerClient {
       await this.releaseSession(session);
       throw error;
     }
+  }
+
+  /** Keep only a short completion memory so late exact interrupt requests can return already_finished. */
+  private pruneFinishedTurns(now = Date.now()): void {
+    for (const [threadId, finished] of this.finishedTurns) {
+      if (now - finished.finishedAt > 60_000) this.finishedTurns.delete(threadId);
+    }
+    while (this.finishedTurns.size > 200) this.finishedTurns.delete(this.finishedTurns.keys().next().value ?? "");
   }
 
   /** Coalesce concurrent shutdowns so callers cannot observe premature release. */

@@ -423,7 +423,7 @@ test("newly created provenance syncs from native metadata outside the current li
   ui.element("creation-client-filter").value = "desktop";
   await controller.loadSessions(false);
   expect(paths).toHaveLength(2);
-  expect(controller.state.selected).toEqual(native);
+  expect(controller.state.selected).toEqual({ ...native, turnControl: null });
   expect(controller.state.selected).not.toHaveProperty("creationPending");
   expect(ui.element("session-meta").textContent).toBe("Codex · Sea-Bridge 创建 · 空闲");
 });
@@ -458,6 +458,7 @@ test("recovery refreshes a selected session outside the active list filter", asy
   };
   controller.state.paused = false;
   controller.state.selected = { ...live, sendEnabled: false };
+  ui.element("prompt").value = "continue";
   ui.element("creation-client-filter").value = "desktop";
   await controller.loadSessions(false);
   expect(controller.state.selected.sendEnabled).toBe(true);

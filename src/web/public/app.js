@@ -1,5 +1,5 @@
 "use strict";
-const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
+const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, interruptRequest: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -9,6 +9,15 @@ const messageViews = new Map();
 let historyTools;
 let creationProjects = { source: null, items: [] };
 let projectSearchTimer = null;
+let turnObserver = null;
+let turnIndicatorTimer = null;
+let turnRailButtons = [];
+let turnDialogButtons = [];
+let activeLoadedTurn = 0;
+let liveActivityCard = null;
+let liveActivityStatus = null;
+let liveActivityDetail = null;
+let liveActivityStale = null;
 
 /** Keep platform labels independent of the original client. */
 function sourceDisplayName(source) {
@@ -104,6 +113,52 @@ function safeMessageUrl(value, image) {
     return url.href;
   } catch { return null; }
 }
+/** Extract only short visible assistant options; hidden payload syntax and rich blocks stay inert. */
+function extractActionPills(text) {
+  const options = []; const seen = new Set(); let fenced = false;
+  const add = (value) => {
+    const visible = String(value ?? "").trim().replace(/\s+/g, " ");
+    if (!visible || visible.length > 120 || seen.has(visible)) return;
+    seen.add(visible); options.push(visible);
+  };
+  for (const rawLine of String(text ?? "").split("\n")) {
+    const line = rawLine.trim();
+    if (/^(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced || !line || line.startsWith(">") || line.includes("|") || /\{\s*prompt\s*=/.test(line)) continue;
+    const explicit = /^:codex-followup\[([^\]]+)\]\s*$/.exec(line);
+    const option = /^(?:[-*+]\s*)?选项\s*(?:\d+|[A-Za-z])\s*[:：]\s*(.+)$/.exec(line);
+    const reply = /^(?:[-*+]\s*)?回复\s*[「“\"]([^」”\"]+)[」”\"]/.exec(line);
+    if (explicit) add(explicit[1]); else if (option) add(option[1]); else if (reply) add(reply[1]);
+    if (options.length >= 4) break;
+  }
+  return options;
+}
+
+/** Represent only currently loaded executed user turns; queued inputs are not history yet. */
+function loadedTurnModel(messages) {
+  const result = [];
+  for (const message of messages ?? []) {
+    if (message?.role !== "user" || message.deliveryState) continue;
+    const summary = String(message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || "空消息";
+    result.push({ index: result.length + 1, summary });
+  }
+  return result;
+}
+
+/** Derive activity copy from server evidence; reconnect copy marks the state as stale. */
+function liveActivityPresentation(session, paused, now = Date.now()) {
+  if (!session || !["running", "waiting_external_approval"].includes(session.state)) return { visible: false, status: "", detail: "" };
+  if (session.state === "waiting_external_approval") return {
+    visible: true,
+    status: paused ? "连接重连中 · 最后已知等待 Telegram 审批" : "等待 Telegram 审批",
+    detail: "",
+  };
+  const startedAt = Number(session.startedAt);
+  const detail = Number.isFinite(startedAt) && startedAt > 0 ? `已运行 ${formatRunningDuration(now - startedAt)}` : "";
+  const interrupting = session.turnControl?.interrupt?.status === "interrupting";
+  return { visible: true, status: paused ? `连接重连中 · 最后已知${interrupting ? "正在中断" : "执行中"}` : interrupting ? "正在中断" : "执行中", detail };
+}
+
 /** Close the full-size image and discard its source on privacy invalidation. */
 function closeImagePreview() {
   const dialog = el("image-dialog");
@@ -295,6 +350,28 @@ function renderMarkdown(text) {
   return root;
 }
 
+/** Add visible-only continuation shortcuts; clicking never submits a write. */
+function renderActionPills(container, text) {
+  const options = extractActionPills(text);
+  if (!options.length) return container;
+  const row = node("div", "", "action-pills"); row.setAttribute?.("aria-label", "快捷填入");
+  for (const option of options) {
+    const button = node("button", option, "action-pill quiet"); button.type = "button";
+    button.onclick = () => {
+      const prompt = el("prompt"); if (!prompt) return;
+      prompt.value = option; prompt.focus?.(); resizeComposer(); syncComposerControl();
+    };
+    row.append(button);
+  }
+  container.append(row); return container;
+}
+
+/** Render assistant final text and attach only non-executing visible shortcuts. */
+function renderAssistantMessage(message) {
+  const visible = messageDisplayText(message);
+  return renderActionPills(renderMarkdown(visible), visible);
+}
+
 /** Resolve a fixed application element. */
 function el(id) { return document.getElementById(id); }
 /** Create text-only nodes for source-derived content. */
@@ -406,7 +483,7 @@ function setConnectionControls(disabled) {
   const createRetry = el("create-retry"); if (createRetry) createRetry.hidden = !disabled;
   const logout = el("logout"); if (logout) logout.disabled = disabled;
   const create = el("new-session"); if (create) create.disabled = disabled;
-  const send = el("send-button"); if (send) send.disabled = disabled || !state.selected?.sendEnabled || Boolean(state.pending);
+  syncComposerControl();
   const reconcile = el("reconcile"); if (reconcile) reconcile.disabled = disabled;
   const createReconcile = el("create-reconcile"); if (createReconcile) createReconcile.disabled = disabled;
   const createSubmit = el("create-submit");
@@ -419,10 +496,11 @@ function setConnectionControls(disabled) {
 function retainLoadedViews() {
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = false; freshness.textContent = "连接未确认 · 以下为上次数据，可能不是最新"; }
   if (state.selected) state.selected = { ...state.selected, sendEnabled: false };
+  syncLiveActivityCard(); syncComposerControl();
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
-  resetProjectSearch(); creationProjects = { source: null, items: [] };
+  resetProjectSearch(); creationProjects = { source: null, items: [] }; state.interruptRequest = null;
   if (state.device?.id) clearOverviewCache();
   closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
@@ -432,7 +510,7 @@ function clearSensitive() {
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   for (const id of ["overview-session-count", "overview-running-count", "overview-approval-count"]) { const value = el(id); if (value) value.textContent = "—"; }
   el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
-  el("messages").replaceChildren(historyTools ?? el("history-tools"));
+  el("messages").replaceChildren(historyTools ?? el("history-tools")); liveActivityCard = null; clearTurnNavigation();
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
   if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false };
@@ -475,7 +553,7 @@ async function requestApi(path, method = "GET", body) {
   }
   if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -505,7 +583,7 @@ async function run(key, work) {
 /** Stop retry machinery and return to the explicit login boundary. */
 function showLogin() {
   clearOverviewCache();
-  state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.selected = null;
+  state.authEpoch++; state.pending = null; state.executionWatch = null; state.awaitingReply = null; state.interruptRequest = null; state.selected = null;
   state.recoverySeq++; state.version = 0; state.device = null; state.settings = null; state.caps = {};
   setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
@@ -923,9 +1001,8 @@ async function loadSessions(more) {
       live = synced.items.find((item) => item.id === selectedId && item.source === selectedSource);
       if (!live) state.selected = { ...state.selected, sendEnabled: false };
     }
-    if (live) state.selected = live;
-    el("session-title").textContent = state.selected.title; renderSessionStatus();
-    el("send-button").disabled = state.paused || !state.selected.sendEnabled || Boolean(state.pending);
+    if (live) state.selected = { ...live, turnControl: null };
+    el("session-title").textContent = state.selected.title; renderSessionStatus(); syncTurnRail();
   }
 }
 /** Show the floating shortcut only when the selected conversation is away from its end. */
@@ -965,6 +1042,108 @@ function queueStatusText(message, now = Date.now()) {
   const age = Number.isFinite(message.createdAt) ? now - message.createdAt : 0;
   return age >= 120000 ? `↳ 排队中 · 已等待 ${Math.floor(age / 60000)} 分钟` : "↳ 排队中";
 }
+
+/** Keep the activity card ephemeral and derived only from current session evidence. */
+function syncLiveActivityCard(now = Date.now()) {
+  const container = el("messages"); if (!container) return;
+  const presentation = liveActivityPresentation(state.selected, state.paused, now);
+  if (!presentation.visible) {
+    liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null; return;
+  }
+  if (!liveActivityCard) {
+    liveActivityCard = node("section", "", "live-activity-card"); liveActivityCard.setAttribute?.("aria-label", "当前任务状态");
+    const heading = node("div", "", "live-activity-heading");
+    liveActivityStatus = node("strong", presentation.status);
+    heading.append(node("span", "", "live-activity-dot"), liveActivityStatus);
+    liveActivityDetail = node("small", "", "live-activity-detail"); liveActivityDetail.setAttribute?.("aria-hidden", "true");
+    liveActivityStale = node("small", "状态来自断线前最后一次已验证结果", "live-activity-stale");
+    liveActivityCard.append(heading, liveActivityDetail, liveActivityStale); container.append(liveActivityCard);
+  } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
+    container.append(liveActivityCard);
+  }
+  if (liveActivityStatus && liveActivityStatus.textContent !== presentation.status) liveActivityStatus.textContent = presentation.status;
+  if (liveActivityDetail) { liveActivityDetail.textContent = presentation.detail; liveActivityDetail.hidden = !presentation.detail; }
+  if (liveActivityStale) liveActivityStale.hidden = !state.paused;
+}
+
+/** Clear turn observers and controls when conversation identity or privacy context changes. */
+function clearTurnNavigation() {
+  turnObserver?.disconnect?.(); turnObserver = null;
+  if (turnIndicatorTimer !== null && typeof clearTimeout === "function") clearTimeout(turnIndicatorTimer);
+  turnIndicatorTimer = null; turnRailButtons = []; turnDialogButtons = []; activeLoadedTurn = 0;
+  const rail = el("turn-rail"); if (rail) { rail.replaceChildren(); rail.hidden = true; }
+  const indicator = el("turn-indicator"); if (indicator) indicator.hidden = true;
+  const list = el("turn-dialog-list"); if (list) list.replaceChildren();
+  const older = el("turn-load-older"); if (older) older.hidden = true;
+}
+
+/** Keep rail, mobile indicator and drawer on one loaded-turn index. */
+function setActiveLoadedTurn(index, total = turnRailButtons.length) {
+  if (!total) return;
+  activeLoadedTurn = Math.max(0, Math.min(total - 1, index));
+  for (const [buttonIndex, button] of turnRailButtons.entries()) {
+    button.className = `turn-tick${buttonIndex === activeLoadedTurn ? " active" : ""}`;
+    button.setAttribute?.("aria-current", buttonIndex === activeLoadedTurn ? "true" : "false");
+  }
+  for (const [buttonIndex, button] of turnDialogButtons.entries()) {
+    button.className = `turn-dialog-item${buttonIndex === activeLoadedTurn ? " active" : ""}`;
+    button.setAttribute?.("aria-current", buttonIndex === activeLoadedTurn ? "true" : "false");
+  }
+  const indicator = el("turn-indicator");
+  if (indicator) indicator.textContent = `当前第 ${activeLoadedTurn + 1} 轮 · 已加载 ${total} 轮`;
+}
+
+/** Build navigation strictly from currently loaded executed user messages. */
+function syncTurnRail() {
+  turnObserver?.disconnect?.(); turnObserver = null; turnRailButtons = []; turnDialogButtons = [];
+  const rail = el("turn-rail"); const list = el("turn-dialog-list"); const indicator = el("turn-indicator");
+  if (!rail || !list || !indicator || !state.selected) { clearTurnNavigation(); return; }
+  rail.replaceChildren(); list.replaceChildren();
+  const model = loadedTurnModel(state.messages);
+  const executed = (state.messages ?? []).filter((message) => message?.role === "user" && !message.deliveryState);
+  if (!model.length) { rail.hidden = true; indicator.hidden = true; el("turn-load-older").hidden = !state.historyCursor; return; }
+  rail.hidden = false;
+  const targets = [];
+  for (const [index, turn] of model.entries()) {
+    const message = executed[index];
+    const key = JSON.stringify([state.selected.source, state.selected.id, message?.id]);
+    const target = messageViews.get(key)?.item ?? null; targets.push(target);
+    const tick = node("button", "", "turn-tick"); tick.type = "button"; tick.title = turn.summary;
+    tick.setAttribute?.("aria-label", `跳到已加载第 ${turn.index} 轮：${turn.summary}`);
+    tick.onclick = () => {
+      const behavior = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+      target?.scrollIntoView?.({ block: "start", inline: "nearest", behavior }); setActiveLoadedTurn(index, model.length);
+    };
+    rail.append(tick); turnRailButtons.push(tick);
+
+    const item = node("button", "", "turn-dialog-item"); item.type = "button";
+    item.append(node("strong", `第 ${turn.index} 轮`), node("span", turn.summary));
+    item.onclick = () => { tick.onclick?.(); el("turn-dialog")?.close?.(); };
+    list.append(item); turnDialogButtons.push(item);
+  }
+  el("turn-load-older").hidden = !state.historyCursor;
+  setActiveLoadedTurn(Math.min(activeLoadedTurn, model.length - 1), model.length);
+  if (typeof IntersectionObserver === "function") {
+    turnObserver = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => (b.intersectionRatio ?? 0) - (a.intersectionRatio ?? 0));
+      const target = visible[0]?.target; const index = targets.indexOf(target);
+      if (index >= 0) setActiveLoadedTurn(index, model.length);
+    }, { root: el("messages"), rootMargin: "-10% 0px -75% 0px", threshold: [0, 0.01, 0.5] });
+    for (const target of targets) if (target) turnObserver.observe(target);
+  }
+}
+
+/** On phones reveal the loaded-turn indicator only while the conversation is moving. */
+function showTurnIndicatorOnScroll() {
+  updateLatestShortcut();
+  const width = typeof window !== "undefined" ? window.innerWidth : 1024;
+  if (width > 760 || turnRailButtons.length === 0) return;
+  const indicator = el("turn-indicator"); if (!indicator) return;
+  indicator.hidden = false;
+  if (turnIndicatorTimer !== null && typeof clearTimeout === "function") clearTimeout(turnIndicatorTimer);
+  if (typeof setTimeout === "function") turnIndicatorTimer = setTimeout(() => { indicator.hidden = true; turnIndicatorTimer = null; }, 2000);
+}
+
 /** Merge executed history with a replaceable native queue snapshot, preserving scroll and older pages. */
 async function loadHistory(older) {
   const viewEpoch = state.viewEpoch;
@@ -974,7 +1153,7 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt };
+    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, turnControl: result.turnControl ?? null };
     renderSessionStatus();
   }
   const previousMessages = state.messages;
@@ -1006,15 +1185,17 @@ async function loadHistory(older) {
         const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · ${formatTurnDuration(message.durationMs)}` : "";
         const meta = node("div", "", "message-meta");
         meta.append(node("small", `${message.role === "user" ? "用户" : "助手"} · ${time}${duration}`), messageCopyButton(message));
-        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderMarkdown(messageDisplayText(message)));
+        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderAssistantMessage(message));
         view = { signature, item }; messageViews.set(key, view);
       }
       items.push(view.item);
     }
     for (const key of messageViews.keys()) if (!visibleKeys.has(key)) messageViews.delete(key);
-    container.replaceChildren(historyTools ?? el("history-tools"), ...items);
+    container.replaceChildren(historyTools ?? el("history-tools"), ...items); liveActivityCard = null;
+    syncTurnRail();
   }
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
+  syncLiveActivityCard();
   if (follow) scrollMessagesToLatest(container); else container.scrollTop = older ? scroll + container.scrollHeight - previousHeight : scroll;
   state.followLatest = false;
   updateLatestShortcut();
@@ -1236,10 +1417,72 @@ async function loadCatalogs() {
   const allowed = state.caps[source]?.createEnabled;
   el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
+/** Return the exact turn bound to an actionable owned-turn interrupt, or null for every other running state. */
+function exactInterruptTarget(session = state.selected) {
+  const control = session?.turnControl;
+  return session?.source === "codex" && control?.interrupt?.status === "available" && typeof control.activeTurnId === "string" && control.activeTurnId
+    ? control.activeTurnId : null;
+}
+
+/** Keep session/runtime facts separate from operation receipts and switch the primary control only for exact owned turns. */
+function syncComposerControl(now = Date.now()) {
+  const session = state.selected; const status = el("composer-session-status");
+  if (status) {
+    const activity = liveActivityPresentation(session, state.paused, now);
+    status.textContent = !session ? "选择会话后可继续"
+      : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
+        : labels[session.state] ?? "状态未知";
+  }
+  const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
+  const interruptTarget = exactInterruptTarget(session);
+  const requestMatches = Boolean(session && state.interruptRequest?.sessionId === session.id && state.interruptRequest?.source === session.source);
+  const serverInterrupting = session?.source === "codex" && session.turnControl?.interrupt?.status === "interrupting";
+  if (requestMatches || serverInterrupting) {
+    send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "正在中断…"; send.disabled = true; return;
+  }
+  if (interruptTarget) {
+    send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "⏹ 中断";
+    send.disabled = state.paused || Boolean(state.pending); return;
+  }
+  send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送";
+  send.disabled = state.paused || !session?.sendEnabled || Boolean(state.pending) || !String(prompt?.value ?? "").trim();
+}
+
+/** Bind the user's stop intent to the exact turn visible at click time; never retarget or auto-retry. */
+async function interruptSelectedTurn() {
+  const session = state.selected; const expectedTurnId = exactInterruptTarget(session);
+  if (!session || !expectedTurnId || state.paused || state.interruptRequest) return;
+  const requestIdentity = { sessionId: session.id, source: session.source, turnId: expectedTurnId };
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
+  state.interruptRequest = requestIdentity;
+  if (state.selected?.id === session.id && state.selected.source === session.source && state.selected.turnControl?.activeTurnId === expectedTurnId) {
+    state.selected = { ...state.selected, turnControl: { ...state.selected.turnControl, interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" } } };
+  }
+  syncLiveActivityCard(); syncComposerControl();
+  try {
+    const result = await api(`/api/sessions/codex/${encodeURIComponent(session.id)}/interrupt`, "POST", { expectedTurnId });
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
+    if (result.status !== "interrupting") throw clientError("interrupt_provider_unavailable", "当前中断通道暂不可用");
+    notice("已请求中断，正在等待 Codex 确认终态", { kind: "info", durationMs: 10_000 });
+  } catch (error) {
+    if (["auth_changed", "auth_required"].includes(error?.code)) return;
+    const race = ["active_turn_changed", "interrupt_not_owned", "interrupt_already_finished"].includes(error?.code);
+    if (!race && isTransportError(error)) enterDisconnected();
+    else notice(error?.message || "中断请求失败", { sticky: !race, kind: race ? "warning" : "error" });
+  } finally {
+    if (state.interruptRequest?.sessionId === requestIdentity.sessionId && state.interruptRequest?.turnId === requestIdentity.turnId) state.interruptRequest = null;
+    if (authEpoch === state.authEpoch && viewEpoch === state.viewEpoch && state.selected?.id === session.id && state.selected.source === session.source && !state.paused) {
+      try { await loadHistory(false); } catch (error) { if (isTransportError(error)) enterDisconnected(); }
+    }
+    syncLiveActivityCard(); syncComposerControl();
+  }
+}
+
 /** Keep the composer reserved for the current submission or a delivery problem needing attention. */
 function setComposerStatus(text) {
   el("operation-status").textContent = text;
   el("composer-footer").hidden = !text;
+  syncComposerControl();
 }
 /** Show receipts transiently; accepted message state belongs in history, not an empty composer. */
 function showOperation(operation, announce = true) {
@@ -1290,7 +1533,7 @@ async function submitWrite(create) {
       const draft = el(create ? "create-prompt" : "prompt");
       if (draft.value === body.prompt) {
         draft.value = "";
-        if (!create) draft.style.height = "";
+        if (!create) { draft.style.height = ""; syncComposerControl(); }
       }
       if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false, creationPending: source === "codex" }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
@@ -1308,7 +1551,10 @@ async function submitWrite(create) {
       else notice("提交结果待确认，请刷新核查；不会自动重发。", { sticky: true, kind: "warning" });
     }
   }
-  finally { if (authEpoch === state.authEpoch && create && !state.pending) el("create-submit").disabled = state.paused || !state.caps[source]?.createEnabled; }
+  finally {
+    if (authEpoch === state.authEpoch && create && !state.pending) el("create-submit").disabled = state.paused || !state.caps[source]?.createEnabled;
+    if (authEpoch === state.authEpoch && !create) syncComposerControl();
+  }
 }
 /** Reconcile only the recorded operation; no branch resubmits its source write. */
 async function reconcilePending() {
@@ -1368,7 +1614,7 @@ async function openSelectedDesktop() {
 /** Render native elapsed time from an absolute timestamp; foregrounding never resets it. */
 function renderSessionStatus() {
   const session = state.selected;
-  if (!session) return;
+  if (!session) { syncLiveActivityCard(); syncComposerControl(); return; }
   const knownStart = Number.isFinite(session.startedAt) && session.startedAt > 0;
   const elapsed = session.state === "running" && knownStart
     ? ` · 已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
@@ -1380,6 +1626,7 @@ function renderSessionStatus() {
     timer.hidden = !elapsed;
     timer.textContent = elapsed ? `已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
   }
+  syncLiveActivityCard(); syncComposerControl();
 }
 
 /** Count whole seconds forward, including zero, while retaining hours and remaining seconds. */
@@ -1416,7 +1663,7 @@ function retryConnection() {
 el("notice-retry").onclick = retryConnection;
 el("create-retry").onclick = retryConnection;
 el("notice-close").onclick = clearNotice;
-el("prompt").oninput = resizeComposer;
+el("prompt").oninput = () => { resizeComposer(); syncComposerControl(); };
 el("prompt").addEventListener("focus", syncViewport);
 el("prompt").addEventListener("blur", syncViewport);
 window.visualViewport?.addEventListener("resize", syncViewport);
@@ -1466,7 +1713,18 @@ el("create-project-search").onfocus = openProjectOptions;
 el("create-project-search").onkeydown = projectSearchKeydown;
 document.addEventListener("pointerdown", (event) => { if (!el("create-project-field").contains(event.target)) closeProjectOptions(); });
 el("create-form").onsubmit = (event) => { event.preventDefault(); if (!el("create-project").value) { notice("请先选择一个项目"); return; } run("write", () => submitWrite(true)); };
-el("send-form").onsubmit = (event) => { event.preventDefault(); run("write", () => submitWrite(false)); };
+el("send-button").onclick = (event) => {
+  if (el("send-button").dataset.mode !== "interrupt") return;
+  event.preventDefault();
+  const target = exactInterruptTarget(); if (!target) return;
+  run("interrupt-" + target, interruptSelectedTurn);
+};
+el("send-form").onsubmit = (event) => {
+  event.preventDefault();
+  const target = exactInterruptTarget();
+  if (target) run("interrupt-" + target, interruptSelectedTurn);
+  else run("write", () => submitWrite(false));
+};
 el("record-session").oninput = scheduleRecordSuggestions;
 el("record-session").onkeydown = recordSuggestionKeydown;
 el("record-session").onfocus = () => { if (el("record-session").value.trim() && !state.recordChoice) scheduleRecordSuggestions(); };
@@ -1507,10 +1765,14 @@ el("image-dialog").onclick = (event) => { if (event.target === el("image-dialog"
 el("image-dialog").onclose = () => { el("image-dialog-image").removeAttribute("src"); };
 
 el("floating-latest").onclick = () => run("history-jump", jumpToLatest);
-el("messages").addEventListener("scroll", updateLatestShortcut, { passive: true });
+el("messages").addEventListener("scroll", showTurnIndicatorOnScroll, { passive: true });
 if (typeof ResizeObserver === "function") new ResizeObserver(updateLatestShortcut).observe(el("messages"));
 
 el("floating-earliest").onclick = jumpToEarliestLoaded;
+el("turn-indicator").onclick = () => { const dialog = el("turn-dialog"); if (!dialog.open) dialog.showModal(); };
+el("close-turn-dialog").onclick = () => el("turn-dialog").close();
+el("turn-dialog").onclick = (event) => { if (event.target === el("turn-dialog")) el("turn-dialog").close(); };
+el("turn-load-older").onclick = () => run("history", async () => { await loadHistory(true); syncTurnRail(); });
 
 initializeTheme();
 el("theme-toggle").onclick = toggleTheme;

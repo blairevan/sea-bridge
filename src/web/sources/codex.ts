@@ -7,15 +7,15 @@ import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.t
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, CatalogItem, WebHistory, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
   openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
-  appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn">;
+  appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
   catalogs?: Pick<CodexReadService, "listProjects" | "listModels">;
-  actions?: Pick<CodexAppServerClient, "startThreadAndTurn">;
+  actions?: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
   readThread?: Pick<CodexReadService, "getThread">["getThread"];
   catalogHealth?: () => CodexCatalogHealth["state"];
   sourceStatus?: () => WebSourceStatusState;
@@ -39,7 +39,7 @@ export class CodexWebSource implements WebSource {
   private readonly nativeActivity = new Map<string, { activity: CodexActivity; readAt: number }>();
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
-  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn">;
+  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
   private projectsReadable = false;
   private modelsReadable = false;
   private sessionsReadable = false;
@@ -100,15 +100,36 @@ export class CodexWebSource implements WebSource {
     }
   }
 
+  /** Prefer the shared Action registry; local callbacks are only a compatibility fallback for narrow test doubles. */
+  private ownsThread(id: string): boolean {
+    return this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id);
+  }
+
+  /** Project exact active-turn control without treating generic running evidence as interruptable. */
+  private turnControl(id: string, activity: { state: "active" | "idle" | "unknown"; turnId: string | null } | CodexActivity | null = null): WebTurnControl {
+    const owned = this.actions.ownedTurn?.(id) ?? null;
+    const activeTurnId = owned && !owned.terminalObserved ? owned.turnId
+      : activity?.state === "active" && activity.turnId ? activity.turnId : null;
+    if (!owned || owned.terminalObserved) return { activeTurnId, interrupt: { status: "unavailable", reason: "not_owned" } };
+    if (!owned.turnId) return { activeTurnId: null, interrupt: { status: "unavailable", reason: "turn_unknown" } };
+    if (!this.actions.interruptOwnedTurn) return { activeTurnId: owned.turnId, interrupt: { status: "unavailable", reason: "provider_unavailable" } };
+    return {
+      activeTurnId: owned.turnId,
+      interrupt: owned.state === "interrupting"
+        ? { status: "interrupting", scope: "sea_bridge_owned_turn" }
+        : { status: "available", scope: "sea_bridge_owned_turn" },
+    };
+  }
+
   /** Confirm idle from native lifecycle evidence while respecting approvals and first-turn ownership. */
   async isDesktopRecoveryIdle(id: string): Promise<boolean> {
-    if (!this.deps.queueUsable || this.owners.has(id) || this.deps.pendingApproval(id) || this.deps.activity?.(id)?.state === "active") return false;
+    if (!this.deps.queueUsable || this.ownsThread(id) || this.deps.pendingApproval(id) || this.deps.activity?.(id)?.state === "active") return false;
     if (this.deps.catalogHealth && this.deps.catalogHealth() !== "ready") return false;
     const thread = this.deps.threads.getThread?.(id);
     if (!thread?.rolloutPath) return false;
     try {
       const activity = await readCodexActivity(thread.rolloutPath, this.deps.sessionRoots);
-      return activity?.state === "idle" && !this.owners.has(id) && !this.deps.pendingApproval(id)
+      return activity?.state === "idle" && !this.ownsThread(id) && !this.deps.pendingApproval(id)
         && this.deps.activity?.(id)?.state !== "active";
     } catch { return false; }
   }
@@ -121,7 +142,7 @@ export class CodexWebSource implements WebSource {
       ? await this.deps.readThread(id)
       : this.deps.threads.getThread?.(id) ?? this.deps.threads.listActive().find((thread) => thread.id === id) ?? null;
     if (!current) throw new Error("session_missing");
-    if (this.owners.has(id)) throw new Error("first_turn_owned");
+    if (this.ownsThread(id)) throw new Error("first_turn_owned");
     if (requireIdle && !await this.isDesktopRecoveryIdle(id)) throw new Error("desktop_recovery_not_idle");
     if (this.desktopOpening || Date.now() - this.desktopOpenedAt < 5000) throw new Error("desktop_open_busy");
     this.desktopOpening = true;
@@ -140,12 +161,14 @@ export class CodexWebSource implements WebSource {
         const approval = this.deps.pendingApproval(thread.id);
         const cached = this.nativeActivity.get(thread.id);
         const activity = cached && Date.now() - cached.readAt < 10_000 ? cached.activity : this.deps.activity?.(thread.id) ?? null;
+        const owned = this.actions.ownedTurn?.(thread.id) ?? null;
+        const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(thread.id);
         return {
           source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
           state: approval ? "waiting_external_approval" as const
-            : this.owners.has(thread.id) || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
+            : ownedActive || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
           ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
-          sendEnabled: this.deps.queueUsable && !this.owners.has(thread.id),
+          sendEnabled: this.deps.queueUsable && !this.ownsThread(thread.id),
         };
       });
     } catch { this.sessionsReadable = false; throw new Error("source_unavailable"); }
@@ -154,7 +177,9 @@ export class CodexWebSource implements WebSource {
   /** Report only observed runtime evidence; idle/absent evidence never proves completion. */
   async execution(id: string, turnId: string | null, submittedAt = 0): Promise<ExecutionEvidence> {
     if (this.deps.pendingApproval(id)) return { state: "waiting_external_approval", exact: false };
-    if (this.owners.has(id)) return { state: "running", exact: false };
+    const owned = this.actions.ownedTurn?.(id) ?? null;
+    if (owned?.terminalObserved) return { state: "session_ended", exact: Boolean(turnId && owned.turnId === turnId) };
+    if (this.ownsThread(id)) return { state: "running", exact: Boolean(turnId && owned?.turnId === turnId) };
     const activity = this.deps.activity?.(id) ?? null;
     if (activity?.state === "active") return { state: "running", exact: Boolean(turnId && activity.turnId === turnId) };
     try {
@@ -194,12 +219,15 @@ export class CodexWebSource implements WebSource {
         this.nativeActivity.set(id, { activity, readAt: Date.now() });
         if (this.nativeActivity.size > 100) this.nativeActivity.delete(this.nativeActivity.keys().next().value ?? "");
       } else this.nativeActivity.delete(id);
+      const owned = this.actions.ownedTurn?.(id) ?? null;
+      const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(id);
       const sessionState: WebSession["state"] = this.deps.pendingApproval(id) ? "waiting_external_approval"
-        : this.owners.has(id) || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
+        : ownedActive || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
       const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt } : {};
-      return queue ? { ...history, ...timing, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, ...timing, sessionState };
+      const turnControl = this.turnControl(id, activity);
+      return queue ? { ...history, ...timing, turnControl, sessionState, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : { ...history, ...timing, turnControl, sessionState };
     } catch (error) {
       this.historyReadable = false;
       throw error;
@@ -212,6 +240,19 @@ export class CodexWebSource implements WebSource {
     if (!thread?.rolloutPath) throw new Error("attachment_missing");
     const message = await readCodexMessage(thread.rolloutPath, this.deps.sessionRoots, messageId);
     return readCodexAttachment(id, messageId, index, { messages: message ? [message] : [], cursor: null, completeUserHistory: false });
+  }
+
+  /** Interrupt only the exact Sea-Bridge-owned first turn; never resume or retarget another writer. */
+  async interrupt(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }> {
+    if (!this.actions.interruptOwnedTurn) throw new Error("interrupt_provider_unavailable");
+    let result: Awaited<ReturnType<NonNullable<typeof this.actions.interruptOwnedTurn>>>;
+    try { result = await this.actions.interruptOwnedTurn({ threadId: id, expectedTurnId }); }
+    catch { throw new Error("interrupt_provider_unavailable"); }
+    if (result.status === "interrupting") return result;
+    if (result.status === "turn_changed") throw new Error("active_turn_changed");
+    if (result.status === "already_finished") throw new Error("interrupt_already_finished");
+    if (!this.deps.threads.getThread?.(id)) throw new Error("session_missing");
+    throw new Error("interrupt_not_owned");
   }
 
   /** Start a raw Web prompt with explicit request-local model selection. */
@@ -241,7 +282,7 @@ export class CodexWebSource implements WebSource {
   /** Reject owned/missing threads before queueing; queue success proves only admission. */
   async send(id: string, _operationId: string, prompt: string): Promise<SourceResult> {
     if (!this.deps.queueUsable) return { state: "failed", sessionId: id, errorCode: "queue_unavailable" };
-    if (this.owners.has(id)) return { state: "failed", sessionId: id, errorCode: "first_turn_owned" };
+    if (this.ownsThread(id)) return { state: "failed", sessionId: id, errorCode: "first_turn_owned" };
     if (!this.deps.threads.getThread?.(id)) return { state: "failed", sessionId: id, errorCode: "session_missing" };
     const result = await this.deps.queue.queue(id, prompt, { source: "web" });
     return { state: result.status === "delivered" ? "queued" : result.status, sessionId: id, ...(result.errorCode ? { errorCode: result.errorCode } : {}) };

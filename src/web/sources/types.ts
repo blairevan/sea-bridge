@@ -17,7 +17,14 @@ export interface WebSession {
 /** Executed conversation and explicitly marked native queue inputs share safe message fields. */
 export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; }
 /** Bounded history and an independent current queue snapshot with an opaque history cursor. */
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; activeTurnStartedAt?: number; }
+export interface WebTurnControl {
+  activeTurnId: string | null;
+  interrupt:
+    | { status: "available"; scope: "sea_bridge_owned_turn" }
+    | { status: "interrupting"; scope: "sea_bridge_owned_turn" }
+    | { status: "unavailable"; reason: "not_owned" | "turn_unknown" | "provider_unavailable" };
+}
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; activeTurnStartedAt?: number; turnControl?: WebTurnControl; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem { id: string; name: string; }
 /** Runtime evidence is separate from durable delivery state. */
@@ -48,6 +55,7 @@ export interface WebSource {
   models(): Promise<CatalogItem[]>;
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;
   execution?(id: string, turnId: string | null, submittedAt?: number): Promise<ExecutionEvidence>;
+  interrupt?(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }>;
   create(input: CreateRequest): Promise<SourceResult>;
   send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
 }

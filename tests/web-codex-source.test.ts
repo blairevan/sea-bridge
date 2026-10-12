@@ -56,6 +56,87 @@ test("Web Codex prompt is raw, catalog coalesces, ownership blocks queue until r
 });
 
 
+test("shared Action ownership blocks Web continuation even when the first turn originated outside Web", async () => {
+  let sharedOwned = true; let queues = 0;
+  const source = new CodexWebSource({
+    threads: {
+      listActive: () => [{ id: "telegram-thread", title: "telegram", updatedAtMs: 1, rolloutPath: null }],
+      getThread: () => ({ id: "telegram-thread", title: "telegram", updatedAtMs: 1, rolloutPath: null }),
+    },
+    catalogs: { async listProjects() { return []; }, async listModels() { return []; } },
+    actions: {
+      async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
+      ownsThread: (id: string) => id === "telegram-thread" && sharedOwned,
+    },
+    queue: { async queue() { queues++; return { status: "delivered" as const, exitCode: 0 }; } },
+    sessionRoots: [], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+  expect((await source.sessions())[0]).toMatchObject({ state: "running", sendEnabled: false });
+  expect((await source.send("telegram-thread", "op", "follow")).errorCode).toBe("first_turn_owned");
+  expect(queues).toBe(0);
+  sharedOwned = false;
+  expect((await source.send("telegram-thread", "op2", "follow")).state).toBe("queued");
+  expect(queues).toBe(1);
+});
+
+test("owned history exposes exact interrupt control while non-owned running stays unavailable", async () => {
+  const fixture = "tests/fixtures/codex-rollout-web/visible.jsonl";
+  let owner: { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean } | null = {
+    turnId: "turn-owned", state: "running", terminalObserved: false,
+  };
+  const requested: Array<{ threadId: string; expectedTurnId: string }> = [];
+  const source = new CodexWebSource({
+    threads: {
+      listActive: () => [{ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: fixture }],
+      getThread: (id: string) => id === "thread" ? { id, title: "fixture", updatedAtMs: 1, rolloutPath: fixture } : null,
+    },
+    catalogs: { async listProjects() { return []; }, async listModels() { return []; } },
+    actions: {
+      async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
+      ownsThread: () => Boolean(owner),
+      ownedTurn: () => owner,
+      async interruptOwnedTurn(input) { requested.push(input); return { status: "interrupting" as const }; },
+    },
+    queue: { async queue() { throw new Error("unused"); } },
+    sessionRoots: ["tests/fixtures/codex-rollout-web"], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+  });
+
+  expect(await source.history("thread", null, 20)).toMatchObject({
+    sessionState: "running",
+    turnControl: { activeTurnId: "turn-owned", interrupt: { status: "available", scope: "sea_bridge_owned_turn" } },
+  });
+  expect(await source.interrupt("thread", "turn-owned")).toEqual({ status: "interrupting" });
+  expect(requested).toEqual([{ threadId: "thread", expectedTurnId: "turn-owned" }]);
+
+  owner = { turnId: "turn-owned", state: "interrupting", terminalObserved: false };
+  expect((await source.history("thread", null, 20)).turnControl).toEqual({
+    activeTurnId: "turn-owned", interrupt: { status: "interrupting", scope: "sea_bridge_owned_turn" },
+  });
+  owner = { turnId: "turn-owned", state: "running", terminalObserved: true };
+  expect((await source.history("thread", null, 20)).turnControl).toEqual({
+    activeTurnId: null, interrupt: { status: "unavailable", reason: "not_owned" },
+  });
+});
+
+test("Codex interrupt maps exact owner race outcomes to stable source errors", async () => {
+  const statuses = ["not_owned", "turn_changed", "already_finished"] as const;
+  const expected = ["interrupt_not_owned", "active_turn_changed", "interrupt_already_finished"];
+  for (const [index, status] of statuses.entries()) {
+    const source = new CodexWebSource({
+      threads: { listActive: () => [], getThread: () => ({ id: "thread", title: "fixture", updatedAtMs: 1, rolloutPath: null }) },
+      catalogs: { async listProjects() { return []; }, async listModels() { return []; } },
+      actions: {
+        async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
+        ownedTurn: () => status === "not_owned" ? null : { turnId: "turn", state: "running" as const, terminalObserved: status === "already_finished" },
+        async interruptOwnedTurn() { return { status }; },
+      },
+      queue: { async queue() { throw new Error("unused"); } },
+      sessionRoots: [], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+    });
+    await expect(source.interrupt("thread", "turn")).rejects.toThrow(expected[index]);
+  }
+});
+
 test("Codex missing project, model and thread reject without queueing", async () => {
   let calls = 0;
   const source = new CodexWebSource({

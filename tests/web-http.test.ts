@@ -86,6 +86,54 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
   } finally { events.close(); db.close(); }
 });
 
+test("owned-turn interrupt endpoint is exact, CSRF-protected, audited and race-stable", async () => {
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+  const auth = new WebAuth(store); const events = new WebEvents(store); const paired = await loginFixture(auth);
+  if (!paired) throw new Error("fixture failed");
+  let outcome: "interrupting" | "interrupt_not_owned" | "active_turn_changed" | "interrupt_already_finished" | "interrupt_provider_unavailable" | "session_missing" = "interrupting";
+  const calls: Array<{ id: string; expectedTurnId: string }> = [];
+  const source: WebSource = {
+    capabilities: () => ({ sessionsReadable: true, projectsReadable: false, modelsReadable: false, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: false, sendEnabled: false, approvalTransport: "telegram" }),
+    async sessions() { return []; }, async projects() { return []; }, async models() { return []; },
+    async history() { return { messages: [], cursor: null, completeUserHistory: false }; },
+    async interrupt(id, expectedTurnId) {
+      calls.push({ id, expectedTurnId });
+      if (outcome === "interrupting") return { status: "interrupting" };
+      throw new Error(outcome);
+    },
+    async create() { throw new Error("unused"); }, async send() { throw new Error("unused"); },
+  };
+  const handler = createWebHandler({ store, auth, events, sources: { codex: source }, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
+  const path = "/api/sessions/codex/thread-owned/interrupt";
+  const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
+  const request = (body: unknown, authCookie = cookie, csrf = paired.csrfToken) => handler(new Request("http://127.0.0.1:7310" + path, {
+    method: "POST", headers: { Origin: "http://127.0.0.1:7310", "Content-Type": "application/json", ...(authCookie ? { Cookie: authCookie } : {}), ...(csrf ? { "X-Sea-Bridge-CSRF": csrf } : {}) }, body: JSON.stringify(body),
+  }), "127.0.0.1");
+  try {
+    expect((await request({ expectedTurnId: "turn-a" }, "", "")).status).toBe(401);
+    expect((await request({ expectedTurnId: "turn-a" }, cookie, "")).status).toBe(403);
+    expect((await request({})).status).toBe(400);
+    expect((await request({ expectedTurnId: "x".repeat(201) })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+
+    const accepted = await request({ expectedTurnId: "turn-a" });
+    expect(accepted.status).toBe(200); expect((await accepted.json()).data).toEqual({ status: "interrupting" });
+    expect(calls.at(-1)).toEqual({ id: "thread-owned", expectedTurnId: "turn-a" });
+
+    for (const [next, status] of [["interrupt_not_owned", 409], ["active_turn_changed", 409], ["interrupt_already_finished", 409], ["interrupt_provider_unavailable", 503], ["session_missing", 404]] as const) {
+      outcome = next;
+      const response = await request({ expectedTurnId: "turn-secret" });
+      expect(response.status).toBe(status);
+      expect((await response.json()).data.errorCode).toBe(next);
+    }
+    const audits = db.query("SELECT action,detail_json AS detail FROM web_audit WHERE action='codex_turn_interrupt' ORDER BY created_at").all() as Array<{ action: string; detail: string }>;
+    expect(audits.length).toBe(6);
+    expect(audits.every((item) => item.detail.includes("thread-owned"))).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain("turn-secret");
+    expect(JSON.stringify(audits)).not.toContain("turn-a");
+  } finally { events.close(); db.close(); }
+});
+
 test("login body is streaming-bounded before materialization", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const events = new WebEvents(store);
   const handler = createWebHandler({ store, auth: new WebAuth(store), events, sources: {}, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
