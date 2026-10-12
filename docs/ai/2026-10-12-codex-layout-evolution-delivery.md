@@ -179,7 +179,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.9`。
+当前 `package.json` 为 `1.1.10`。本次从 `1.1.9` 递增版本是必要的缓存失效措施：Sea-Bridge 对匹配版本号的 `app.js/app.css` 返回一年 `immutable` 缓存；暗色轮次抽屉修复若继续复用 `?v=1.1.9`，已访问过 v1.1.9 的 Safari 可以合法继续使用旧 CSS，即使服务器文件已经更新。v1.1.10 会让 HTML 改为引用新的 `app.css?v=1.1.10` / `app.js?v=1.1.10`。
 
 本轮尚未：
 
