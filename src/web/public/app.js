@@ -18,6 +18,9 @@ let liveActivityCard = null;
 let liveActivityStatus = null;
 let liveActivityDetail = null;
 let liveActivityStale = null;
+let composerModelControl = null;
+let sessionModelUpdate = null;
+let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
 
 /** Keep platform labels independent of the original client. */
 function sourceDisplayName(source) {
@@ -475,7 +478,7 @@ function hideConnectionNotice() { state.connectionDetail = ""; clearNotice(); }
 /** Disable server-mutating controls while disconnected, while keeping navigation available. */
 function setConnectionControls(disabled) {
   for (const button of el("device-items")?.querySelectorAll?.("button") ?? []) button.disabled = disabled || button.dataset?.revoked === "true";
-  for (const id of ["create-source", "create-project-search", "create-project", "create-model", "session-model-select", "session-model-submit"]) { const control = el(id); if (control) control.disabled = disabled; }
+  for (const id of ["create-source", "create-project-search", "create-project", "create-model"]) { const control = el(id); if (control) control.disabled = disabled; }
   const overviewCreate = el("overview-new-session"); if (overviewCreate) overviewCreate.disabled = disabled;
   const catalogCreate = el("catalog-new"); if (catalogCreate) catalogCreate.disabled = disabled || !state.caps[state.catalogContext?.source]?.createEnabled;
   const catalogRetry = el("catalog-retry"); if (catalogRetry) catalogRetry.hidden = !disabled;
@@ -501,8 +504,9 @@ function retainLoadedViews() {
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
   resetProjectSearch(); creationProjects = { source: null, items: [] }; state.interruptRequest = null;
+  sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 }; composerModelControl = null; sessionModelUpdate = null;
   if (state.device?.id) clearOverviewCache();
-  closeImagePreview(); el("session-model-dialog")?.close?.();
+  closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
   state.viewEpoch++; reads.clear();
   for (const id of ["record-items", "log-items", "device-items", "create-project", "create-project-options", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
@@ -590,7 +594,7 @@ function showLogin() {
   cancelReconnectTimer(); cancelStreamTimer(); state.retryAttempt = 0; state.recovering = false; state.connectionDetail = "";
   state.stream?.close(); state.stream = null; state.paused = true; clearSensitive(); clearNotice(); setConnectionControls(false);
   if (el("auth-loading")) el("auth-loading").hidden = true;
-  el("console").hidden = true; el("login").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close(); el("session-model-dialog")?.close?.();
+  el("console").hidden = true; el("login").hidden = false; el("create-dialog").close(); el("catalog-dialog")?.close();
 }
 let loginStage = "page";
 let loginStageStartedAt = Date.now();
@@ -644,15 +648,15 @@ function scheduleReconnect(immediate = false) {
   state.reconnectTimer = setTimeout(() => { state.reconnectTimer = null; void recoverConnection(); }, delay);
 }
 /** Pause server actions during a disconnect while retaining loaded views for reading. */
-function enterDisconnected() {
+function enterDisconnected(detailOverride = "") {
   state.recoverySeq++;
   const failedRecovery = state.recovering;
   state.paused = true; state.recovering = false; cancelStreamTimer();
   if (failedRecovery) state.retryAttempt++;
   state.stream?.close(); state.stream = null; retainLoadedViews(); setConnectionControls(true);
-  state.connectionDetail = state.pending
+  state.connectionDetail = detailOverride || (state.pending
     ? "服务暂不可达。发送结果待确认，恢复后会核查原请求，不会自动重发。"
-    : "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。";
+    : "服务暂不可达，已保留页面数据和草稿，内容可能不是最新。");
   showConnectionNotice(state.connectionDetail);
   if (state.pending) setComposerStatus("结果待确认；恢复连接后自动核查");
   scheduleReconnect();
@@ -1438,55 +1442,94 @@ function composerMetadataLabels(meta) {
   return labels;
 }
 
+/** Keep the current model visible while enriching the inline selector from the live catalog. */
+function sessionModelOptions(current) {
+  const items = sessionModelCatalog.items.slice();
+  if (current?.id && !items.some((item) => item.id === current.id)) items.unshift({ id: current.id, name: current.displayName || current.id });
+  return items;
+}
+
+/** Load the model catalog in-place; repeated composer refreshes reuse one bounded cache. */
+async function ensureSessionModelCatalog() {
+  if (sessionModelCatalog.loadedAt && Date.now() - sessionModelCatalog.loadedAt < 60_000) return sessionModelCatalog.items;
+  if (sessionModelCatalog.failedAt && Date.now() - sessionModelCatalog.failedAt < 30_000) return sessionModelCatalog.items;
+  if (sessionModelCatalog.loading) return sessionModelCatalog.loading;
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
+  const loading = api("/api/sources/codex/models").then((catalog) => {
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return [];
+    const items = (Array.isArray(catalog.items) ? catalog.items : []).filter((item) => typeof item?.id === "string" && item.id && typeof item?.name === "string");
+    sessionModelCatalog = { items, loadedAt: Date.now(), failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 };
+    syncComposerMetadata();
+    return items;
+  }).catch((error) => {
+    if (authEpoch === state.authEpoch && viewEpoch === state.viewEpoch && sessionModelCatalog.loading === loading) {
+      sessionModelCatalog = { ...sessionModelCatalog, loadedAt: 0, failedAt: Date.now(), loading: null, revision: sessionModelCatalog.revision + 1 };
+      syncComposerMetadata();
+    }
+    throw error;
+  });
+  sessionModelCatalog = { ...sessionModelCatalog, loading };
+  return loading;
+}
+
 function syncComposerMetadata(session = state.selected) {
   const target = el("composer-session-meta"); if (!target) return;
   const labels = session?.source === "codex" ? composerMetadataLabels(session.sessionMeta) : [];
+  const currentModel = session?.source === "codex" ? session.sessionMeta?.model : null;
+  const hasModelControl = Boolean(currentModel?.id && state.caps.codex?.modelUpdateEnabled);
+  if (hasModelControl && session?.state === "idle" && !state.paused && !sessionModelCatalog.loading && (!sessionModelCatalog.loadedAt || Date.now() - sessionModelCatalog.loadedAt >= 60_000)) {
+    void ensureSessionModelCatalog().catch(() => undefined);
+  }
   if (typeof target.replaceChildren === "function") {
-    const editableModel = session?.source === "codex" && session.state === "idle" && !state.paused && state.caps.codex?.modelUpdateEnabled;
-    target.replaceChildren(...labels.map((item) => {
-      if (item.kind !== "model" || !editableModel) return node("span", item.text, item.className);
-      const button = node("button", `${item.text} ▾`, `${item.className} composer-model-button`);
-      button.type = "button"; button.setAttribute("aria-haspopup", "dialog"); button.title = "切换此会话的模型";
-      button.onclick = () => run("session-model-open", openSessionModelDialog);
-      return button;
-    }));
+    const signature = JSON.stringify([session?.source, session?.id, currentModel?.id, currentModel?.displayName, labels.map((item) => [item.text, item.className, item.kind]), hasModelControl, sessionModelCatalog.revision]);
+    if (target.dataset?.signature !== signature) {
+      composerModelControl = null;
+      target.replaceChildren(...labels.map((item) => {
+        if (item.kind !== "model" || !hasModelControl) return node("span", item.text, item.className);
+        const select = node("select", "", `${item.className} composer-model-select`);
+        select.setAttribute("aria-label", "当前会话模型");
+        for (const model of sessionModelOptions(currentModel)) { const option = node("option", model.name); option.value = model.id; select.append(option); }
+        select.value = currentModel.id;
+        select.onchange = () => {
+          const modelId = String(select.value || "");
+          run(`session-model-${session.id}`, () => changeSessionModel(modelId, select));
+        };
+        composerModelControl = select;
+        return select;
+      }));
+      if (target.dataset) target.dataset.signature = signature;
+    }
   } else target.textContent = labels.map((item) => item.text).join(" · ");
+  if (composerModelControl && hasModelControl) {
+    const catalogReady = sessionModelCatalog.loadedAt > 0 && sessionModelCatalog.items.length > 0;
+    const updating = sessionModelUpdate?.sessionId === session?.id;
+    composerModelControl.disabled = state.paused || session?.state !== "idle" || !catalogReady || updating;
+    composerModelControl.value = currentModel.id;
+  }
   target.hidden = labels.length === 0;
 }
 
-/** Open the verified model catalog for the currently selected idle Codex thread. */
-async function openSessionModelDialog() {
-  const session = state.selected;
+/** Apply an inline model selection to exactly the currently selected idle thread. */
+async function changeSessionModel(modelId, select = composerModelControl) {
+  const session = state.selected; const currentModel = session?.sessionMeta?.model;
   if (!session || session.source !== "codex" || session.state !== "idle" || state.paused || !state.caps.codex?.modelUpdateEnabled) throw clientError("model_update_unavailable", "当前会话暂不能切换模型");
-  const dialog = el("session-model-dialog"); const select = el("session-model-select"); const submit = el("session-model-submit"); const hint = el("session-model-hint");
-  const identity = `${session.source}:${session.id}`; const viewEpoch = state.viewEpoch;
-  select.replaceChildren(); select.disabled = true; submit.disabled = true; hint.textContent = "正在加载可用模型…";
-  if (!dialog.open) dialog.showModal();
-  const catalog = await api("/api/sources/codex/models");
-  if (viewEpoch !== state.viewEpoch || `${state.selected?.source}:${state.selected?.id}` !== identity || !dialog.open) return;
-  const current = session.sessionMeta?.model;
-  const items = Array.isArray(catalog.items) ? catalog.items : [];
-  if (current?.id && !items.some((item) => item.id === current.id)) items.unshift({ id: current.id, name: current.displayName || current.id });
-  for (const model of items) { const option = node("option", model.name); option.value = model.id; select.append(option); }
-  if (current?.id && items.some((item) => item.id === current.id)) select.value = current.id;
-  select.disabled = items.length === 0; submit.disabled = items.length === 0;
-  hint.textContent = items.length ? "切换后应用于此会话后续轮次；运行中的任务不能切换。" : "当前没有可用模型。";
-}
-
-/** Persist a model change only to the thread that was selected when the user submits. */
-async function applySessionModel() {
-  const session = state.selected; const select = el("session-model-select"); const submit = el("session-model-submit");
-  if (!session || session.source !== "codex" || session.state !== "idle" || state.paused) throw clientError("model_update_unavailable", "当前会话暂不能切换模型");
-  const modelId = String(select.value || ""); if (!modelId) throw clientError("invalid_field", "请选择模型");
-  const sessionId = session.id; const viewEpoch = state.viewEpoch; select.disabled = true; submit.disabled = true; submit.textContent = "应用中…";
+  if (!modelId || !sessionModelCatalog.items.some((item) => item.id === modelId)) throw clientError("model_unavailable", "所选模型当前不可用");
+  if (modelId === currentModel?.id) return;
+  const sessionId = session.id; const viewEpoch = state.viewEpoch;
+  sessionModelUpdate = { sessionId, modelId }; syncComposerMetadata(session);
   try {
     const result = await api(`/api/sessions/codex/${encodeURIComponent(sessionId)}/model`, "POST", { modelId });
     if (viewEpoch !== state.viewEpoch || state.selected?.source !== "codex" || state.selected?.id !== sessionId) return;
     state.selected = { ...state.selected, sessionMeta: { ...(state.selected.sessionMeta ?? {}), model: result.model } };
-    syncComposerControl(); el("session-model-dialog").close(); notice(`模型已切换为 ${result.model.displayName || result.model.id}`, { kind: "success" });
+    notice(`模型已切换为 ${result.model.displayName || result.model.id}`, { kind: "success" });
+  } catch (error) {
+    const message = error?.message || "请求失败，请稍后重试";
+    if (isTransportError(error)) enterDisconnected(`模型切换失败：${message}。已保留当前模型，恢复连接后可重试。`);
+    else if (viewEpoch === state.viewEpoch && state.selected?.source === "codex" && state.selected?.id === sessionId) notice(`模型切换失败：${message}`, { sticky: true, kind: "error" });
   } finally {
-    submit.textContent = "应用模型";
-    if (el("session-model-dialog").open) { select.disabled = state.paused; submit.disabled = state.paused || !select.value; }
+    if (sessionModelUpdate?.sessionId === sessionId) sessionModelUpdate = null;
+    if (state.selected?.source === "codex" && state.selected?.id === sessionId) syncComposerControl();
+    else if (select && currentModel?.id) select.value = currentModel.id;
   }
 }
 
@@ -1802,9 +1845,6 @@ el("more-history").onclick = () => run("history", () => loadHistory(true));
 el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
-el("close-session-model").onclick = () => el("session-model-dialog").close();
-el("session-model-dialog").onclick = (event) => { if (event.target === el("session-model-dialog")) el("session-model-dialog").close(); };
-el("session-model-form").onsubmit = (event) => { event.preventDefault(); run("session-model-apply", applySessionModel); };
 el("create-source").onchange = () => { resetProjectSearch(); el("create-project").replaceChildren(); run("catalog-" + el("create-source").value, loadCatalogs); };
 el("create-project-search").oninput = scheduleProjectSearch;
 el("create-project-search").onfocus = openProjectOptions;

@@ -34,7 +34,8 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
   expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-retry"'); expect(html).toContain('id="notice-close"');
-  for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog", "session-model-dialog", "session-model-form", "session-model-select", "session-model-submit"]) expect(html).toContain(`id="${id}"`);
+  for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog"]) expect(html).toContain(`id="${id}"`);
+  expect(html).not.toContain("session-model-dialog"); expect(html).not.toContain("切换后应用于此会话后续轮次；运行中的任务不能切换。");
   expect(html).toContain('role="combobox"'); expect(html).toContain('aria-controls="record-suggestions"'); expect(html).toContain('会话标题'); expect(html).not.toContain('<label>会话 ID');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
   expect(script).not.toMatch(/innerHTML|indexedDB|serviceWorker/);

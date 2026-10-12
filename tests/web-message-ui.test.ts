@@ -582,22 +582,24 @@ test("composer metadata displays only server-proven fields and supports partial 
   };
   ui.syncComposerControl(1000);
   expect(meta.hidden).toBe(false);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["GPT-5.6 ▾", "中", "Full Access", "免审批"]);
-  expect(meta.children[0]?.tag).toBe("button");
-  expect(meta.children[0]?.attributes.get("aria-haspopup")).toBe("dialog");
+  expect(meta.children.map((item) => item.tag)).toEqual(["select", "span", "span", "span"]);
+  expect(meta.children.slice(1).map((item) => item.textContent)).toEqual(["中", "Full Access", "免审批"]);
+  expect(meta.children[0]?.attributes.get("aria-label")).toBe("当前会话模型");
+  expect(meta.children[0]?.children.map((item) => item.textContent)).toEqual(["GPT-5.6"]);
 
   ui.state.selected.state = "running";
   ui.syncComposerControl(1000);
-  expect(meta.children[0]?.tag).toBe("span");
-  expect(meta.children[0]?.textContent).toBe("GPT-5.6");
+  expect(meta.children[0]?.tag).toBe("select");
+  expect((meta.children[0] as any)?.disabled).toBe(true);
   ui.state.selected.state = "idle";
   ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" } };
   ui.syncComposerControl(1000);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6 ▾"]);
+  expect(meta.children.map((item) => item.tag)).toEqual(["select"]);
+  expect(meta.children[0]?.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
 
   ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" }, reasoningEffort: "none" };
   ui.syncComposerControl(1000);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6 ▾"]);
+  expect(meta.children.map((item) => item.tag)).toEqual(["select"]);
 
   ui.state.selected.sessionMeta = null;
   ui.syncComposerControl(1000);
@@ -605,41 +607,73 @@ test("composer metadata displays only server-proven fields and supports partial 
   expect(meta.children).toEqual([]);
 });
 
-test("idle model picker loads the live catalog and applies an exact per-session model update", async () => {
+test("inline model selector loads the live catalog, disables while running, and applies an exact per-session update", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
-  const dialog = Object.assign(new ElementFixture("dialog"), { open: false, showModal() { this.open = true; }, close() { this.open = false; } });
-  const select = Object.assign(new ElementFixture("select"), { value: "", disabled: false });
-  const submit = Object.assign(new ElementFixture("button"), { disabled: false });
-  const hint = new ElementFixture("p");
-  const elements = new Map<string, any>([
-    ["session-model-dialog", dialog], ["session-model-select", select], ["session-model-submit", submit], ["session-model-hint", hint],
-  ]);
+  const meta = new ElementFixture("div");
+  const elements = new Map<string, any>([["composer-session-meta", meta]]);
   const calls: Array<{ path: string; method: string; body?: any }> = [];
   const notices: string[] = [];
+  const failure: { error: { message: string; code: string } | null } = { error: null };
   const ui = runInNewContext(script.slice(0, end) + `
     api = async (path, method = "GET", body) => {
       calls.push({ path, method, body });
       if (path === "/api/sources/codex/models") return { items: [{ id: "old-model", name: "Old" }, { id: "new-model", name: "New" }] };
+      if (failure.error) throw failure.error;
       return { status: "updated", model: { id: body.modelId, displayName: "New" } };
     };
-    syncComposerControl = () => {};
     notice = (text) => notices.push(text);
-    ({ state, openSessionModelDialog, applySessionModel })`, {
-    calls, notices, encodeURIComponent,
+    ({ state, ensureSessionModelCatalog, syncComposerMetadata, changeSessionModel })`, {
+    calls, notices, failure, encodeURIComponent,
     document: { getElementById: (id: string) => elements.get(id) ?? null, createElement: (tag: string) => new ElementFixture(tag) },
-  }) as { state: any; openSessionModelDialog(): Promise<void>; applySessionModel(): Promise<void> };
+  }) as { state: any; ensureSessionModelCatalog(): Promise<any[]>; syncComposerMetadata(): void; changeSessionModel(modelId: string, select: any): Promise<void> };
   ui.state.paused = false; ui.state.viewEpoch = 4; ui.state.caps.codex = { modelUpdateEnabled: true };
   ui.state.selected = { source: "codex", id: "thread-model", state: "idle", sendEnabled: true, sessionMeta: { model: { id: "old-model", displayName: "Old" } } };
-  await ui.openSessionModelDialog();
-  expect(dialog.open).toBe(true); expect(select.disabled).toBe(false); expect(submit.disabled).toBe(false);
-  expect(select.children.map((item) => [item.textContent, (item as any).value])).toEqual([["Old", "old-model"], ["New", "new-model"]]);
+  await ui.ensureSessionModelCatalog();
+  ui.syncComposerMetadata();
+  const select = meta.children[0] as any;
+  expect(select.tag).toBe("select"); expect(select.disabled).toBe(false);
+  expect(select.children.map((item: any) => [item.textContent, item.value])).toEqual([["Old", "old-model"], ["New", "new-model"]]);
   expect(select.value).toBe("old-model");
-  select.value = "new-model";
-  await ui.applySessionModel();
+
+  ui.state.selected.state = "running"; ui.syncComposerMetadata();
+  expect(select.disabled).toBe(true);
+  ui.state.selected.state = "idle"; ui.syncComposerMetadata();
+  expect(select.disabled).toBe(false);
+
+  await ui.changeSessionModel("new-model", select);
   expect(calls.at(-1)).toEqual({ path: "/api/sessions/codex/thread-model/model", method: "POST", body: { modelId: "new-model" } });
   expect(ui.state.selected.sessionMeta.model).toEqual({ id: "new-model", displayName: "New" });
-  expect(dialog.open).toBe(false); expect(notices.at(-1)).toContain("New");
+  expect(notices.at(-1)).toBe("模型已切换为 New");
+
+  failure.error = { code: "model_update_busy", message: "当前任务仍在运行，请结束后再切换模型" };
+  await ui.changeSessionModel("old-model", select);
+  expect(ui.state.selected.sessionMeta.model).toEqual({ id: "new-model", displayName: "New" });
+  expect(notices.at(-1)).toBe("模型切换失败：当前任务仍在运行，请结束后再切换模型");
+});
+
+test("stale model catalog responses cannot repopulate an invalidated composer view", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const meta = new ElementFixture("div");
+  let resolveCatalog!: (value: unknown) => void;
+  const pendingCatalog = new Promise((resolve) => { resolveCatalog = resolve; });
+  const ui = runInNewContext(script.slice(0, end) + `
+    api = async () => pendingCatalog;
+    ({ state, ensureSessionModelCatalog, syncComposerMetadata })`, {
+    pendingCatalog,
+    document: { getElementById: (id: string) => id === "composer-session-meta" ? meta : null, createElement: (tag: string) => new ElementFixture(tag) },
+  }) as { state: any; ensureSessionModelCatalog(): Promise<any[]>; syncComposerMetadata(): void };
+  ui.state.paused = false; ui.state.viewEpoch = 7; ui.state.caps.codex = { modelUpdateEnabled: true };
+  ui.state.selected = { source: "codex", id: "thread-model", state: "idle", sessionMeta: { model: { id: "current", displayName: "Current" } } };
+  const loading = ui.ensureSessionModelCatalog();
+  ui.state.viewEpoch = 8;
+  resolveCatalog({ items: [{ id: "stale", name: "Stale" }] });
+  expect(await loading).toEqual([]);
+  ui.syncComposerMetadata();
+  const select = meta.children[0] as any;
+  expect(select.children.map((item: any) => item.value)).toEqual(["current"]);
+  expect(select.disabled).toBe(true);
 });
 
 test("interrupt request keeps the click-time turn id even if polling advances to a new turn", async () => {
