@@ -15,7 +15,7 @@
 - **Phase D 已实现**：App Server thread catalog、Hook allowlist metadata 与 owned Action 参数经 `SessionMetadataResolver` 逐字段聚合；Composer 只显示真实存在的 model / reasoning / execution policy，不补默认值；旧数据库采用 additive migration 兼容升级。
 - **Phase E provider 化已实现**：新增 `InterruptRouter` 与 `OwnedAppServerInterruptProvider`，Web wire scope 收敛为 provider-independent `exact_codex_turn`；provider 一旦实际 dispatch 即固定，失败不自动 fallback，不会重新选择新 turn。
 - **External provider 仍未启用**：在目标 Mac（Darwin 25.5.0 arm64, codex-cli 0.147.0）上物理实测，独立 App Server 尝试 thread/resume 外部活跃 thread 明确返回 -32600 already has an active writer，调用 turn/interrupt 或 turn/steer 明确返回 -32600 thread not found；本地亦无共享 daemon control socket。根据验收规则，跨实例 App Server 中断 Gate 裁决为 FAIL；生产环境严格保持 fail-closed，非 owned turn 统一返回 interrupt_provider_unverified，绝不猜测性尝试伪中断或破坏性杀进程。
-- 当前自动化回归：`bun test` **473 pass / 0 fail**、**2187 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
+- 当前自动化回归：`bun test` **473 pass / 0 fail**、**2193 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
 
 ---
 
@@ -662,7 +662,7 @@ interface WebSessionMeta {
 - 不存在就不占位、不显示假的“默认/中/完全访问”；
 - catalog 不可用时可显示真实 model id；
 - 不展示 metadata provenance、数据库字段名或本地路径；
-- model 展示位置直接使用下拉选择器：idle Codex 会话可切换，running / approval / reconnect 状态保留当前值但 disabled，不再增加模型弹窗。
+- model 展示位置直接使用下拉选择器：idle Codex 会话可切换；running / approval / reconnect 状态保留当前值但 disabled，并像停止按钮一样明确降低透明度、显示 not-allowed 与不可用原因，不再增加模型弹窗。
 
 ### Step 8.4.1 — 当前会话模型切换 — DONE
 
@@ -671,7 +671,7 @@ interface WebSessionMeta {
 1. `CodexAppServerClient.updateThreadModel()`：`thread/resume -> thread/settings/update -> thread/read` 精确回读确认，最后 unsubscribe/release；
 2. `CodexWebSource.updateModel()`：实时 model catalog allowlist + verified-idle 双门禁；
 3. `POST /api/sessions/codex/:id/model`：auth/CSRF/body bounds、稳定错误和不含 model id 的安全审计；
-4. Composer model 展示位置直接使用原生下拉选择器；idle 时加载实时模型目录并可直接切换，running / approval / reconnect 时同一控件 disabled；
+4. Composer model 展示位置直接使用原生下拉选择器；idle 时加载实时模型目录并可直接切换，running / approval / reconnect 时同一控件 disabled，且 disabled 状态必须有与停止按钮一致的视觉弱化和 title/ARIA 原因；
 5. active writer、running、approval、unknown-idle、offline 全部 fail closed，不尝试抢锁；
 6. 成功后只更新该 thread 的持久 settings，不修改 Sea-Bridge/Codex 全局默认模型，也不把 model 伪装进 `codex queue`；
 7. 成功和失败都统一在顶部消息区反馈；业务失败必须带“模型切换失败”前缀，网络失败进入 reconnect 时顶部连接消息也保留该上下文。

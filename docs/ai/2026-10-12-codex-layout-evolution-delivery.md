@@ -49,7 +49,7 @@ CodexReadService
 6. model catalog 只补 display name，不参与 model 事实选择；
 7. `permission_mode` 未完成语义映射 Gate，因此不被翻译为 Web sandbox/approval；
 8. Composer 支持字段级展示，例如 `GPT-5.6 · 中 · Full Access · 免审批`，缺失字段独立省略，不补默认值；`reasoningEffort=none` 按缺失处理，idle 状态文案不常驻；
-9. 当前 Codex model 展示位置已直接改为原生下拉选择器：idle 时实时加载 `model/list` 并可直接切换，running / approval / reconnect 时同一控件 disabled；不再增加模型弹窗或说明文案。后端仍通过 `thread/resume -> thread/settings/update -> thread/read` 修改并确认该 thread 后续模型，active writer / unknown-idle 等状态继续 fail closed；
+9. 当前 Codex model 展示位置已直接改为原生下拉选择器：idle 时实时加载 `model/list` 并可直接切换；running / approval / reconnect 时同一控件 disabled，并像停止按钮一样用 `opacity:.45 + cursor:not-allowed` 明确表现不可用，同时提供 title/ARIA 原因；不再增加模型弹窗或说明文案。后端仍通过 `thread/resume -> thread/settings/update -> thread/read` 修改并确认该 thread 后续模型，active writer / unknown-idle 等状态继续 fail closed；
 10. 模型切换只作用于该 thread，不修改全局默认模型，不把 model 猜测性塞进 `codex queue`；审计不记录 model id；
 11. 模型切换成功或失败统一在顶部消息区反馈：成功显示 success；业务失败显示 sticky error；网络失败进入 reconnect 时顶部连接消息保留“模型切换失败”的上下文；
 12. auth / redaction policy invalidation 时 `sessionMeta` 与 turn control 一并清理。
@@ -146,7 +146,7 @@ provider RPC success 只表示 interrupt 请求已接纳。UI 保持 `正在中�
 
 ```bash
 bun test
-# 473 pass / 0 fail / 2187 expect() calls / 70 files
+# 473 pass / 0 fail / 2193 expect() calls / 70 files
 
 bun run typecheck
 # PASS
@@ -182,7 +182,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.14`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈。发布后 HTML 应引用新的 `app.css?v=1.1.14` / `app.js?v=1.1.14`。
+当前 `package.json` 为 `1.1.15`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态的视觉反馈与不可用原因提示。发布后 HTML 应引用新的 `app.css?v=1.1.15` / `app.js?v=1.1.15`。
 
 本轮尚未：
 

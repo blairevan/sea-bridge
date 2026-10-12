@@ -584,7 +584,7 @@ test("composer metadata displays only server-proven fields and supports partial 
   expect(meta.hidden).toBe(false);
   expect(meta.children.map((item) => item.tag)).toEqual(["select", "span", "span", "span"]);
   expect(meta.children.slice(1).map((item) => item.textContent)).toEqual(["中", "Full Access", "免审批"]);
-  expect(meta.children[0]?.attributes.get("aria-label")).toBe("当前会话模型");
+  expect(meta.children[0]?.attributes.get("aria-label")).toBe("当前会话模型，正在加载可用模型");
   expect(meta.children[0]?.children.map((item) => item.textContent)).toEqual(["GPT-5.6"]);
 
   ui.state.selected.state = "running";
@@ -638,8 +638,13 @@ test("inline model selector loads the live catalog, disables while running, and 
 
   ui.state.selected.state = "running"; ui.syncComposerMetadata();
   expect(select.disabled).toBe(true);
+  expect(select.title).toBe("任务执行中，完成后可切换模型");
+  expect(select.attributes.get("aria-label")).toBe("当前会话模型，任务执行中，完成后可切换模型");
+  expect(select.attributes.get("aria-disabled")).toBe("true");
   ui.state.selected.state = "idle"; ui.syncComposerMetadata();
   expect(select.disabled).toBe(false);
+  expect(select.title).toBe("切换当前会话模型");
+  expect(select.attributes.get("aria-disabled")).toBe("false");
 
   await ui.changeSessionModel("new-model", select);
   expect(calls.at(-1)).toEqual({ path: "/api/sessions/codex/thread-model/model", method: "POST", body: { modelId: "new-model" } });

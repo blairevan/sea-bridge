@@ -359,7 +359,7 @@ GPT-5.6 · 中 · Full Access
 
 模型切换必须是 **thread-scoped**，不能修改全局默认模型，也不能借 `codex queue` 猜测携带 model。实现契约：
 
-1. model 展示位置直接使用原生下拉控件，不再增加二级弹窗或冗余说明；仅 Codex、在线、服务端已确认 idle 时启用，其他状态直接 disabled；
+1. model 展示位置直接使用原生下拉控件，不再增加二级弹窗或冗余说明；仅 Codex、在线、服务端已确认 idle 时启用，其他状态直接 disabled，并必须像主停止按钮一样有明确不可用视觉反馈（降低透明度 + not-allowed），同时提供对应 title/ARIA 原因；
 2. 选项必须来自实时 `model/list`，浏览器不能提交目录外 model；
 3. 后端启动临时 App Server，先 `thread/resume` 获取该 idle thread 的 writer；若返回 `already has an active writer`，以 `model_update_busy` fail closed；
 4. 在同一临时 session 调用实验性 `thread/settings/update { threadId, model }`；

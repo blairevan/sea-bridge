@@ -1472,6 +1472,16 @@ async function ensureSessionModelCatalog() {
   return loading;
 }
 
+function modelControlDisabledReason(session, catalogReady, updating) {
+  if (updating) return "正在切换模型";
+  if (state.paused) return "连接恢复后可切换模型";
+  if (session?.state === "running") return "任务执行中，完成后可切换模型";
+  if (session?.state === "waiting_external_approval") return "等待审批时不能切换模型";
+  if (session?.state !== "idle") return "当前状态不能切换模型";
+  if (!catalogReady) return "正在加载可用模型";
+  return "";
+}
+
 function syncComposerMetadata(session = state.selected) {
   const target = el("composer-session-meta"); if (!target) return;
   const labels = session?.source === "codex" ? composerMetadataLabels(session.sessionMeta) : [];
@@ -1503,7 +1513,11 @@ function syncComposerMetadata(session = state.selected) {
   if (composerModelControl && hasModelControl) {
     const catalogReady = sessionModelCatalog.loadedAt > 0 && sessionModelCatalog.items.length > 0;
     const updating = sessionModelUpdate?.sessionId === session?.id;
-    composerModelControl.disabled = state.paused || session?.state !== "idle" || !catalogReady || updating;
+    const disabledReason = modelControlDisabledReason(session, catalogReady, updating);
+    composerModelControl.disabled = Boolean(disabledReason);
+    composerModelControl.title = disabledReason || "切换当前会话模型";
+    composerModelControl.setAttribute("aria-label", disabledReason ? `当前会话模型，${disabledReason}` : "当前会话模型");
+    composerModelControl.setAttribute("aria-disabled", disabledReason ? "true" : "false");
     composerModelControl.value = currentModel.id;
   }
   target.hidden = labels.length === 0;
