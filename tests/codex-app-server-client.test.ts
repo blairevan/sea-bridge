@@ -214,6 +214,53 @@ describe("CodexAppServerClient", () => {
     await client.close();
   });
 
+  test("updates an idle thread model through resume/settings/readback and releases the temporary writer", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/resume") return proc.send({ id: message.id, result: { thread: { id: "thread-idle" }, model: "old-model" } });
+      if (message.method === "thread/settings/update") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/read") return proc.send({ id: message.id, result: { thread: { id: "thread-idle", model: "new-model" } } });
+      if (message.method === "thread/unsubscribe") return proc.send({ id: message.id, result: { status: "unsubscribed" } });
+    });
+    const client = new CodexAppServerClient("/codex", { spawner: () => proc as unknown as ChildProcessWithoutNullStreams });
+    expect(await client.updateThreadModel({ threadId: "thread-idle", model: "new-model" })).toEqual({ status: "updated", model: "new-model" });
+    expect(proc.writes.filter((item) => item.id).map((item) => [item.method, item.params])).toEqual([
+      ["initialize", { clientInfo: { name: "sea-bridge", version: "0.1.0" }, capabilities: { experimentalApi: true } }],
+      ["thread/resume", { threadId: "thread-idle" }],
+      ["thread/settings/update", { threadId: "thread-idle", model: "new-model" }],
+      ["thread/read", { threadId: "thread-idle", includeTurns: false }],
+      ["thread/unsubscribe", { threadId: "thread-idle" }],
+    ]);
+    expect(proc.stdinEnded).toBe(true);
+  });
+
+  test("model update requires exact readback before reporting success", async () => {
+    let proc!: MockProcess; let unsubscribed = false;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/resume") return proc.send({ id: message.id, result: { thread: { id: "thread-idle" }, model: "old-model" } });
+      if (message.method === "thread/settings/update") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/read") return proc.send({ id: message.id, result: { thread: { id: "thread-idle", model: "old-model" } } });
+      if (message.method === "thread/unsubscribe") { unsubscribed = true; return proc.send({ id: message.id, result: { status: "unsubscribed" } }); }
+    });
+    const client = new CodexAppServerClient("/codex", { spawner: () => proc as unknown as ChildProcessWithoutNullStreams });
+    await expect(client.updateThreadModel({ threadId: "thread-idle", model: "new-model" })).rejects.toThrow("model_update_unconfirmed");
+    expect(unsubscribed).toBe(true); expect(proc.stdinEnded).toBe(true);
+  });
+
+  test("model update fails closed when another App Server still owns the thread", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/resume") return proc.send({ id: message.id, error: { code: -32600, message: "thread thread-busy already has an active writer" } });
+    });
+    const client = new CodexAppServerClient("/codex", { spawner: () => proc as unknown as ChildProcessWithoutNullStreams });
+    await expect(client.updateThreadModel({ threadId: "thread-busy", model: "new-model" })).rejects.toThrow("model_update_busy");
+    expect(proc.writes.some((item) => item.method === "thread/settings/update")).toBe(false);
+    expect(proc.stdinEnded).toBe(true);
+  });
+
   test("retains the created id and releases after first-turn admission failure", async () => {
     let proc: MockProcess;
     proc = new MockProcess((message) => {

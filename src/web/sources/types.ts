@@ -6,6 +6,7 @@ export interface WebSourceCapabilities {
   sessionsReadable: boolean; projectsReadable: boolean; modelsReadable: boolean; historyReadable: boolean;
   completeUserHistoryReadable: boolean; finalReplyReadable: boolean; createEnabled: boolean; sendEnabled: boolean;
   desktopOpenEnabled?: boolean;
+  modelUpdateEnabled?: boolean;
   approvalTransport: "telegram" | null;
 }
 /** Session metadata is field-wise evidence; absent values are never inferred from defaults. */
@@ -66,6 +67,7 @@ export interface WebSource {
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;
   execution?(id: string, turnId: string | null, submittedAt?: number): Promise<ExecutionEvidence>;
   interrupt?(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }>;
+  updateModel?(id: string, modelId: string): Promise<{ status: "updated"; model: { id: string; displayName?: string } }>;
   create(input: CreateRequest): Promise<SourceResult>;
   send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
 }

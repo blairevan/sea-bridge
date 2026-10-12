@@ -15,9 +15,9 @@ import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession
 export interface CodexSourceDependencies {
   openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
-  appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
+  appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
   catalogs?: Pick<CodexReadService, "listProjects" | "listModels">;
-  actions?: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
+  actions?: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
   readThread?: Pick<CodexReadService, "getThread">["getThread"];
   catalogHealth?: () => CodexCatalogHealth["state"];
   sourceStatus?: () => WebSourceStatusState;
@@ -43,8 +43,9 @@ export class CodexWebSource implements WebSource {
   private readonly nativeActivity = new Map<string, { activity: CodexActivity; readAt: number }>();
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
-  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn">>;
+  private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
   private readonly modelNames = new Map<string, string>();
+  private readonly confirmedModelUpdates = new Map<string, { model: string; updatedAt: number; snapshotUpdatedAt: number }>();
   private projectsReadable = false;
   private modelsReadable = false;
   private sessionsReadable = false;
@@ -82,7 +83,7 @@ export class CodexWebSource implements WebSource {
 
   /** Report independently proven discovery and configured execution capabilities. */
   capabilities(): WebSourceCapabilities {
-    return { desktopOpenEnabled: Boolean(this.deps.openDesktop), sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
+    return { desktopOpenEnabled: Boolean(this.deps.openDesktop), modelUpdateEnabled: Boolean(this.actions.updateThreadModel), sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
       historyReadable: this.historyReadable, completeUserHistoryReadable: false, finalReplyReadable: this.historyReadable,
       createEnabled: this.projectsReadable && this.deps.queueUsable, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
   }
@@ -113,17 +114,29 @@ export class CodexWebSource implements WebSource {
   /** Resolve field-wise metadata without exposing evidence provenance or private source paths to Web. */
   private sessionMeta(id: string, thread: CodexThread): WebSessionMeta | undefined {
     const owned = this.actions.ownedTurn?.(id) ?? null;
+    const hook = this.deps.sessionMetadata?.(id) ?? null;
     const resolved = resolveSessionMetadata({
       thread,
-      hook: this.deps.sessionMetadata?.(id) ?? null,
+      hook,
       action: owned && !owned.terminalObserved ? owned.metadata : null,
     });
-    if (!resolved) return undefined;
-    const displayName = resolved.model ? this.modelNames.get(resolved.model) : undefined;
+    const confirmed = this.confirmedModelUpdates.get(id);
+    let model = resolved?.model;
+    if (confirmed) {
+      const newerHookDisagrees = Boolean(hook?.model && hook.metadataObservedAt != null && hook.metadataObservedAt > confirmed.updatedAt && hook.model !== confirmed.model);
+      const newerThreadDisagrees = Boolean(thread.model && thread.model !== confirmed.model && thread.updatedAtMs > confirmed.snapshotUpdatedAt);
+      if (newerHookDisagrees || newerThreadDisagrees) this.confirmedModelUpdates.delete(id);
+      else model = confirmed.model;
+      const threadConverged = thread.model === confirmed.model;
+      const hookConverged = !hook?.model || hook.model === confirmed.model;
+      if (threadConverged && hookConverged) this.confirmedModelUpdates.delete(id);
+    }
+    if (!resolved && !model) return undefined;
+    const displayName = model ? this.modelNames.get(model) : undefined;
     return {
-      ...(resolved.model ? { model: { id: resolved.model, ...(displayName ? { displayName } : {}) } } : {}),
-      ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
-      ...(resolved.executionPolicy ? { executionPolicy: resolved.executionPolicy } : {}),
+      ...(model ? { model: { id: model, ...(displayName ? { displayName } : {}) } } : {}),
+      ...(resolved?.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
+      ...(resolved?.executionPolicy ? { executionPolicy: resolved.executionPolicy } : {}),
     };
   }
 
@@ -153,6 +166,21 @@ export class CodexWebSource implements WebSource {
       return activity?.state === "idle" && !this.ownsThread(id) && !this.deps.pendingApproval(id)
         && this.deps.activity?.(id)?.state !== "active";
     } catch { return false; }
+  }
+
+  /** Require exact idle evidence before mutating persistent per-thread settings. */
+  private async requireModelUpdateIdle(id: string): Promise<CodexThread> {
+    const thread = this.deps.threads.getThread?.(id) ?? this.deps.threads.listActive().find((item) => item.id === id) ?? null;
+    if (!thread) throw new Error("session_missing");
+    if (this.ownsThread(id) || this.deps.pendingApproval(id) || this.deps.activity?.(id)?.state === "active") throw new Error("model_update_busy");
+    if (!thread.rolloutPath) throw new Error("model_update_unverified");
+    let activity: CodexActivity | null = null;
+    try { activity = await readCodexActivity(thread.rolloutPath, this.deps.sessionRoots); }
+    catch { throw new Error("model_update_unverified"); }
+    if (activity?.state === "active") throw new Error("model_update_busy");
+    if (activity?.state !== "idle") throw new Error("model_update_unverified");
+    if (this.ownsThread(id) || this.deps.pendingApproval(id) || this.deps.activity?.(id)?.state === "active") throw new Error("model_update_busy");
+    return thread;
   }
 
   /** Open an existing active thread for manual or automatic recovery; never re-send input here. */
@@ -266,6 +294,22 @@ export class CodexWebSource implements WebSource {
     if (!thread?.rolloutPath) throw new Error("attachment_missing");
     const message = await readCodexMessage(thread.rolloutPath, this.deps.sessionRoots, messageId);
     return readCodexAttachment(id, messageId, index, { messages: message ? [message] : [], cursor: null, completeUserHistory: false });
+  }
+
+  /** Change the persistent model only for a verified idle Codex thread. */
+  async updateModel(id: string, modelId: string): Promise<{ status: "updated"; model: { id: string; displayName?: string } }> {
+    if (!this.actions.updateThreadModel) throw new Error("model_update_unavailable");
+    if (!modelId || modelId.length > 200) throw new Error("model_unavailable");
+    const models = await this.models();
+    const selected = models.find((model) => model.id === modelId);
+    if (!selected) throw new Error("model_unavailable");
+    const thread = await this.requireModelUpdateIdle(id);
+    const current = this.sessionMeta(id, thread)?.model?.id;
+    if (current === modelId) return { status: "updated", model: { id: modelId, displayName: selected.name } };
+    const result = await this.actions.updateThreadModel({ threadId: id, model: modelId });
+    if (result.status !== "updated" || result.model !== modelId) throw new Error("model_update_unconfirmed");
+    this.confirmedModelUpdates.set(id, { model: modelId, updatedAt: Date.now(), snapshotUpdatedAt: thread.updatedAtMs });
+    return { status: "updated", model: { id: modelId, displayName: selected.name } };
   }
 
   /** Interrupt an exact turn through a verified provider selected by the server-side router. */

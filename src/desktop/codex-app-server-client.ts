@@ -509,6 +509,38 @@ export class CodexAppServerClient {
     }
   }
 
+  /** Update an idle thread's persistent model through the official App Server settings contract. */
+  async updateThreadModel(params: { threadId: string; model: string }): Promise<{ status: "updated"; model: string }> {
+    if (this.ownedTurns.has(params.threadId)) throw new Error("model_update_busy");
+    if (!params.threadId || params.threadId.length > 200 || !params.model || params.model.length > 200) throw new Error("model_update_invalid");
+    const session = await this.openSession();
+    let resumed = false;
+    try {
+      await session.request("thread/resume", { threadId: params.threadId });
+      resumed = true;
+      await session.request("thread/settings/update", { threadId: params.threadId, model: params.model });
+      const read = await session.request<{ thread?: { id?: string; model?: string | null } }>("thread/read", {
+        threadId: params.threadId,
+        includeTurns: false,
+      });
+      if (read?.thread?.id !== params.threadId || read.thread.model !== params.model) throw new Error("model_update_unconfirmed");
+      return { status: "updated", model: params.model };
+    } catch (error) {
+      if (error instanceof Error && ["model_update_invalid", "model_update_unconfirmed"].includes(error.message)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already has an active writer|active writer/i.test(message)) throw new Error("model_update_busy", { cause: error });
+      if (/thread not found/i.test(message)) throw new Error("session_missing", { cause: error });
+      if (/model.*(?:not found|unavailable|unsupported|invalid)|invalid.*model/i.test(message)) throw new Error("model_unavailable", { cause: error });
+      throw new Error("model_update_unavailable", { cause: error });
+    } finally {
+      if (resumed) {
+        try { await session.request<ThreadUnsubscribeResponse>("thread/unsubscribe", { threadId: params.threadId }); }
+        catch { /* Process shutdown remains the final writer-release boundary. */ }
+      }
+      await this.releaseSession(session);
+    }
+  }
+
   async listProjects(): Promise<ProjectItem[]> {
     const session = await this.openSession();
     try {

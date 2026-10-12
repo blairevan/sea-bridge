@@ -134,6 +134,52 @@ test("owned-turn interrupt endpoint is exact, CSRF-protected, audited and race-s
   } finally { events.close(); db.close(); }
 });
 
+test("Codex model update endpoint is CSRF-protected, bounded, and audits no model identity", async () => {
+  const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
+  const auth = new WebAuth(store); const events = new WebEvents(store); const paired = await loginFixture(auth);
+  if (!paired) throw new Error("fixture failed");
+  let outcome: "updated" | "model_unavailable" | "model_update_busy" | "model_update_unverified" | "model_update_unconfirmed" | "model_update_unavailable" | "session_missing" = "updated";
+  const calls: Array<{ id: string; modelId: string }> = [];
+  const source: WebSource = {
+    capabilities: () => ({ sessionsReadable: true, projectsReadable: false, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: false, sendEnabled: false, modelUpdateEnabled: true, approvalTransport: "telegram" }),
+    async sessions() { return []; }, async projects() { return []; }, async models() { return []; },
+    async history() { return { messages: [], cursor: null, completeUserHistory: false }; },
+    async updateModel(id, modelId) {
+      calls.push({ id, modelId });
+      if (outcome === "updated") return { status: "updated", model: { id: modelId, displayName: "Selected" } };
+      throw new Error(outcome);
+    },
+    async create() { throw new Error("unused"); }, async send() { throw new Error("unused"); },
+  };
+  const handler = createWebHandler({ store, auth, events, sources: { codex: source }, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });
+  const path = "/api/sessions/codex/thread-model/model";
+  const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
+  const request = (body: unknown, authCookie = cookie, csrf = paired.csrfToken) => handler(new Request("http://127.0.0.1:7310" + path, {
+    method: "POST", headers: { Origin: "http://127.0.0.1:7310", "Content-Type": "application/json", ...(authCookie ? { Cookie: authCookie } : {}), ...(csrf ? { "X-Sea-Bridge-CSRF": csrf } : {}) }, body: JSON.stringify(body),
+  }), "127.0.0.1");
+  try {
+    expect((await request({ modelId: "secret-model" }, "", "")).status).toBe(401);
+    expect((await request({ modelId: "secret-model" }, cookie, "")).status).toBe(403);
+    expect((await request({})).status).toBe(400);
+    expect((await request({ modelId: "x".repeat(201) })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+
+    const accepted = await request({ modelId: "secret-model" });
+    expect(accepted.status).toBe(200); expect((await accepted.json()).data).toEqual({ status: "updated", model: { id: "secret-model", displayName: "Selected" } });
+    expect(calls.at(-1)).toEqual({ id: "thread-model", modelId: "secret-model" });
+
+    for (const [next, status] of [["model_unavailable", 409], ["model_update_busy", 409], ["model_update_unverified", 409], ["model_update_unconfirmed", 409], ["model_update_unavailable", 503], ["session_missing", 404]] as const) {
+      outcome = next;
+      const response = await request({ modelId: "secret-model" });
+      expect(response.status).toBe(status); expect((await response.json()).data.errorCode).toBe(next);
+    }
+    const audits = db.query("SELECT action,detail_json AS detail FROM web_audit WHERE action='codex_thread_model_update' ORDER BY created_at").all() as Array<{ action: string; detail: string }>;
+    expect(audits).toHaveLength(7);
+    expect(audits.every((item) => item.detail.includes("thread-model"))).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain("secret-model");
+  } finally { events.close(); db.close(); }
+});
+
 test("login body is streaming-bounded before materialization", async () => {
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db); const events = new WebEvents(store);
   const handler = createWebHandler({ store, auth: new WebAuth(store), events, sources: {}, pepper: randomBytes(32), redaction: new WebRedaction([]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: true, lastPollSuccessAt: null, pollFailed: false }) });

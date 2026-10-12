@@ -535,6 +535,24 @@ test("composer mirrors Codex: draft sends, empty active composer stops, and unsu
   expect(elements.get("composer-session-status")).toMatchObject({ textContent: "", hidden: true });
 });
 
+test("composer form follows the visible send/interrupt mode so a running draft cannot stop the turn", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const button = { dataset: { mode: "send" } };
+  const keys: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    run = (key) => keys.push(key);
+    ({ state, submitComposerForm })`, {
+    keys, document: { getElementById: (id: string) => id === "send-button" ? button : null },
+  }) as { state: any; submitComposerForm(event: { preventDefault(): void }): void };
+  ui.state.selected = { source: "codex", id: "thread", state: "running", turnControl: { activeTurnId: "turn-a", interrupt: { status: "available", scope: "exact_codex_turn" } } };
+  ui.submitComposerForm({ preventDefault() {} });
+  expect(keys).toEqual(["write"]);
+  button.dataset.mode = "interrupt";
+  ui.submitComposerForm({ preventDefault() {} });
+  expect(keys).toEqual(["write", "interrupt-turn-a"]);
+});
+
 test("composer metadata displays only server-proven fields and supports partial metadata", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
@@ -553,6 +571,7 @@ test("composer metadata displays only server-proven fields and supports partial 
   }) as { state: any; syncComposerControl(now?: number): void };
 
   ui.state.paused = false;
+  ui.state.caps.codex = { modelUpdateEnabled: true };
   ui.state.selected = {
     source: "codex", id: "thread", state: "idle", sendEnabled: true,
     sessionMeta: {
@@ -563,20 +582,64 @@ test("composer metadata displays only server-proven fields and supports partial 
   };
   ui.syncComposerControl(1000);
   expect(meta.hidden).toBe(false);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["GPT-5.6", "中", "Full Access", "免审批"]);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["GPT-5.6 ▾", "中", "Full Access", "免审批"]);
+  expect(meta.children[0]?.tag).toBe("button");
+  expect(meta.children[0]?.attributes.get("aria-haspopup")).toBe("dialog");
 
+  ui.state.selected.state = "running";
+  ui.syncComposerControl(1000);
+  expect(meta.children[0]?.tag).toBe("span");
+  expect(meta.children[0]?.textContent).toBe("GPT-5.6");
+  ui.state.selected.state = "idle";
   ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" } };
   ui.syncComposerControl(1000);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6 ▾"]);
 
   ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" }, reasoningEffort: "none" };
   ui.syncComposerControl(1000);
-  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6 ▾"]);
 
   ui.state.selected.sessionMeta = null;
   ui.syncComposerControl(1000);
   expect(meta.hidden).toBe(true);
   expect(meta.children).toEqual([]);
+});
+
+test("idle model picker loads the live catalog and applies an exact per-session model update", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const dialog = Object.assign(new ElementFixture("dialog"), { open: false, showModal() { this.open = true; }, close() { this.open = false; } });
+  const select = Object.assign(new ElementFixture("select"), { value: "", disabled: false });
+  const submit = Object.assign(new ElementFixture("button"), { disabled: false });
+  const hint = new ElementFixture("p");
+  const elements = new Map<string, any>([
+    ["session-model-dialog", dialog], ["session-model-select", select], ["session-model-submit", submit], ["session-model-hint", hint],
+  ]);
+  const calls: Array<{ path: string; method: string; body?: any }> = [];
+  const notices: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    api = async (path, method = "GET", body) => {
+      calls.push({ path, method, body });
+      if (path === "/api/sources/codex/models") return { items: [{ id: "old-model", name: "Old" }, { id: "new-model", name: "New" }] };
+      return { status: "updated", model: { id: body.modelId, displayName: "New" } };
+    };
+    syncComposerControl = () => {};
+    notice = (text) => notices.push(text);
+    ({ state, openSessionModelDialog, applySessionModel })`, {
+    calls, notices, encodeURIComponent,
+    document: { getElementById: (id: string) => elements.get(id) ?? null, createElement: (tag: string) => new ElementFixture(tag) },
+  }) as { state: any; openSessionModelDialog(): Promise<void>; applySessionModel(): Promise<void> };
+  ui.state.paused = false; ui.state.viewEpoch = 4; ui.state.caps.codex = { modelUpdateEnabled: true };
+  ui.state.selected = { source: "codex", id: "thread-model", state: "idle", sendEnabled: true, sessionMeta: { model: { id: "old-model", displayName: "Old" } } };
+  await ui.openSessionModelDialog();
+  expect(dialog.open).toBe(true); expect(select.disabled).toBe(false); expect(submit.disabled).toBe(false);
+  expect(select.children.map((item) => [item.textContent, (item as any).value])).toEqual([["Old", "old-model"], ["New", "new-model"]]);
+  expect(select.value).toBe("old-model");
+  select.value = "new-model";
+  await ui.applySessionModel();
+  expect(calls.at(-1)).toEqual({ path: "/api/sessions/codex/thread-model/model", method: "POST", body: { modelId: "new-model" } });
+  expect(ui.state.selected.sessionMeta.model).toEqual({ id: "new-model", displayName: "New" });
+  expect(dialog.open).toBe(false); expect(notices.at(-1)).toContain("New");
 });
 
 test("interrupt request keeps the click-time turn id even if polling advances to a new turn", async () => {

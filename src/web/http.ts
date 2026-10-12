@@ -175,6 +175,31 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         }
         return json({ status: "open_requested" });
       }
+      const modelUpdate = path.match(/^\/api\/sessions\/codex\/([^/]+)\/model$/);
+      if (modelUpdate && method === "POST") {
+        const id = text(decodeURIComponent(modelUpdate[1] ?? ""), 200) ?? "";
+        const body = await readAuthorizedJson(4096);
+        const modelId = text(body.modelId, 200) ?? "";
+        if (!modelId) throw new HttpError(400, "invalid_field");
+        const source = deps.sources.codex;
+        const audit = (outcome: string): void => {
+          deps.store.audit(device.id, "codex_thread_model_update", JSON.stringify({ threadId: id, outcome }), Date.now());
+        };
+        if (!source?.updateModel) { audit("model_update_unavailable"); throw new HttpError(503, "model_update_unavailable"); }
+        try {
+          const result = await source.updateModel(id, modelId);
+          audit(result.status);
+          return json(result);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "model_update_unavailable";
+          const stable = ["session_missing", "model_unavailable", "model_update_busy", "model_update_unverified", "model_update_unconfirmed", "model_update_unavailable"].includes(code)
+            ? code : "model_update_unavailable";
+          audit(stable);
+          const status = stable === "session_missing" ? 404
+            : stable === "model_update_unavailable" ? 503 : 409;
+          throw new HttpError(status, stable);
+        }
+      }
       const interrupt = path.match(/^\/api\/sessions\/codex\/([^/]+)\/interrupt$/);
       if (interrupt && method === "POST") {
         const id = text(decodeURIComponent(interrupt[1] ?? ""), 200) ?? "";

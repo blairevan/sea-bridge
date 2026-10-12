@@ -111,6 +111,47 @@ test("Codex session metadata uses real owned/live/thread facts and catalog only 
   });
 });
 
+test("idle Codex model update validates the catalog, requires idle evidence, and confirms the new session model", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = mkdtempSync(join(tmpdir(), "web-model-update-")); const file = join(root, "fixture.jsonl");
+  writeFileSync(file, [
+    JSON.stringify({ timestamp: "2026-10-12T05:00:00Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn" } }),
+    JSON.stringify({ timestamp: "2026-10-12T05:01:00Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn" } }),
+  ].join("\n") + "\n");
+  const thread = { id: "thread-model", title: "model", updatedAtMs: 1, rolloutPath: file, model: "old-model", reasoningEffort: null, sandboxPolicy: null, approvalMode: null };
+  const calls: Array<{ threadId: string; model: string }> = [];
+  let active = false;
+  const source = new CodexWebSource({
+    threads: { listActive: () => [thread], getThread: () => thread },
+    catalogs: {
+      async listProjects() { return []; },
+      async listModels() { return [{ id: "old-model", displayName: "Old" }, { id: "new-model", displayName: "New" }]; },
+    },
+    actions: {
+      async startThreadAndTurn(): Promise<never> { throw new Error("unused"); },
+      async updateThreadModel(input) { calls.push(input); return { status: "updated" as const, model: input.model }; },
+    },
+    queue: { async queue() { throw new Error("unused"); } },
+    sessionRoots: [root], pathExists: () => true, queueUsable: true, pendingApproval: () => false,
+    sessionMetadata: () => ({ model: "old-model", metadataObservedAt: 1 }),
+    activity: () => active ? { state: "active" as const, turnId: "new-turn" } : null,
+  });
+  try {
+    expect(source.capabilities().modelUpdateEnabled).toBe(true);
+    await expect(source.updateModel("thread-model", "missing-model")).rejects.toThrow("model_unavailable");
+    expect(calls).toHaveLength(0);
+    expect(await source.updateModel("thread-model", "new-model")).toEqual({ status: "updated", model: { id: "new-model", displayName: "New" } });
+    expect(calls).toEqual([{ threadId: "thread-model", model: "new-model" }]);
+    expect((await source.sessions())[0]?.sessionMeta?.model).toEqual({ id: "new-model", displayName: "New" });
+    thread.model = "new-model"; thread.updatedAtMs = Date.now() + 1;
+    expect((await source.sessions())[0]?.sessionMeta?.model).toEqual({ id: "new-model", displayName: "New" });
+    active = true;
+    await expect(source.updateModel("thread-model", "old-model")).rejects.toThrow("model_update_busy");
+    expect(calls).toHaveLength(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("owned history exposes exact interrupt control while non-owned running stays unavailable", async () => {
   const fixture = "tests/fixtures/codex-rollout-web/visible.jsonl";
   let owner: { turnId: string | null; state: "starting" | "running" | "interrupting"; terminalObserved: boolean; metadata: { model: string | null; sandbox: "danger-full-access" | null; approvalPolicy: "never" | null } } | null = {

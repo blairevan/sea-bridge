@@ -344,7 +344,8 @@ v1.1.8 保持不显示伪造 metadata；Phase D 已将它提升为正式能力�
 - `reasoningEffort`：只有 App Server thread snapshot 或其他已验证来源给出时展示；
 - `executionPolicy`：只展示已经证明语义等价的 `sandbox / approval` 字段；不能把 Hook `permission_mode` 直接翻译成“完全访问”；
 - 字段可以部分存在，例如只显示 `GPT-5.6`，不能因为 reasoning 缺失就隐藏 model，也不能补一个默认“中”；
-- 新建会话弹窗继续展示可选模型目录，但“可选模型”与“当前会话真实模型”是两条不同事实链。
+- 新建会话弹窗继续展示可选模型目录，但“可选模型”与“当前会话真实模型”是两条不同事实链；
+- **当前会话 model 不是只读装饰**：Codex idle 会话的 model badge 可打开实时 `model/list` 目录并切换该 thread 的后续模型；running / waiting approval / offline 状态不允许发起切换。
 
 推荐视觉保持弱提示，不抢占输入：
 
@@ -353,6 +354,21 @@ GPT-5.6 · 中 · Full Access
 ```
 
 其中每一段都必须来自独立真实字段；缺哪段就省略哪段。UI 不展示 provenance/source 等内部诊断信息，必要时只在诊断页提供。
+
+#### 6.3.1 当前会话模型切换
+
+模型切换必须是 **thread-scoped**，不能修改全局默认模型，也不能借 `codex queue` 猜测携带 model。实现契约：
+
+1. 仅 Codex、在线、服务端已确认 idle 的会话开放 model badge 入口；
+2. 选项必须来自实时 `model/list`，浏览器不能提交目录外 model；
+3. 后端启动临时 App Server，先 `thread/resume` 获取该 idle thread 的 writer；若返回 `already has an active writer`，以 `model_update_busy` fail closed；
+4. 在同一临时 session 调用实验性 `thread/settings/update { threadId, model }`；
+5. 随后用 `thread/read(includeTurns=false)` 回读，只有 `thread.model` 与请求完全一致才返回 `updated`；
+6. 无论成功失败都 `thread/unsubscribe`（已 resume 时）并关闭临时 session，不长期持有 writer；
+7. 审计只记录 thread identity + outcome，不记录 model id；
+8. 设置成功后 Web 使用这条 readback 已确认事实覆盖旧 catalog/Hook snapshot，直到持久 snapshot 与之收敛；若之后出现更新时间更晚且冲突的 Hook/thread 证据，则让更新证据接管。
+
+这与 external active-writer interrupt Gate 不矛盾：**running external thread 仍不能跨 App Server 接管；只有已证实 idle 且 `thread/resume` 实际成功的 thread 才允许修改持久 settings。**
 
 ### 6.4 主按钮状态机
 

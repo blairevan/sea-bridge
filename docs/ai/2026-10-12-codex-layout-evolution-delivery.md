@@ -48,8 +48,10 @@ CodexReadService
 5. `SessionMetadataResolver` 按字段合并 Action、fresh Hook 与 thread snapshot；
 6. model catalog 只补 display name，不参与 model 事实选择；
 7. `permission_mode` 未完成语义映射 Gate，因此不被翻译为 Web sandbox/approval；
-8. Composer 支持字段级展示，例如 `GPT-5.6 · 中 · Full Access · 免审批`，缺失字段独立省略，不补默认值；
-9. auth / redaction policy invalidation 时 `sessionMeta` 与 turn control 一并清理。
+8. Composer 支持字段级展示，例如 `GPT-5.6 · 中 · Full Access · 免审批`，缺失字段独立省略，不补默认值；`reasoningEffort=none` 按缺失处理，idle 状态文案不常驻；
+9. 当前 Codex idle 会话的 model badge 已改为可操作入口：实时加载 `model/list`，通过 `thread/resume -> thread/settings/update -> thread/read` 修改并确认该 thread 后续模型；active writer / running / approval / unknown-idle / offline 均 fail closed；
+10. 模型切换只作用于该 thread，不修改全局默认模型，不把 model 猜测性塞进 `codex queue`；审计不记录 model id；
+11. auth / redaction policy invalidation 时 `sessionMeta` 与 turn control 一并清理。
 
 兼容层：`CodexThreadStore` 支持 native `model / reasoning_effort / sandbox_policy / approval_mode` 的固定 allowlist schema probing，但当前生产 Web 数据链路不依赖 native SQLite。
 
@@ -143,7 +145,7 @@ provider RPC success 只表示 interrupt 请求已接纳。UI 保持 `正在中�
 
 ```bash
 bun test
-# 465 pass / 0 fail / 2118 expect() calls / 70 files
+# 472 pass / 0 fail / 2182 expect() calls / 70 files
 
 bun run typecheck
 # PASS
@@ -179,7 +181,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.10`。本次从 `1.1.9` 递增版本是必要的缓存失效措施：Sea-Bridge 对匹配版本号的 `app.js/app.css` 返回一年 `immutable` 缓存；暗色轮次抽屉修复若继续复用 `?v=1.1.9`，已访问过 v1.1.9 的 Safari 可以合法继续使用旧 CSS，即使服务器文件已经更新。v1.1.10 会让 HTML 改为引用新的 `app.css?v=1.1.10` / `app.js?v=1.1.10`。
+当前 `package.json` 为 `1.1.12`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 包含当前会话模型切换、模型选择 UI 以及 Composer send/interrupt 提交语义修复。发布后 HTML 应引用新的 `app.css?v=1.1.12` / `app.js?v=1.1.12`。
 
 本轮尚未：
 
