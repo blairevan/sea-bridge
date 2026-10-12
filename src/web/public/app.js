@@ -11,6 +11,7 @@ let creationProjects = { source: null, items: [] };
 let projectSearchTimer = null;
 let turnObserver = null;
 let turnIndicatorTimer = null;
+let messageScrollIntentUntil = 0;
 let turnRailButtons = [];
 let turnDialogButtons = [];
 let activeLoadedTurn = 0;
@@ -1191,17 +1192,20 @@ function syncTurnRail() {
   }
 }
 
-/** On phones reveal the loaded-turn indicator only while the conversation is moving. */
-function showTurnIndicatorOnScroll() {
+/** Mark real pointer/wheel scrolling so programmatic follow-latest never flashes the turn indicator. */
+function markMessageScrollIntent(now = Date.now()) { messageScrollIntentUntil = now + 500; }
+
+/** On phones reveal the loaded-turn indicator only during real user scrolling. */
+function showTurnIndicatorOnScroll(now = Date.now()) {
   const messages = el("messages");
   if (messages && messages.scrollHeight - messages.clientHeight - messages.scrollTop >= 100) state.followLatest = false;
   updateLatestShortcut();
   const width = typeof window !== "undefined" ? window.innerWidth : 1024;
-  if (width > 760 || turnRailButtons.length === 0) return;
+  if (width > 760 || turnRailButtons.length === 0 || now > messageScrollIntentUntil) return;
   const indicator = el("turn-indicator"); if (!indicator) return;
   indicator.hidden = false;
   if (turnIndicatorTimer !== null && typeof clearTimeout === "function") clearTimeout(turnIndicatorTimer);
-  if (typeof setTimeout === "function") turnIndicatorTimer = setTimeout(() => { indicator.hidden = true; turnIndicatorTimer = null; }, 2000);
+  if (typeof setTimeout === "function") turnIndicatorTimer = setTimeout(() => { indicator.hidden = true; turnIndicatorTimer = null; }, 6000);
 }
 
 /** Merge executed history with a replaceable native queue snapshot, preserving scroll and older pages. */
@@ -1968,7 +1972,9 @@ el("image-dialog").onclick = (event) => { if (event.target === el("image-dialog"
 el("image-dialog").onclose = () => { el("image-dialog-image").removeAttribute("src"); };
 
 el("floating-latest").onclick = () => run("history-jump", jumpToLatest);
-el("messages").addEventListener("scroll", showTurnIndicatorOnScroll, { passive: true });
+el("messages").addEventListener("touchmove", () => markMessageScrollIntent(), { passive: true });
+el("messages").addEventListener("wheel", () => markMessageScrollIntent(), { passive: true });
+el("messages").addEventListener("scroll", () => showTurnIndicatorOnScroll(), { passive: true });
 if (typeof ResizeObserver === "function") new ResizeObserver(updateLatestShortcut).observe(el("messages"));
 
 el("floating-earliest").onclick = jumpToEarliestLoaded;

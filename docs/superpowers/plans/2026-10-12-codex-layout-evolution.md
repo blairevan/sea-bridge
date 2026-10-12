@@ -256,8 +256,8 @@ git commit -m "feat(web): add safe visible quick-action fills"
 6. `replaceChildren()` 后旧 observer disconnect，新 DOM targets 重新 observe；
 7. 点击刻度定位对应 user message；
 8. 桌面 hover/focus 摘要有长度上限；
-9. 移动端显示 `当前第 X 轮 · 已加载 N 轮`，不得显示伪造全局 `X / Y`；
-10. 移动端停止滚动约 2 秒后隐藏；
+9. 移动端轮次提示默认隐藏，仅在用户真实滚动消息窗口时显示 `当前第 X 轮 · 已加载 N 轮`，不得显示伪造全局 `X / Y`；
+10. 轮次提示透明度与上下浮动箭头一致，并靠近输入框上边沿；程序化 follow-latest / 轮询滚动不得触发，停止滚动约 6 秒后隐藏；
 11. 抽屉只列已加载轮次，并保留“加载更早”入口；
 12. `prefers-reduced-motion` 时不强制 smooth scroll；
 13. keyboard focus 和 `aria-label` 可用；

@@ -1437,3 +1437,25 @@ test("latest shortcut keeps following live growth until the user scrolls away", 
   expect(ui.state.followLatest).toBe(true);
   expect(messages.scrollTop).toBe(messages.scrollHeight);
 });
+
+test("mobile turn indicator stays hidden for programmatic scroll and appears briefly for user scrolling", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  const indicator = get("turn-indicator"); indicator.hidden = true;
+  const delays: number[] = [];
+  const ui = runInNewContext(script.slice(0, end) + "\nturnRailButtons=[{}]; ({ markMessageScrollIntent, showTurnIndicatorOnScroll })", {
+    el: get,
+    window: { innerWidth: 390 },
+    document: { getElementById: get },
+    setTimeout: (_callback: () => void, delay: number) => { delays.push(delay); return 1; },
+    clearTimeout: () => {},
+  }) as any;
+  ui.showTurnIndicatorOnScroll(1000);
+  expect(indicator.hidden).toBe(true);
+  ui.markMessageScrollIntent(1000);
+  ui.showTurnIndicatorOnScroll(1100);
+  expect(indicator.hidden).toBe(false);
+  expect(delays.at(-1)).toBe(6000);
+});

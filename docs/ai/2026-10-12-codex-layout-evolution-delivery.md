@@ -185,7 +185,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.17`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题。发布后 HTML 应引用新的 `app.css?v=1.1.17` / `app.js?v=1.1.17`。
+当前 `package.json` 为 `1.1.19`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒。发布后 HTML 应引用新的 `app.css?v=1.1.19` / `app.js?v=1.1.19`。
 
 本轮尚未：
 
@@ -230,3 +230,12 @@ git diff --check
 - `.live-activity-stream` 首次渲染和持续更新时默认跟随尾部，因此展示最新 commentary/tool 条目；若用户手动在活动流内部上滚，则保留其阅读位置，点击“回到最新”会重新恢复尾部跟随；
 - history DOM 重建时同时失效 live activity DOM/signature cache，避免新卡片因为复用旧 signature 而出现空内容或旧内容；
 - commentary 仍仅指 Codex rollout 中明确标记为 `phase=commentary` 的阶段性可见文本，不读取或推断模型私有 chain-of-thought。
+
+## 9. 移动端轮次提示收口 (v1.1.18, 2026-10-12)
+
+针对 iPhone 上 `当前第 X 轮 · 已加载 N 轮` 在 follow-latest/轮询时反复闪现的问题：
+
+- 提示默认隐藏，仅在消息区出现真实 `touchmove` / `wheel` 滚动意图后的 scroll 事件中展示；程序化 follow-latest、轮询和 activity 自增长不再触发；
+- 提示透明度调整为 `.5`，与上下浮动箭头一致；
+- 位置从消息区右侧中部下移到消息区底部、靠近 Composer 输入框上边沿；
+- 用户停止滚动约 6 秒后自动隐藏，点击后仍可打开已加载轮次抽屉。
