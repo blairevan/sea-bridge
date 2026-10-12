@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级实施计划 (Implementation Plan)
 
+### v1.1.20 活动流调整
+
+已移除局部限高及内部吸底状态，增加相邻工具聚合，保留已读取 commentary，统一由外层消息区跟随。回归覆盖工具聚合、阶段性文本保留及用户查看旧消息时不抢滚动。真实工具进行中状态需后续明确数据契约，不以最后记录冒充。
+
 - **Goal**: Phase A-C 已完成 Codex 原生布局核心体验与 exact owned-turn 中断。后续以两个独立能力域继续收口：Phase D 建立可信 Session Metadata Contract；Phase E 建立 Universal Codex Interrupt provider 架构，使所有具备 exact active-turn 证据且存在已验证 provider 的 Codex running 会话都能统一停止。
 - **Architecture**: 保留 Sea-Bridge 现有 REST + SSE + 3 秒轮询数据链路。新增后端 `SessionMetadataResolver` 负责逐字段事实聚合，新增 `InterruptRouter` 负责 exact-turn provider 选择；前端只消费稳定的 metadata / capability 契约，不直接感知 AppServerSession、Desktop/CLI 来源或 native schema 差异。v1.1.8 的 owning-session interrupt 作为首个已验证 provider 保留，external provider 必须单独 Gate 后启用。
 - **Tech Stack**: TypeScript, Bun test, 原生 Web API (DOM, CSS, IntersectionObserver), Node/Bun child_process 与 JSON-RPC。

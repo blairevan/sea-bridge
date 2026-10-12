@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级设计文档
 
+### v1.1.20 活动流展示约定
+
+commentary 在已读取范围内全文展开；活动卡片不设局部限高或滚动条。相邻工具步骤聚合，尾部保留最新工具记录；不凭记录顺序推断工具正在执行。外层消息区统一滚动，尊重用户暂停跟随。后端不再额外裁掉前 25 条以外的活动，但保留文件读取边界。
+
 - **创建日期**: 2026-10-12
 - **最后修订**: 2026-10-12
 - **状态**: Phase A-D 已实现；Phase E provider/router 与 owned provider 已实现，目标 Mac external provider Contract Gate 已完成并判定 FAIL，Desktop / CLI / queue external active-writer interrupt 当前保持 fail-closed

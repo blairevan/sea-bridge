@@ -380,5 +380,5 @@ export async function readCodexActivity(path: string, roots: readonly string[]):
     }
   }
 
-  return { state: "active", turnId: latestTurnId, observedAt: latestObservedAt, ...(items.length > 0 ? { items: items.slice(-25) } : {}) };
+  return { state: "active", turnId: latestTurnId, observedAt: latestObservedAt, ...(items.length > 0 ? { items } : {}) };
 }

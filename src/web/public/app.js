@@ -22,7 +22,6 @@ let liveActivityStale = null;
 let liveActivityDivider = null;
 let liveActivityStream = null;
 let liveActivityStreamSig = "";
-let liveActivityFollowingTail = true;
 let composerModelControl = null;
 let sessionModelUpdate = null;
 let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
@@ -521,7 +520,7 @@ function clearSensitive() {
   el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
   el("messages").replaceChildren(historyTools ?? el("history-tools"));
   liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-  liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityFollowingTail = true;
+  liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = "";
   clearTurnNavigation();
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
@@ -1047,8 +1046,7 @@ function scrollMessagesToLatest(container) {
 /** Refresh the latest page when connected, then position the current conversation at its end. */
 async function jumpToLatest() {
   const session = state.selected; if (!session) return;
-  state.followLatest = true; liveActivityFollowingTail = true;
-  if (liveActivityStream) liveActivityStream.scrollTop = liveActivityStream.scrollHeight;
+  state.followLatest = true;
   scrollMessagesToLatest(el("messages"));
   if (!state.paused) await loadHistory(false);
   if (state.selected?.id !== session.id || state.selected?.source !== session.source) return;
@@ -1061,6 +1059,58 @@ function jumpToEarliestLoaded() {
   container.querySelector?.(".message")?.scrollIntoView?.({ block: "start", inline: "nearest" });
   updateLatestShortcut();
 }
+/** Summarize a streak of completed tool actions into a single compact badge. */
+function summarizeToolStreak(tools) {
+  if (tools.length === 0) return null;
+  if (tools.length === 1) return tools[0];
+  let hasRead = false, hasSearch = false, hasCmd = false;
+  for (const t of tools) {
+    const txt = t.text || "";
+    if (t.icon === "📖" || txt.includes("读取")) hasRead = true;
+    else if (t.icon === "🔍" || txt.includes("搜索")) hasSearch = true;
+    else hasCmd = true;
+  }
+  let icon = "🛠";
+  let text = "已运行了命令";
+  if (hasRead && hasSearch && hasCmd) { icon = "📖"; text = "已读取、搜索文件并运行命令"; }
+  else if (hasRead && hasCmd) { icon = "📖"; text = "已读取文件运行了命令"; }
+  else if (hasRead && hasSearch) { icon = "📖"; text = "已读取和搜索文件"; }
+  else if (hasSearch && hasCmd) { icon = "🔍"; text = "已搜索文件运行了命令"; }
+  else if (hasRead) { icon = "📖"; text = "已读取文件"; }
+  else if (hasSearch) { icon = "🔍"; text = "已搜索文件"; }
+  return { kind: "tool", icon, text };
+}
+
+/** Aggregate adjacent tool steps while preserving complete commentary text blocks. */
+function aggregateActivityItems(items) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const result = [];
+  let i = 0;
+  while (i < items.length) {
+    const item = items[i];
+    if (item.kind === "commentary") {
+      result.push(item);
+      i++;
+    } else {
+      const toolStreak = [];
+      while (i < items.length && items[i].kind !== "commentary") {
+        toolStreak.push(items[i]);
+        i++;
+      }
+      const isEnd = i >= items.length;
+      if (isEnd && toolStreak.length > 1) {
+        const earlier = summarizeToolStreak(toolStreak.slice(0, -1));
+        if (earlier) result.push(earlier);
+        result.push(toolStreak[toolStreak.length - 1]);
+      } else {
+        const summary = summarizeToolStreak(toolStreak);
+        if (summary) result.push(summary);
+      }
+    }
+  }
+  return result;
+}
+
 /** Describe native pending input age without claiming why the source has not consumed it. */
 function queueStatusText(message, now = Date.now()) {
   if (message.deliveryState === "queue_unknown") return "排队状态待确认";
@@ -1074,7 +1124,7 @@ function syncLiveActivityCard(now = Date.now()) {
   const presentation = liveActivityPresentation(state.selected, state.paused, now);
   if (!presentation.visible) {
     liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityFollowingTail = true; return;
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; return;
   }
   if (!liveActivityCard) {
     liveActivityCard = node("section", "", "live-activity-card"); liveActivityCard.setAttribute?.("aria-label", "当前任务状态");
@@ -1084,10 +1134,6 @@ function syncLiveActivityCard(now = Date.now()) {
     liveActivityDetail = node("small", "", "live-activity-detail"); liveActivityDetail.setAttribute?.("aria-hidden", "true");
     liveActivityDivider = node("div", "", "live-activity-divider");
     liveActivityStream = node("div", "", "live-activity-stream");
-    liveActivityStream.onscroll = () => {
-      const distance = liveActivityStream.scrollHeight - liveActivityStream.clientHeight - liveActivityStream.scrollTop;
-      liveActivityFollowingTail = distance < 24;
-    };
     liveActivityStale = node("small", "状态来自断线前最后一次已验证结果", "live-activity-stale");
     liveActivityCard.append(heading, liveActivityDetail, liveActivityDivider, liveActivityStream, liveActivityStale); container.append(liveActivityCard);
   } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
@@ -1096,13 +1142,13 @@ function syncLiveActivityCard(now = Date.now()) {
   if (liveActivityStatus && liveActivityStatus.textContent !== presentation.status) liveActivityStatus.textContent = presentation.status;
   if (liveActivityDetail) { liveActivityDetail.textContent = presentation.detail; liveActivityDetail.hidden = !presentation.detail; }
   if (liveActivityStale) liveActivityStale.hidden = !state.paused;
-  const items = Array.isArray(state.selected?.activeTurnItems) ? state.selected.activeTurnItems : [];
+  const rawItems = Array.isArray(state.selected?.activeTurnItems) ? state.selected.activeTurnItems : [];
+  const items = aggregateActivityItems(rawItems);
   if (liveActivityDivider) liveActivityDivider.hidden = items.length === 0;
   if (liveActivityStream) {
     liveActivityStream.hidden = items.length === 0;
     const sig = JSON.stringify(items);
     if (sig !== liveActivityStreamSig) {
-      const followTail = liveActivityFollowingTail || liveActivityStreamSig === "";
       liveActivityStreamSig = sig;
       liveActivityStream.replaceChildren();
       for (const item of items) {
@@ -1117,9 +1163,8 @@ function syncLiveActivityCard(now = Date.now()) {
           liveActivityStream.append(row);
         }
       }
-      if (followTail) {
-        liveActivityFollowingTail = true;
-        liveActivityStream.scrollTop = liveActivityStream.scrollHeight;
+      if (state.followLatest) {
+        scrollMessagesToLatest(container);
       }
     }
   }

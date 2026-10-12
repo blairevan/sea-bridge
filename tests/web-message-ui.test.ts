@@ -1373,12 +1373,13 @@ test("overview snapshots require fresh device/policy verification and expire saf
   blocked = true; expect(() => ui.restoreOverviewCache()).not.toThrow(); expect(() => ui.saveOverviewCache({}, { items: [] }, null)).not.toThrow();
 });
 
-test("syncLiveActivityCard renders live commentary and tool items in active stream", async () => {
+test("syncLiveActivityCard renders live commentary and collapses consecutive tool steps", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
   const nodes = new Map<string, ElementFixture>();
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
   const messages = get("messages");
+  messages.scrollHeight = 1000;
   const ui = runInNewContext(script.slice(0, end) + "\n({ syncLiveActivityCard, state })", {
     el: get,
     document: {
@@ -1389,6 +1390,7 @@ test("syncLiveActivityCard renders live commentary and tool items in active stre
   }) as any;
 
   ui.state.paused = false;
+  ui.state.followLatest = true;
   ui.state.selected = {
     state: "running",
     startedAt: 1000,
@@ -1408,13 +1410,31 @@ test("syncLiveActivityCard renders live commentary and tool items in active stre
   expect(stream.children[0]!.children[0]!.textContent).toBe("正在审查代码边界");
   expect(stream.children[1]!.className).toBe("live-activity-item tool");
   expect(stream.children[1]!.children[1]!.textContent).toBe("已读取文件 app.ts");
-  expect(stream.scrollTop).toBe(stream.scrollHeight);
+  expect(messages.scrollTop).toBe(messages.scrollHeight);
 
-  stream.scrollTop = 0; stream.clientHeight = 100; stream.scrollHeight = 1000; (stream as any).onscroll?.();
-  ui.state.selected.activeTurnItems.push({ kind: "commentary", text: "这是最新阶段性说明" });
+  ui.state.selected.activeTurnItems = [
+    { kind: "commentary", text: "第一阶段分析" },
+    { kind: "tool", icon: "📖", text: "已读取 a.ts" },
+    { kind: "tool", icon: "📖", text: "已读取 b.ts" },
+    { kind: "tool", icon: "🛠", text: "运行了命令 test" },
+    { kind: "commentary", text: "这是第二阶段说明" },
+    { kind: "tool", icon: "📖", text: "已读取 c.ts" },
+    { kind: "tool", icon: "📖", text: "已读取 d.ts" },
+    { kind: "tool", icon: "🔍", text: "正在搜索 target" },
+  ];
   ui.syncLiveActivityCard(67000);
-  expect(stream.children.at(-1)?.children[0]?.textContent).toBe("这是最新阶段性说明");
-  expect(stream.scrollTop).toBe(0);
+  expect(stream.children).toHaveLength(5);
+  expect(stream.children[0]!.children[0]!.textContent).toBe("第一阶段分析");
+  expect(stream.children[1]!.children[1]!.textContent).toBe("已读取文件运行了命令");
+  expect(stream.children[2]!.children[0]!.textContent).toBe("这是第二阶段说明");
+  expect(stream.children[3]!.children[1]!.textContent).toBe("已读取文件");
+  expect(stream.children[4]!.children[1]!.textContent).toBe("正在搜索 target");
+  ui.state.followLatest = false;
+  messages.scrollTop = 200;
+  ui.state.selected.activeTurnItems.push({ kind: "commentary", text: "新的完整说明" });
+  ui.syncLiveActivityCard(68000);
+  expect(messages.scrollTop).toBe(200);
+  expect(stream.children.at(-1)?.children[0]?.textContent).toBe("新的完整说明");
 });
 
 test("latest shortcut keeps following live growth until the user scrolls away", async () => {
