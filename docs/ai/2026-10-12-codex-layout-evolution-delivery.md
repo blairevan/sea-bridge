@@ -1,5 +1,12 @@
 # Codex 布局演进 Phase A-E 实施与验证记录
 
+## v1.1.21 Codex 终态错误卡片发布
+
+- rollout 的 canonical `error.message` 作为独立 error role 消息按原始顺序显示；仅允许 task_complete、turn_complete、turn_aborted，文本最多 4000 字符，不透出结构化内部字段。
+- Web 使用独立橙色错误卡片，无助手元信息，不进入助手 Markdown、快捷操作或最终答复判定。
+- 版本递增至 v1.1.21，更新 immutable 静态资源键。
+- 发布状态与实机探活结果将在部署后补记。
+
 ## v1.1.20 活动流展示调整
 
 阶段性 commentary 在已读取范围内完整展开，移除 280px 限高和内部滚动。连续工具项聚合为紧凑摘要，末尾保留最新工具记录；最新记录不代表已验证的进行中状态。由消息区统一跟随最新，用户查看旧内容时不抢滚动。后端移除末尾 25 条截断，仍保留原有有界文件读取契约。
@@ -194,7 +201,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.19`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒。发布后 HTML 应引用新的 `app.css?v=1.1.19` / `app.js?v=1.1.19`。
+当前 `package.json` 为 `1.1.20`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题，v1.1.18 收口移动端轮次提示：默认隐藏，仅真实用户滚动时显示，并与上下箭头使用相同透明度；v1.1.19 将滚动停止后的提示保留时间从约 1.2 秒延长到 6 秒；v1.1.20 将 Codex canonical terminal error 对齐到消息流中的独立橙色错误卡片。发布后 HTML 应引用新的 `app.css?v=1.1.20` / `app.js?v=1.1.20`。
 
 本轮尚未：
 
@@ -248,3 +255,13 @@ git diff --check
 - 提示透明度调整为 `.5`，与上下浮动箭头一致；
 - 位置从消息区右侧中部下移到消息区底部、靠近 Composer 输入框上边沿；
 - 用户停止滚动约 6 秒后自动隐藏，点击后仍可打开已加载轮次抽屉。
+
+## 10. Codex 终态错误消息对齐 (v1.1.20, 2026-10-12)
+
+针对 Codex 原生会显示 `exceeded retry limit, last status: 429 Too Many Requests` 等终态失败，而 Sea-Bridge 只剩用户输入、错误被 transcript parser 丢弃的问题：
+
+- `readCodexTranscript()` 识别 canonical `task_complete / turn_complete / turn_aborted` 中的 `error.message`，按 rollout 原始 offset 插入会话消息流；
+- 错误作为独立 `role=error`，不会伪装成 assistant final reply，也不会触发快捷操作胶囊或“收到新的最终回复”逻辑；
+- 只暴露最多 4000 字符的 `error.message`，不透传 `codex_error_info / additional_details` 等结构化错误字段，HTTP 层仍经过现有 redaction；
+- 深色主题使用接近 Codex 原生的暗底橙色文字/边框，浅色主题使用浅橙背景与深橙文字；错误块不显示“助手”元信息；
+- 回归覆盖 429 文本时序、结构化字段不泄漏、独立错误 DOM 与深浅主题样式。

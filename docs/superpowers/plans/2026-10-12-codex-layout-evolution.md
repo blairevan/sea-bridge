@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级实施计划 (Implementation Plan)
 
+### v1.1.21 终态错误卡片
+
+终态事件的 canonical 错误文本独立渲染；覆盖允许的三类终态、敏感结构字段隔离、消息时序及橙色明暗主题样式。
+
 ### v1.1.20 活动流调整
 
 已移除局部限高及内部吸底状态，增加相邻工具聚合，保留已读取 commentary，统一由外层消息区跟随。回归覆盖工具聚合、阶段性文本保留及用户查看旧消息时不抢滚动。真实工具进行中状态需后续明确数据契约，不以最后记录冒充。
@@ -173,6 +177,13 @@ v1.1.17 回归额外要求：
 2. 点击 `↓` 后 follow-latest 持续跨轮询生效，直到用户主动上滚离开底部；
 3. live activity 内部流默认滚到最新条目；用户主动上滚后保留阅读位置；
 4. history DOM 重建后 activity DOM/signature 同步失效并重建，最新 commentary 不得因旧 signature 消失。
+
+v1.1.20 终态错误对齐额外要求：
+
+1. `task_complete / turn_complete / turn_aborted` 的 canonical `error.message` 按 rollout 原始时序进入 transcript；
+2. 只投影 bounded `error.message`，`codex_error_info / additional_details` 等结构化字段不得进入 Web；
+3. 错误使用独立 `role=error`，不能被识别为 assistant final reply、不能触发快捷操作胶囊；
+4. 深浅主题均使用明显的橙色错误卡片，视觉语义与 Codex 原生失败块一致。
 
 ```bash
 bun test tests/web-message-ui.test.ts tests/web-ui-races.test.ts

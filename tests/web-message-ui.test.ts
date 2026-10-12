@@ -246,6 +246,20 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   expect(flatten(root).some((node) => node.textContent.includes("排队"))).toBe(false);
 });
 
+test("terminal source errors render as dedicated inline cards rather than assistant replies", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const ui = runInNewContext(script.slice(0, end) + "\nrenderErrorMessage", {
+    document: {
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as (message: { role: "error"; text: string }) => ElementFixture;
+  const error = ui({ role: "error", text: "exceeded retry limit, last status: 429 Too Many Requests" });
+  expect(error.className).toBe("turn-error-text");
+  expect(error.textContent).toBe("exceeded retry limit, last status: 429 Too Many Requests");
+});
+
 test("Markdown renders structure without HTML execution and loads images only on click", async () => {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');

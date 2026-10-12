@@ -26,8 +26,8 @@ export interface WebSession {
   sessionMeta?: WebSessionMeta;
   state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
 }
-/** Executed conversation and explicitly marked native queue inputs share safe message fields. */
-export interface WebMessage { id: string; role: "user" | "assistant"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; }
+/** Executed conversation, terminal source errors, and explicitly marked native queue inputs share safe display fields. */
+export interface WebMessage { id: string; role: "user" | "assistant" | "error"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; }
 /** Bounded history and an independent current queue snapshot with an opaque history cursor. */
 export interface WebTurnControl {
   activeTurnId: string | null;

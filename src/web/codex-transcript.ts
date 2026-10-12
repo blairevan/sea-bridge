@@ -134,12 +134,28 @@ function userMessageText(text: string): string {
   return consumed ? text.slice(skipWhitespace(text, cursor)) : text;
 }
 
-/** Parse only fixture-backed response-item user and final-answer records. */
+/** Project one terminal turn error without exposing structured error details or arbitrary payload fields. */
+function terminalErrorMessage(payload: Record<string, unknown>): string | null {
+  if (!["task_complete", "turn_complete", "turn_aborted"].includes(String(payload.type))) return null;
+  const error = payload.error;
+  const message = error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string"
+    ? (error as Record<string, unknown>).message as string
+    : typeof error === "string" ? error : "";
+  const text = message.trim();
+  return text ? text.slice(0, 4000) : null;
+}
+
+/** Parse only user/final assistant text plus the canonical terminal turn error. */
 function visibleMessage(line: string, offset: number, includeImages = false): WebMessage | null {
   let record: unknown;
   try { record = JSON.parse(line); } catch { return null; }
   if (!record || typeof record !== "object") return null;
   const row = record as Record<string, unknown>;
+  const parsedTime = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+  if (row.type === "event_msg" && row.payload && typeof row.payload === "object") {
+    const text = terminalErrorMessage(row.payload as Record<string, unknown>);
+    return text ? { id: `rollout-${offset}`, role: "error", text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null } : null;
+  }
   if (row.type !== "response_item" || !row.payload || typeof row.payload !== "object") return null;
   const payload = row.payload as Record<string, unknown>;
   if (payload.type !== "message" || !Array.isArray(payload.content)) return null;
@@ -152,7 +168,6 @@ function visibleMessage(line: string, offset: number, includeImages = false): We
     return item.type === kind && typeof item.text === "string" ? [item.text] : [];
   }).join("");
   const text = role === "user" ? userMessageText(rawText) : rawText;
-  const parsedTime = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
   if (!text) return null;
   const images = includeImages && role === "user" ? payload.content.flatMap((part: unknown) => {
     if (!part || typeof part !== "object") return [];

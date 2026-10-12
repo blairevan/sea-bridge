@@ -143,6 +143,24 @@ test("complete final JSON record is visible before a trailing newline is written
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("terminal Codex turn errors stay in transcript order without exposing structured error details", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-turn-error-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    writeFileSync(file, [
+      { timestamp: "2026-10-12T18:39:08Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "可以" }] } },
+      { timestamp: "2026-10-12T18:39:10Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn-failed", error: { message: "exceeded retry limit, last status: 429 Too Many Requests", codex_error_info: { secret: "must-not-leak" }, additional_details: "private" } } },
+    ].map((row) => JSON.stringify(row)).join("\n"));
+    const transcript = await readCodexTranscript(file, [root], null, 30);
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({ role: "user", text: "可以" }),
+      expect.objectContaining({ role: "error", text: "exceeded retry limit, last status: 429 Too Many Requests" }),
+    ]);
+    expect(JSON.stringify(transcript.messages)).not.toContain("must-not-leak");
+    expect(JSON.stringify(transcript.messages)).not.toContain("private");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("rollout lifecycle evidence follows the last complete event and remains confined", async () => {
   const { readCodexActivity } = await import("../src/web/codex-transcript.ts");
   const root = mkdtempSync(join(tmpdir(), "web-activity-"));

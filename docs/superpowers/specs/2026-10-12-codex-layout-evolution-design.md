@@ -1,5 +1,9 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级设计文档
 
+### v1.1.21 终态错误展示
+
+仅从 task_complete / turn_complete / turn_aborted 的 canonical error.message 投影独立错误消息，长度最多 4000 字符；其他结构化错误字段不出现在 Web。该消息保留 rollout 时序，不作为 assistant final 或快捷操作输入。
+
 ### v1.1.20 活动流展示约定
 
 commentary 在已读取范围内全文展开；活动卡片不设局部限高或滚动条。相邻工具步骤聚合，尾部保留最新工具记录；不凭记录顺序推断工具正在执行。外层消息区统一滚动，尊重用户暂停跟随。后端不再额外裁掉前 25 条以外的活动，但保留文件读取边界。
@@ -268,7 +272,10 @@ v1.1.16 已在上述边界内增加受限 live activity projection：只读取�
 
 - `completed / failed / interrupted` 由来源证据决定；
 - 活动卡片淡出或变为最终状态后移除；
-- 不写入聊天历史；
+- 普通 live activity 不写入聊天历史；
+- 若 Codex canonical terminal event（`task_complete` / `turn_complete` / `turn_aborted`）明确携带 `error.message`，则将该**终态错误文本**作为独立 transcript item 按原始时序展示，不能伪装成 assistant final reply；
+- 错误投影只允许 bounded `error.message`，不得透传 `codex_error_info`、`additional_details` 或其他结构化错误 payload；HTTP 层继续执行现有 permanent/optional redaction；
+- UI 使用与 Codex 原生接近的橙色错误卡片，不增加“助手”标签，不参与快捷操作胶囊或“收到最终回复”判定；
 - 不因为独立 ReadService 短暂投影无证据 `interrupted` 就提前显示“已中断”，继续遵守现有 provisional-interrupted 规则。
 
 ---

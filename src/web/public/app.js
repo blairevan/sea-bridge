@@ -379,6 +379,11 @@ function renderAssistantMessage(message) {
   return renderActionPills(renderMarkdown(visible), visible);
 }
 
+/** Render a canonical terminal source error as text, not as an assistant reply. */
+function renderErrorMessage(message) {
+  return node("div", message.text, "turn-error-text");
+}
+
 /** Resolve a fixed application element. */
 function el(id) { return document.getElementById(id); }
 /** Create text-only nodes for source-derived content. */
@@ -1289,12 +1294,16 @@ async function loadHistory(older) {
       let view = messageViews.get(key);
       if (!view || view.signature !== signature) {
         const item = node("div", "", "message " + message.role);
-        const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
-        if (message.deliveryState) item.append(node("small", message.queueStatusText, "message-queue-status"));
-        const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · ${formatTurnDuration(message.durationMs)}` : "";
-        const meta = node("div", "", "message-meta");
-        meta.append(node("small", `${message.role === "user" ? "用户" : "助手"} · ${time}${duration}`), messageCopyButton(message));
-        item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderAssistantMessage(message));
+        if (message.role === "error") {
+          item.append(renderErrorMessage(message));
+        } else {
+          const time = Number.isFinite(message.createdAt) ? new Date(message.createdAt).toLocaleString("zh-CN") : "时间未知";
+          if (message.deliveryState) item.append(node("small", message.queueStatusText, "message-queue-status"));
+          const duration = Number.isFinite(message.durationMs) && message.durationMs >= 0 ? ` · ${formatTurnDuration(message.durationMs)}` : "";
+          const meta = node("div", "", "message-meta");
+          meta.append(node("small", `${message.role === "user" ? "用户" : "助手"} · ${time}${duration}`), messageCopyButton(message));
+          item.append(meta, message.role === "user" ? renderUserMessage(message, session) : renderAssistantMessage(message));
+        }
         view = { signature, item }; messageViews.set(key, view);
       }
       items.push(view.item);
