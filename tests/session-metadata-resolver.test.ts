@@ -18,6 +18,10 @@ test("session metadata resolves fields independently without inventing defaults"
   expect(resolveSessionMetadata({
     thread: { model: "gpt-5.6", reasoningEffort: null, sandboxPolicy: null, approvalMode: null },
   })).toEqual({ model: "gpt-5.6" });
+
+  expect(resolveSessionMetadata({
+    thread: { model: "gpt-5.6", reasoningEffort: "none", sandboxPolicy: null, approvalMode: null },
+  })).toEqual({ model: "gpt-5.6" });
 });
 
 test("fresh hook model overrides the snapshot while stale hook evidence does not", () => {

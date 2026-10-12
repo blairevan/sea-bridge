@@ -1425,9 +1425,10 @@ function composerMetadataLabels(meta) {
   const model = meta.model?.displayName || meta.model?.id;
   if (model) labels.push({ text: String(model), className: "composer-meta-badge" });
   if (meta.reasoningEffort) {
-    const effort = String(meta.reasoningEffort);
+    const effort = String(meta.reasoningEffort).trim();
+    const normalizedEffort = effort.toLowerCase();
     const reasoningLabels = { minimal: "最小", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最大" };
-    labels.push({ text: reasoningLabels[effort.toLowerCase()] || effort, className: "composer-meta-badge" });
+    if (effort && normalizedEffort !== "none") labels.push({ text: reasoningLabels[normalizedEffort] || effort, className: "composer-meta-badge" });
   }
   const sandboxLabels = { danger_full_access: "Full Access", workspace_write: "Workspace", read_only: "Read Only" };
   const sandbox = sandboxLabels[meta.executionPolicy?.sandbox];
@@ -1458,9 +1459,12 @@ function syncComposerControl(now = Date.now()) {
   syncComposerMetadata(session);
   if (status) {
     const activity = liveActivityPresentation(session, state.paused, now);
-    status.textContent = !session ? "选择会话后可继续"
-      : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
-        : labels[session.state] ?? "状态未知";
+    const hideIdle = Boolean(session && session.state === "idle" && !activity.visible);
+    status.hidden = hideIdle;
+    status.textContent = hideIdle ? ""
+      : !session ? "选择会话后可继续"
+        : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
+          : labels[session.state] ?? "状态未知";
   }
   const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
   const hasDraft = Boolean(String(prompt?.value ?? "").trim());

@@ -63,7 +63,8 @@ export function resolveSessionMetadata(input: {
 }): ResolvedSessionMetadata | null {
   const result: ResolvedSessionMetadata = {};
   const nativeModel = bounded(input.thread?.model);
-  const nativeReasoning = bounded(input.thread?.reasoningEffort, 80);
+  const rawNativeReasoning = bounded(input.thread?.reasoningEffort, 80);
+  const nativeReasoning = rawNativeReasoning?.toLowerCase() === "none" ? null : rawNativeReasoning;
   const hookModel = bounded(input.hook?.model);
   const hookFresh = hookModel && input.hook
     && (input.hookFreshAfter == null || (input.hook.metadataObservedAt ?? 0) >= input.hookFreshAfter);

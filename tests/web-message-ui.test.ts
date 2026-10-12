@@ -476,7 +476,7 @@ test("composer mirrors Codex: draft sends, empty active composer stops, and unsu
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   const elements = new Map<string, any>([
-    ["composer-session-status", { textContent: "" }],
+    ["composer-session-status", { textContent: "", hidden: false }],
     ["send-button", { textContent: "", disabled: false, type: "submit", title: "", dataset: {} }],
     ["prompt", { value: "" }],
   ]);
@@ -494,6 +494,7 @@ test("composer mirrors Codex: draft sends, empty active composer stops, and unsu
   } };
   ui.syncComposerControl(1000);
   expect(ui.exactInterruptTarget()).toBe("turn-a");
+  expect(elements.get("composer-session-status")).toMatchObject({ hidden: false });
   expect(button).toMatchObject({ textContent: "⏹ 中断", disabled: false, type: "button", title: "中断当前任务", dataset: { mode: "interrupt" } });
 
   prompt.value = "继续处理";
@@ -527,6 +528,11 @@ test("composer mirrors Codex: draft sends, empty active composer stops, and unsu
   ui.state.selected.turnControl = { activeTurnId: "turn-a", interrupt: { status: "interrupting", scope: "exact_codex_turn" } };
   ui.syncComposerControl(1000);
   expect(button).toMatchObject({ textContent: "正在中断…", disabled: true, type: "button", dataset: { mode: "interrupt" } });
+
+  prompt.value = "";
+  ui.state.selected = { source: "codex", id: "thread", state: "idle", sendEnabled: true, turnControl: null };
+  ui.syncComposerControl(1000);
+  expect(elements.get("composer-session-status")).toMatchObject({ textContent: "", hidden: true });
 });
 
 test("composer metadata displays only server-proven fields and supports partial metadata", async () => {
@@ -535,7 +541,7 @@ test("composer metadata displays only server-proven fields and supports partial 
   const meta = new ElementFixture("div");
   const elements = new Map<string, any>([
     ["composer-session-meta", meta],
-    ["composer-session-status", { textContent: "" }],
+    ["composer-session-status", { textContent: "", hidden: false }],
     ["send-button", { textContent: "", disabled: false, type: "submit", dataset: {} }],
     ["prompt", { value: "" }],
   ]);
@@ -560,6 +566,10 @@ test("composer metadata displays only server-proven fields and supports partial 
   expect(meta.children.map((item) => item.textContent)).toEqual(["GPT-5.6", "中", "Full Access", "免审批"]);
 
   ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" } };
+  ui.syncComposerControl(1000);
+  expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
+
+  ui.state.selected.sessionMeta = { model: { id: "gpt-5.6" }, reasoningEffort: "none" };
   ui.syncComposerControl(1000);
   expect(meta.children.map((item) => item.textContent)).toEqual(["gpt-5.6"]);
 
