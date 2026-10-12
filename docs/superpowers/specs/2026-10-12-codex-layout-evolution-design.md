@@ -429,7 +429,8 @@ Composer 使用与 Codex 一致的**单主按钮**，不并排放置 Send / Stop
 - 刻度必须可键盘 focus；
 - 使用 `aria-label="跳到已加载第 N 轮：摘要"`；
 - `prefers-reduced-motion: reduce` 时关闭平滑滚动与不必要动画；
-- 不仅依赖颜色表达当前轮次。
+- 不仅依赖颜色表达当前轮次；
+- 深色主题下移动端轮次抽屉必须显式覆盖全局 primary button 配色：普通轮次使用深色 surface + 高对比正文/摘要，active/hover 使用独立深色层级，不能出现浅色按钮底 + 灰字的低对比组合。
 
 ---
 

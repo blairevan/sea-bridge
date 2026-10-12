@@ -10,6 +10,7 @@
 ### Phase A-C（v1.1.8 已有）
 
 - Live Activity Card、可见文本 Quick Action Pills、Loaded Turn Rail、Composer Hub。
+- 修复移动端深色主题“已加载轮次”抽屉的低对比问题：轮次项不再继承全局浅绿 primary button 背景，普通/active/hover/focus 均使用深色 surface 与高对比文字。
 - 当前工作区在 Phase A-C 基础上进一步对齐 Codex 原生 Composer 交互：有草稿时显示 `↑ 发送`；空草稿且会话 active 时显示 `⏹ 中断`。停止能力 unavailable/unverified 时仍保留停止形态但 disabled，不因 owned / external 来源不同改变布局。
 - 目标 Mac 上完成 owning App Server session 的 `turn/interrupt` Contract Gate。
 - Sea-Bridge-owned exact turn 使用原 owning session 中断，并用 `expectedTurnId` 防止 stale request 误停后续 turn。
@@ -142,7 +143,7 @@ provider RPC success 只表示 interrupt 请求已接纳。UI 保持 `正在中�
 
 ```bash
 bun test
-# 464 pass / 0 fail / 2114 expect() calls / 70 files
+# 465 pass / 0 fail / 2118 expect() calls / 70 files
 
 bun run typecheck
 # PASS
@@ -178,7 +179,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 仍为 `1.1.8`。
+当前 `package.json` 为 `1.1.9`。
 
 本轮尚未：
 

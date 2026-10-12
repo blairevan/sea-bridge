@@ -15,7 +15,7 @@
 - **Phase D 已实现**：App Server thread catalog、Hook allowlist metadata 与 owned Action 参数经 `SessionMetadataResolver` 逐字段聚合；Composer 只显示真实存在的 model / reasoning / execution policy，不补默认值；旧数据库采用 additive migration 兼容升级。
 - **Phase E provider 化已实现**：新增 `InterruptRouter` 与 `OwnedAppServerInterruptProvider`，Web wire scope 收敛为 provider-independent `exact_codex_turn`；provider 一旦实际 dispatch 即固定，失败不自动 fallback，不会重新选择新 turn。
 - **External provider 仍未启用**：在目标 Mac（Darwin 25.5.0 arm64, codex-cli 0.147.0）上物理实测，独立 App Server 尝试 thread/resume 外部活跃 thread 明确返回 -32600 already has an active writer，调用 turn/interrupt 或 turn/steer 明确返回 -32600 thread not found；本地亦无共享 daemon control socket。根据验收规则，跨实例 App Server 中断 Gate 裁决为 FAIL；生产环境严格保持 fail-closed，非 owned turn 统一返回 interrupt_provider_unverified，绝不猜测性尝试伪中断或破坏性杀进程。
-- 当前自动化回归：`bun test` **464 pass / 0 fail**、**2114 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
+- 当前自动化回归：`bun test` **465 pass / 0 fail**、**2118 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
 
 ---
 
@@ -253,7 +253,8 @@ git commit -m "feat(web): add safe visible quick-action fills"
 10. 移动端停止滚动约 2 秒后隐藏；
 11. 抽屉只列已加载轮次，并保留“加载更早”入口；
 12. `prefers-reduced-motion` 时不强制 smooth scroll；
-13. keyboard focus 和 `aria-label` 可用。
+13. keyboard focus 和 `aria-label` 可用；
+14. 深色主题下轮次抽屉普通项、active、hover/focus 都使用深色 surface 和可读文字，且显式覆盖全局 primary button 配色，避免浅绿底 + 灰字低对比。
 
 #### Step 3.2 — 实现
 
@@ -262,7 +263,8 @@ git commit -m "feat(web): add safe visible quick-action fills"
 - message DOM 增加稳定的消息 identity / turn index 属性；
 - `syncTurnRail()` 每次 history DOM 重建后重新绑定 observer；
 - session 切换、logout、disconnect view reset 时显式 `disconnect()` 旧 observer 和清理滚动 timer；
-- mobile drawer 不复制完整消息正文，只显示受限摘要。
+- mobile drawer 不复制完整消息正文，只显示受限摘要；
+- 深色主题为 `.turn-dialog-list / .turn-dialog-item / .active / :hover / :focus-visible` 提供独立配色，不能继承全局深色 primary button 的浅绿背景。
 
 #### Step 3.3 — 验证并提交
 

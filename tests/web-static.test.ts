@@ -15,6 +15,14 @@ test("form controls have a device-independent readable font without disabling zo
   expect(html).not.toMatch(/user-scalable\s*=\s*(?:no|0)(?:\D|$)|maximum-scale\s*=\s*1(?:\D|$)/i);
 });
 
+test("dark turn dialog overrides the global primary-button palette for readable contrast", async () => {
+  const css = await Bun.file("src/web/public/app.css").text();
+  expect(css).toContain('[data-theme="dark"] .turn-dialog-item{background:#1c2620;color:#dce7e0;border-color:var(--line)}');
+  expect(css).toContain('[data-theme="dark"] .turn-dialog-item span{color:#a5b7aa}');
+  expect(css).toContain('[data-theme="dark"] .turn-dialog-item.active{background:#293e30;color:#dce7e0}');
+  expect(css).toContain('[data-theme="dark"] .turn-dialog-item.active span{color:#c4d8ca}');
+});
+
 test("static shell has local assets and no unsafe rendering or persistent body cache", async () => {
   const html = renderVersionedShell(await Bun.file("src/web/public/index.html").text());
   const script = await Bun.file("src/web/public/app.js").text();
