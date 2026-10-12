@@ -21,6 +21,7 @@ let liveActivityStale = null;
 let liveActivityDivider = null;
 let liveActivityStream = null;
 let liveActivityStreamSig = "";
+let liveActivityFollowingTail = true;
 let composerModelControl = null;
 let sessionModelUpdate = null;
 let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
@@ -517,7 +518,10 @@ function clearSensitive() {
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   for (const id of ["overview-session-count", "overview-running-count", "overview-approval-count"]) { const value = el(id); if (value) value.textContent = "—"; }
   el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
-  el("messages").replaceChildren(historyTools ?? el("history-tools")); liveActivityCard = null; clearTurnNavigation();
+  el("messages").replaceChildren(historyTools ?? el("history-tools"));
+  liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
+  liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityFollowingTail = true;
+  clearTurnNavigation();
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
   if (state.selected) state.selected = { ...state.selected, title: "会话", state: "unknown", sendEnabled: false, startedAt: undefined, sessionMeta: null, turnControl: null };
@@ -1009,7 +1013,18 @@ async function loadSessions(more) {
       live = synced.items.find((item) => item.id === selectedId && item.source === selectedSource);
       if (!live) state.selected = { ...state.selected, sendEnabled: false };
     }
-    if (live) state.selected = { ...live, turnControl: null };
+    if (live) {
+      const previous = state.selected;
+      state.selected = {
+        ...live,
+        // Session-list snapshots do not carry history-only runtime detail. Preserve the last
+        // verified detail until the immediately following history refresh replaces it.
+        ...(previous.startedAt !== undefined ? { startedAt: previous.startedAt } : {}),
+        ...(previous.activeTurnItems !== undefined ? { activeTurnItems: previous.activeTurnItems } : {}),
+        ...(previous.sessionMeta != null ? { sessionMeta: previous.sessionMeta } : {}),
+        turnControl: previous.turnControl ?? null,
+      };
+    }
     el("session-title").textContent = state.selected.title; renderSessionStatus(); syncTurnRail();
   }
 }
@@ -1031,7 +1046,8 @@ function scrollMessagesToLatest(container) {
 /** Refresh the latest page when connected, then position the current conversation at its end. */
 async function jumpToLatest() {
   const session = state.selected; if (!session) return;
-  state.followLatest = true;
+  state.followLatest = true; liveActivityFollowingTail = true;
+  if (liveActivityStream) liveActivityStream.scrollTop = liveActivityStream.scrollHeight;
   scrollMessagesToLatest(el("messages"));
   if (!state.paused) await loadHistory(false);
   if (state.selected?.id !== session.id || state.selected?.source !== session.source) return;
@@ -1057,7 +1073,7 @@ function syncLiveActivityCard(now = Date.now()) {
   const presentation = liveActivityPresentation(state.selected, state.paused, now);
   if (!presentation.visible) {
     liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; return;
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityFollowingTail = true; return;
   }
   if (!liveActivityCard) {
     liveActivityCard = node("section", "", "live-activity-card"); liveActivityCard.setAttribute?.("aria-label", "当前任务状态");
@@ -1067,6 +1083,10 @@ function syncLiveActivityCard(now = Date.now()) {
     liveActivityDetail = node("small", "", "live-activity-detail"); liveActivityDetail.setAttribute?.("aria-hidden", "true");
     liveActivityDivider = node("div", "", "live-activity-divider");
     liveActivityStream = node("div", "", "live-activity-stream");
+    liveActivityStream.onscroll = () => {
+      const distance = liveActivityStream.scrollHeight - liveActivityStream.clientHeight - liveActivityStream.scrollTop;
+      liveActivityFollowingTail = distance < 24;
+    };
     liveActivityStale = node("small", "状态来自断线前最后一次已验证结果", "live-activity-stale");
     liveActivityCard.append(heading, liveActivityDetail, liveActivityDivider, liveActivityStream, liveActivityStale); container.append(liveActivityCard);
   } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
@@ -1081,6 +1101,7 @@ function syncLiveActivityCard(now = Date.now()) {
     liveActivityStream.hidden = items.length === 0;
     const sig = JSON.stringify(items);
     if (sig !== liveActivityStreamSig) {
+      const followTail = liveActivityFollowingTail || liveActivityStreamSig === "";
       liveActivityStreamSig = sig;
       liveActivityStream.replaceChildren();
       for (const item of items) {
@@ -1094,6 +1115,10 @@ function syncLiveActivityCard(now = Date.now()) {
           row.append(node("span", item.icon || "🔍", "live-activity-icon"), node("span", item.text, "live-activity-tool-text"));
           liveActivityStream.append(row);
         }
+      }
+      if (followTail) {
+        liveActivityFollowingTail = true;
+        liveActivityStream.scrollTop = liveActivityStream.scrollHeight;
       }
     }
   }
@@ -1168,6 +1193,8 @@ function syncTurnRail() {
 
 /** On phones reveal the loaded-turn indicator only while the conversation is moving. */
 function showTurnIndicatorOnScroll() {
+  const messages = el("messages");
+  if (messages && messages.scrollHeight - messages.clientHeight - messages.scrollTop >= 100) state.followLatest = false;
   updateLatestShortcut();
   const width = typeof window !== "undefined" ? window.innerWidth : 1024;
   if (width > 760 || turnRailButtons.length === 0) return;
@@ -1224,13 +1251,14 @@ async function loadHistory(older) {
       items.push(view.item);
     }
     for (const key of messageViews.keys()) if (!visibleKeys.has(key)) messageViews.delete(key);
-    container.replaceChildren(historyTools ?? el("history-tools"), ...items); liveActivityCard = null;
+    container.replaceChildren(historyTools ?? el("history-tools"), ...items);
+    liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = "";
     syncTurnRail();
   }
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
   syncLiveActivityCard();
   if (follow) scrollMessagesToLatest(container); else container.scrollTop = older ? scroll + container.scrollHeight - previousHeight : scroll;
-  state.followLatest = false;
   updateLatestShortcut();
   if (state.awaitingReply?.sessionId === session.id && state.awaitingReply.source === session.source) {
     const latest = [...state.messages].reverse().find((message) => message.role === "assistant");

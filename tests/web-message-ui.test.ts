@@ -1408,4 +1408,32 @@ test("syncLiveActivityCard renders live commentary and tool items in active stre
   expect(stream.children[0]!.children[0]!.textContent).toBe("正在审查代码边界");
   expect(stream.children[1]!.className).toBe("live-activity-item tool");
   expect(stream.children[1]!.children[1]!.textContent).toBe("已读取文件 app.ts");
+  expect(stream.scrollTop).toBe(stream.scrollHeight);
+
+  stream.scrollTop = 0; stream.clientHeight = 100; stream.scrollHeight = 1000; (stream as any).onscroll?.();
+  ui.state.selected.activeTurnItems.push({ kind: "commentary", text: "这是最新阶段性说明" });
+  ui.syncLiveActivityCard(67000);
+  expect(stream.children.at(-1)?.children[0]?.textContent).toBe("这是最新阶段性说明");
+  expect(stream.scrollTop).toBe(0);
+});
+
+test("latest shortcut keeps following live growth until the user scrolls away", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  const messages = get("messages"); messages.scrollHeight = 1000; messages.clientHeight = 400; messages.scrollTop = 600;
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, showTurnIndicatorOnScroll, jumpToLatest })", {
+    el: get,
+    document: { getElementById: get, hidden: false },
+  }) as any;
+  ui.state.selected = { source: "codex", id: "thread", state: "running" }; ui.state.messages = [{ id: "m" }]; ui.state.followLatest = true; ui.state.paused = true;
+  ui.showTurnIndicatorOnScroll();
+  expect(ui.state.followLatest).toBe(true);
+  messages.scrollTop = 200;
+  ui.showTurnIndicatorOnScroll();
+  expect(ui.state.followLatest).toBe(false);
+  await ui.jumpToLatest();
+  expect(ui.state.followLatest).toBe(true);
+  expect(messages.scrollTop).toBe(messages.scrollHeight);
 });

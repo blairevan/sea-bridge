@@ -146,7 +146,7 @@ provider RPC success 只表示 interrupt 请求已接纳。UI 保持 `正在中�
 
 ```bash
 bun test
-# 473 pass / 0 fail / 2193 expect() calls / 70 files
+# 477 pass / 0 fail / 2211 expect() calls / 70 files
 
 bun run typecheck
 # PASS
@@ -176,17 +176,19 @@ git diff --check
 - no fallback after dispatch；
 - stale-turn no retarget；
 - non-owned external active writer 在当前生产 provider 集合中明确 fail closed，并复用 `exact_codex_turn` 的 unavailable capability；
-- `interrupt_provider_unverified` HTTP/UI mapping。
+- `interrupt_provider_unverified` HTTP/UI mapping；
+- session-list 轮询不会清空 history-only live activity detail；
+- `↓` 回到最新后持续 follow-latest，用户主动上滚才退出；
+- live activity 内部流默认跟随最新 commentary/tool 条目，并尊重用户手动上滚阅读旧条目。
 
 全量测试期间曾发现 1 个测试夹具回归：`web-client-policy` 的伪 DOM button 缺少真实浏览器一定存在的 `dataset`。仅修正测试 fixture，没有为生产代码增加不可能 DOM 的兼容分支。最终全量门禁全部通过。
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.15`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态的视觉反馈与不可用原因提示。发布后 HTML 应引用新的 `app.css?v=1.1.15` / `app.js?v=1.1.15`。
+当前 `package.json` 为 `1.1.17`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次已发布后的 JS/CSS 行为变化都必须递增版本：v1.1.10 用于暗色轮次抽屉缓存失效，v1.1.11 收口 `reasoningEffort=none` 与 idle 状态展示，v1.1.12 增加会话模型切换与 Composer send/interrupt 提交语义修复，v1.1.13 将模型交互收口为 Composer 内联下拉选择器并移除二级弹窗/提示，v1.1.14 统一模型切换成功/失败的顶部消息反馈，v1.1.15 修正模型下拉 disabled 状态，v1.1.16 增加阶段性 commentary/tool activity stream，v1.1.17 修复 activity follow-latest、列表轮询覆盖 runtime detail 与内部流停留旧条目的问题。发布后 HTML 应引用新的 `app.css?v=1.1.17` / `app.js?v=1.1.17`。
 
 本轮尚未：
 
-- bump version；
 - commit；
 - push；
 - deploy。
@@ -218,3 +220,13 @@ git diff --check
 - **微观工具活动 (Tools & Commands)**：从活跃 turn 的 `CommandExecution` 与 `function_call` 记录中提取动作摘要（读取文件 📖、搜索 🔍、命令执行 🛠），与阶段性陈述按发生时序穿插展示；
 - **卡片交互与自适应**：无条目时仅显示耗时标题；产生条目时展开细分割线与纵向活动流（带 max-height 滚动，支持暗色主题自适应）；任务完成时活动卡片平滑移除并由最终答复接管；
 - **防缓存版本递增**：升级至 `v1.1.16`，确保 Safari 等移动端浏览器加载最新样式与脚本。
+
+## 8. 活动流 follow-latest 修复记录 (v1.1.17, 2026-10-12)
+
+针对 iPhone 实机出现的“点击 ↓ 后轮询又重新出现 ↓、活动流停在旧条目、最新 commentary 看不到”问题，定位并修复了三处状态覆盖：
+
+- `loadSessions()` 的 3 秒列表轮询不再用摘要对象清空当前会话的 `activeTurnItems / startedAt / turnControl`，history refresh 到达前继续保留最后一次已验证 runtime detail；
+- `followLatest` 不再在每次 `loadHistory()` 结束时强制归零。用户点击 `↓` 后持续跟随后续消息/activity 增长；只有用户主动把消息区滚离底部才退出跟随；
+- `.live-activity-stream` 首次渲染和持续更新时默认跟随尾部，因此展示最新 commentary/tool 条目；若用户手动在活动流内部上滚，则保留其阅读位置，点击“回到最新”会重新恢复尾部跟随；
+- history DOM 重建时同时失效 live activity DOM/signature cache，避免新卡片因为复用旧 signature 而出现空内容或旧内容；
+- commentary 仍仅指 Codex rollout 中明确标记为 `phase=commentary` 的阶段性可见文本，不读取或推断模型私有 chain-of-thought。

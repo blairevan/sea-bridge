@@ -244,6 +244,20 @@ interface WebSessionMeta {
 
 在该 contract 建立前，“最近微观操作”属于后续能力，不作为本次第一阶段验收项。
 
+#### 4.3.1 v1.1.16 已建立的活动流 contract
+
+v1.1.16 已在上述边界内增加受限 live activity projection：只读取当前 active turn 的 `assistant phase=commentary` 与固定工具摘要，不透传任意原始 payload；活动条目按发生顺序展示，最多保留最近 25 条。这里的 commentary 是 Codex 明确写入 rollout 的阶段性可见说明，不等同于、也不尝试恢复模型私有 chain-of-thought。
+
+#### 4.3.2 v1.1.17 跟随最新语义
+
+活动流与消息滚动必须遵守用户显式意图：
+
+- 用户点击“回到最新”后进入持续 follow-latest，后续 3 秒轮询和新增 activity 继续保持在尾部；
+- 用户手动把消息区上滚离开底部后，立即退出 follow-latest，后续轮询不得强行拉回；
+- live activity 自己的内部滚动默认跟随最新条目；用户手动上滚查看旧条目时暂停内部自动跟随，回到最新动作重新恢复；
+- session-list 轮询只能更新摘要字段，不能在随后的 history refresh 之前清空 `activeTurnItems / startedAt / turnControl` 等 history-only runtime detail，避免活动卡片高度抖动、↓ 快捷键反复出现或最新 commentary 被旧快照覆盖；
+- history DOM 因消息变化重建后，活动卡片自己的 DOM cache/signature 必须同步失效并立即重建，不能留下空流或旧引用。
+
 ### 4.4 完成态
 
 收到可靠终态后：

@@ -15,7 +15,7 @@
 - **Phase D 已实现**：App Server thread catalog、Hook allowlist metadata 与 owned Action 参数经 `SessionMetadataResolver` 逐字段聚合；Composer 只显示真实存在的 model / reasoning / execution policy，不补默认值；旧数据库采用 additive migration 兼容升级。
 - **Phase E provider 化已实现**：新增 `InterruptRouter` 与 `OwnedAppServerInterruptProvider`，Web wire scope 收敛为 provider-independent `exact_codex_turn`；provider 一旦实际 dispatch 即固定，失败不自动 fallback，不会重新选择新 turn。
 - **External provider 仍未启用**：在目标 Mac（Darwin 25.5.0 arm64, codex-cli 0.147.0）上物理实测，独立 App Server 尝试 thread/resume 外部活跃 thread 明确返回 -32600 already has an active writer，调用 turn/interrupt 或 turn/steer 明确返回 -32600 thread not found；本地亦无共享 daemon control socket。根据验收规则，跨实例 App Server 中断 Gate 裁决为 FAIL；生产环境严格保持 fail-closed，非 owned turn 统一返回 interrupt_provider_unverified，绝不猜测性尝试伪中断或破坏性杀进程。
-- 当前自动化回归：`bun test` **473 pass / 0 fail**、**2193 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
+- 当前自动化回归：`bun test` **477 pass / 0 fail**、**2211 expectations**（70 个测试文件）；`bun run typecheck`、`node --check src/web/public/app.js`、`bun run build`、`git diff --check` 全部通过。
 
 ---
 
@@ -127,7 +127,7 @@
 
 ### Task 1: 运行态安全活动卡片
 
-**目标**: 对当前选中会话显示可靠的运行态、审批态和断线态；只有存在 `activeTurnStartedAt` 时才显示耗时。活动卡片不进入历史持久化，也不依据最终回答文本自行猜测 turn 已结束。
+**目标**: 对当前选中会话显示可靠的运行态、审批态和断线态；只有存在 `activeTurnStartedAt` 时才显示耗时。活动卡片不进入历史持久化，也不依据最终回答文本自行猜测 turn 已结束。v1.1.16 已追加受限 commentary/tool activity stream；v1.1.17 进一步修正 follow-latest 与轮询状态覆盖问题。
 
 #### Step 1.1 — 先补失败测试
 
@@ -162,6 +162,13 @@ bun test tests/web-message-ui.test.ts tests/web-ui-races.test.ts
 - 活动卡片属于 transient UI，不能加入 `state.messages`。
 
 #### Step 1.3 — 验证并提交
+
+v1.1.17 回归额外要求：
+
+1. session-list 轮询不能清空 history-only `activeTurnItems / startedAt / turnControl`；
+2. 点击 `↓` 后 follow-latest 持续跨轮询生效，直到用户主动上滚离开底部；
+3. live activity 内部流默认滚到最新条目；用户主动上滚后保留阅读位置；
+4. history DOM 重建后 activity DOM/signature 同步失效并重建，最新 commentary 不得因旧 signature 消失。
 
 ```bash
 bun test tests/web-message-ui.test.ts tests/web-ui-races.test.ts

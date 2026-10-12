@@ -450,6 +450,25 @@ test("changing creation filters during an in-flight UI action loads the latest c
   expect(controller.state.sessions.map((item) => item.id)).toEqual(["cli"]);
 });
 
+test("session list polling preserves history-only live activity until history refresh", async () => {
+  const live = { source: "codex", id: "selected", title: "Selected", state: "running", sendEnabled: true };
+  const ui = await fixture({ read: async () => ({ items: [live], cursor: null, capabilities: {} }) }, '\napi = read;\n');
+  const controller = ui.evaluate('({state,loadSessions})') as {
+    state: { paused: boolean; selected: any }; loadSessions(more: boolean): Promise<void>;
+  };
+  controller.state.paused = false;
+  controller.state.selected = {
+    ...live,
+    startedAt: 1000,
+    activeTurnItems: [{ kind: "commentary", text: "最新阶段性说明" }],
+    turnControl: { activeTurnId: "turn", interrupt: { status: "available", scope: "exact_codex_turn" } },
+  };
+  await controller.loadSessions(false);
+  expect(controller.state.selected.startedAt).toBe(1000);
+  expect(controller.state.selected.activeTurnItems).toEqual([{ kind: "commentary", text: "最新阶段性说明" }]);
+  expect(controller.state.selected.turnControl.activeTurnId).toBe("turn");
+});
+
 test("recovery refreshes a selected session outside the active list filter", async () => {
   const live = { source: "codex", id: "selected", title: "Selected", state: "idle", sendEnabled: true };
   const ui = await fixture({ read: async (path: string) => ({ items: path.includes("sessionId=selected") ? [live] : [], cursor: null, capabilities: {} }) }, '\napi = read;\n');
