@@ -8,12 +8,14 @@ async function helpers(crypto: unknown): Promise<{
   extractActionPills: (value: string) => string[];
   liveActivityPresentation: (session: { state?: string; startedAt?: number; turnControl?: { interrupt?: { status?: string } } } | null, paused: boolean, now: number) => { visible: boolean; status: string; detail: string };
   loadedTurnModel: (messages: Array<{ role: string; text: string; deliveryState?: string }>) => Array<{ index: number; summary: string }>;
+  loadedTurnPreview: (messages: Array<{ id?: string; role: string; text: string; deliveryState?: string }>, userMessage: { id?: string; role: string; text: string }) => { request: string; response: string };
   handleComposerEnter: (event: { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number; preventDefault(): void }, enabled: boolean, hasDraft: boolean, canSend: boolean, submit: () => void) => boolean;
+  onPromptKeydown: (event: { key: string; preventDefault(): void }, enabled: boolean, hasDraft: boolean, canSend: boolean, submit: () => void) => void;
 }> {
   const script = await Bun.file("src/web/public/app.js").text();
   const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
   if (end < 0) throw new Error("UI boundary missing");
-  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl, extractActionPills, liveActivityPresentation, loadedTurnModel, handleComposerEnter })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
+  return runInNewContext(script.slice(0, end) + "\n({ operationUuid, safeMessageUrl, extractActionPills, liveActivityPresentation, loadedTurnModel, loadedTurnPreview, handleComposerEnter, onPromptKeydown })", { crypto, URL, location: { origin: "http://100.112.22.85:7310" } });
 }
 
 test("Enter-to-send submits only an enabled draft; Shift+Enter and IME composition remain untouched", async () => {
@@ -32,6 +34,14 @@ test("Enter-to-send submits only an enabled draft; Shift+Enter and IME compositi
   expect(handleComposerEnter(event("Enter"), true, false, true, () => { submits++; })).toBe(true);
   expect(handleComposerEnter(event("Enter"), true, true, false, () => { submits++; })).toBe(true);
   expect(submits).toBe(1);
+});
+
+test("composer keydown preserves native Backspace and does not return false to the browser", async () => {
+  const { onPromptKeydown } = await helpers({});
+  let prevented = false;
+  const result = onPromptKeydown({ key: "Backspace", preventDefault: () => { prevented = true; } }, true, true, true, () => undefined);
+  expect(result).toBeUndefined();
+  expect(prevented).toBe(false);
 });
 
 test("operation UUID works without secure-context randomUUID and retains UUID v4 bits", async () => {
@@ -105,6 +115,16 @@ test("loaded turn model counts only executed user history and never invents a gl
   ]);
 });
 
+test("loaded-turn preview prefers the failure summary when the turn has earlier assistant text", async () => {
+  const ui = await helpers({});
+  const user = { id: "u1", role: "user", text: "请执行任务" };
+  expect(ui.loadedTurnPreview([
+    user,
+    { id: "a1", role: "assistant", text: "我先检查一下。" },
+    { id: "e1", role: "error", text: "429 Too Many Requests" },
+  ], user)).toEqual({ request: "请执行任务", response: "429 Too Many Requests" });
+});
+
 /** Minimal DOM fixture preserving whether text became markup or an executable element. */
 class ElementFixture {
   children: ElementFixture[] = [];
@@ -119,6 +139,8 @@ class ElementFixture {
   style = { height: "" };
   onclick?: () => void;
   onkeydown?: (event: { key: string; preventDefault(): void }) => void;
+  onmouseenter?: () => void;
+  onmouseleave?: () => void;
   scrollTop = 0;
   scrollHeight = 1000;
   clientHeight = 400;
@@ -202,6 +224,12 @@ test("turn rail observes the message scroller, excludes queued turns and disconn
   expect(get("turn-dialog-list").children).toHaveLength(2);
   expect(get("turn-indicator").textContent).toBe("当前第 1 轮 · 已加载 2 轮");
   expect(get("turn-load-older").hidden).toBe(false);
+  const firstTick = get("turn-rail").children[0]!;
+  firstTick.onmouseenter?.();
+  expect(get("turn-rail-preview").hidden).toBe(false);
+  expect(get("turn-rail-preview-request").textContent).toBe("第一轮");
+  expect(get("turn-rail-preview-response").textContent).toBe("回答");
+  firstTick.onmouseleave?.(); expect(get("turn-rail-preview").hidden).toBe(true);
   ui.syncTurnRail();
   expect(observers[0]?.disconnected).toBe(true);
 });
@@ -661,7 +689,7 @@ test("inline model selector loads the live catalog, disables while running, and 
     document: { getElementById: (id: string) => elements.get(id) ?? null, createElement: (tag: string) => new ElementFixture(tag) },
   }) as { state: any; ensureSessionModelCatalog(): Promise<any[]>; syncComposerMetadata(): void; changeSessionModel(modelId: string, select: any): Promise<void> };
   ui.state.paused = false; ui.state.viewEpoch = 4; ui.state.caps.codex = { modelUpdateEnabled: true };
-  ui.state.selected = { source: "codex", id: "thread-model", state: "idle", sendEnabled: true, sessionMeta: { model: { id: "old-model", displayName: "Old" } } };
+  ui.state.selected = { source: "codex", id: "thread-model", state: "idle", sendEnabled: true, creationClient: { kind: "desktop" }, sessionMeta: { model: { id: "old-model", displayName: "Old" } } };
   await ui.ensureSessionModelCatalog();
   ui.syncComposerMetadata();
   const select = meta.children[0] as any;
@@ -684,9 +712,13 @@ test("inline model selector loads the live catalog, disables while running, and 
   expect(ui.state.selected.sessionMeta.model).toEqual({ id: "new-model", displayName: "New" });
   expect(notices.at(-1)).toBe("模型已切换为 New");
 
-  failure.error = { code: "model_update_busy", message: "当前任务仍在运行，请结束后再切换模型" };
+  failure.error = { code: "model_update_writer_held", message: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型" };
   await ui.changeSessionModel("old-model", select);
   expect(ui.state.selected.sessionMeta.model).toEqual({ id: "new-model", displayName: "New" });
+  expect(notices.at(-1)).toBe("模型切换失败：当前会话已空闲，但仍由 Codex Desktop 占用，暂不能从 Web 切换模型");
+
+  failure.error = { code: "model_update_busy", message: "当前任务仍在运行，请结束后再切换模型" };
+  await ui.changeSessionModel("old-model", select);
   expect(notices.at(-1)).toBe("模型切换失败：当前任务仍在运行，请结束后再切换模型");
 });
 

@@ -249,14 +249,14 @@ describe("CodexAppServerClient", () => {
     expect(unsubscribed).toBe(true); expect(proc.stdinEnded).toBe(true);
   });
 
-  test("model update fails closed when another App Server still owns the thread", async () => {
+  test("model update distinguishes an external writer-held idle thread from a running turn", async () => {
     let proc!: MockProcess;
     proc = new MockProcess((message) => {
       if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
       if (message.method === "thread/resume") return proc.send({ id: message.id, error: { code: -32600, message: "thread thread-busy already has an active writer" } });
     });
     const client = new CodexAppServerClient("/codex", { spawner: () => proc as unknown as ChildProcessWithoutNullStreams });
-    await expect(client.updateThreadModel({ threadId: "thread-busy", model: "new-model" })).rejects.toThrow("model_update_busy");
+    await expect(client.updateThreadModel({ threadId: "thread-busy", model: "new-model" })).rejects.toThrow("model_update_writer_held");
     expect(proc.writes.some((item) => item.method === "thread/settings/update")).toBe(false);
     expect(proc.stdinEnded).toBe(true);
   });

@@ -15,6 +15,20 @@
 
 应用版本以 package.json 的 version 为唯一来源，使用主版本.次版本.补丁版本。
 
+## v1.1.26
+
+- 修复 idle 会话模型切换被其他 Codex App Server writer 占用时误报“任务仍在运行”的问题；新增稳定错误 `model_update_writer_held`，与真实 `model_update_busy` 分离。
+- 顶部消息按 Desktop / CLI / 其他 Codex 客户端显示准确的 writer-held 原因；失败保持原模型，不尝试抢锁。
+- 修复移动端 Backspace 无法删除输入文本：keydown wrapper 不再把快捷键判断结果作为 DOM 事件返回值，恢复浏览器原生按键行为，并增加回归测试。
+- 全量门禁 484 pass / 0 fail / 2265 expectations，typecheck、JS syntax、build、diff check 均通过。v1.1.26 已部署至目标 Mac；部署后首页版本、JS/CSS 快照一致性、LaunchAgent 运行态及未认证 API 的 401 响应均已验证。工作区尚未 commit / push。
+
+## v1.1.25
+
+- 桌面已加载轮次轨改为左侧 overlay 极简刻度；hover/focus 显示请求及最近助手/失败摘要，移动端交互保持不变。
+- 全量测试 483 pass / 0 fail；typecheck、JS syntax、build、diff check 通过。
+- 已部署快照 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.25-20261012-210646`；LaunchAgent running，PID 36247；首页与 JS/CSS 版本资源 HTTP 200 且字节匹配，未认证 session 返回 401。SQLite 备份 quick_check 为 ok。
+- 按本轮授权只部署，代码与部署记录尚未 commit / push。
+
 ## v1.1.24
 
 - 设置页新增当前浏览器本地的回车发送偏好；默认关闭。开启后 Enter 发送、Shift+Enter 换行，输入法组字期间不提交，并遵从当前 Composer 的发送可用状态。

@@ -1,5 +1,30 @@
 # Codex 布局演进 Phase A-E 实施与验证记录
 
+## v1.1.26 模型切换 writer-held 错误语义修复
+
+- 修复 idle 会话模型切换失败时误报“当前任务仍在运行”的问题。`idle` 只证明没有 active turn，并不证明 Codex Desktop / CLI 已释放该 thread 的单 writer ownership。
+- `CodexAppServerClient.updateThreadModel()` 遇到 `thread/resume -> already has an active writer` 时改为返回稳定错误 `model_update_writer_held`；真正的 active turn 仍使用 `model_update_busy`，两种状态不再混淆。
+- HTTP 保留该错误为 409，并继续只审计 thread identity + outcome，不记录 model id。
+- Web 顶部消息对 Desktop 创建会话显示“当前会话已空闲，但仍由 Codex Desktop 占用，暂不能从 Web 切换模型”；CLI 创建会话对应显示 CLI，其他来源使用通用 Codex 客户端占用文案。失败后保留原模型，不伪造切换成功。
+- 不在 UI 事前永久禁用 idle 模型下拉：当前官方契约没有无副作用、可靠的 writer ownership 查询；只有实际 `thread/resume` 才能确认 writer 是否可获取。继续 fail closed，不尝试抢锁。
+- 版本升至 v1.1.26，以刷新一年 immutable 缓存的前端错误文案。
+- 修复移动端输入框无法删除文本：`onkeydown` 处理器原先把内部快捷键判断的 `false` 返回给浏览器，导致 Backspace 等原生按键默认行为被取消；新增不返回布尔值的事件包装器，并添加 Backspace 回归测试。
+- 最终全量门禁：484 pass、0 fail、2265 expectations；typecheck、JS syntax、build、JS syntax check、diff check 均通过。
+- v1.1.26 已部署到目标 Mac；静态资源版本、服务进程和 HTTP 响应已完成部署后验证，细节见下方发布状态。
+
+## v1.1.25 桌面轮次轨 Codex 化
+
+- 桌面端 `.turn-rail` 改为覆盖在消息区左缘的极简刻度轨，不再作为 flex 列挤占正文；普通轮次仅约 5px 的低对比短线，hover/focus 适度拉长，当前轮次约 20px 并增强对比。
+- hover / keyboard focus 时显示非交互式轮次预览卡：用户请求最多 220 字，若本轮已有助手回复或终态错误则展示最近摘要；附件 envelope 只取正文，宿主绝对路径不进入预览，assistant memory citation 继续按现有显示规则过滤。
+- 点击刻度保持现有精确 `scrollIntoView` 跳转；鼠标离开、focus 退出、点击跳转和 history DOM 重建都会清除预览，避免悬浮卡滞留。
+- 移动端行为不变：左侧桌面轨隐藏，继续使用真实滚动时出现、停止滚动约 6 秒后隐藏的轮次提示与抽屉。
+- 版本升至 v1.1.25，刷新一年 immutable 缓存的 JS/CSS 版本键。
+- 复核时修正失败轮次摘要优先级：当同一轮先有助手文本、后有错误卡片时，预览显示错误摘要；增加对应回归，测试夹具不使用 `any`。
+- 最终全量门禁：483 pass、0 fail、2260 expectations；typecheck、JS syntax、build、diff check 均通过。
+- 发布快照：`/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.25-20261012-210646`；备份：`~/.config/sea-bridge/backups/20261012-210646/`，旧 LaunchAgent plist 与 SQLite 一致性备份已保存，`PRAGMA quick_check=ok`。
+- LaunchAgent running，PID `36247`，仅监听 `127.0.0.1:7310`；首页 HTTP 200 并显示 v1.1.25，JS/CSS 与发布快照逐字节一致，未登录 `/api/auth/session` 返回 401。
+- 按本次授权仅部署，代码及文档仍在 `main` 工作区未提交 / push；已部署代码快照不依赖后续工作区状态。
+
 ## v1.1.24 Composer 回车发送偏好
 
 - 设置页新增浏览器本地“回车发送，Shift+回车换行”开关，默认关闭以保留原有输入习惯。
@@ -238,7 +263,7 @@ git diff --check
 
 ## 5. 发布状态
 
-当前 `package.json` 为 `1.1.24`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次发布代码变化都必须递增版本。v1.1.24 增加浏览器本地回车发送偏好，HTML 引用 `app.css?v=1.1.24` / `app.js?v=1.1.24`。该版本已提交、推送、快进合并并部署；本机 HTTP、版本资源字节一致性和未认证接口均已验证。目标 Mac External Contract Gate 已完成且判定 FAIL；当前版本线不得把 Desktop / CLI / queue external active-writer interrupt 标为可用。只有 Codex 上游新增共享控制总线、writer-safe attach/control 等新契约并重新通过新的目标机 Gate 后，才能重新评估该能力。
+当前 `package.json` 为 `1.1.26`。Web 静态资源继续以版本号作为一年 `immutable` 缓存键，因此每次发布代码变化都必须递增版本。v1.1.26 已部署到目标 Mac，发布快照为 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.26-20261013-114914`；LaunchAgent 正在运行，进程 PID `32117`，监听 `127.0.0.1:7310`。部署后确认首页返回 HTTP 200 且标记 `v1.1.26`，`/app.js?v=1.1.26` 和 `/app.css?v=1.1.26` 均与发布快照逐字节一致，未认证的 `/api/auth/session` 返回 401；部署前数据库备份 `PRAGMA quick_check` 为 `ok`。本次包含模型切换 writer-held 错误语义修复，以及移动端 Backspace 原生行为修复。工作区尚未 commit / push。目标 Mac External Contract Gate 已完成且判定 FAIL；当前版本线不得把 Desktop / CLI / queue external active-writer interrupt 标为可用。只有 Codex 上游新增共享控制总线、writer-safe attach/control 等新契约并重新通过新的目标机 Gate 后，才能重新评估该能力。
 
 ## 6. 目标机 External Interrupt Contract Gate 验证记录 (2026-10-12)
 

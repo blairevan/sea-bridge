@@ -1,5 +1,13 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级实施计划 (Implementation Plan)
 
+### v1.1.26 模型切换 writer-held 分类
+
+将模型切换失败拆分为两类：真实 active turn 使用 `model_update_busy`；idle thread 在临时 App Server `thread/resume` 时被其他 Codex 客户端的单 writer 锁拒绝，使用 `model_update_writer_held`。HTTP 保留稳定 409，Web 顶部消息按 Desktop / CLI / 通用 Codex 客户端给出准确说明，不提前猜测 writer 状态，也不抢锁。
+
+### v1.1.25 桌面轮次轨交互对齐
+
+桌面端轮次导航改为 Codex 风格的左缘极简刻度轨：普通刻度约 5px、当前轮次约 20px；hover/focus 时展示用户请求与最近助手回复/错误摘要预览卡，点击保持精确跳转。轨道改为 overlay，不再作为 flex 列挤占正文；移动端仍保留现有滚动时 6 秒轮次提示与抽屉。失败摘要优先于同轮先前助手文本。全量门禁 483 pass、0 fail；v1.1.25 已部署至快照 `/opt/app/aitools/sea-bridge-releases/sea-bridge-v1.1.25-20261012-210646`，尚未 commit / push。
+
 ### v1.1.23 会话列表状态投影
 
 历史会话列表状态改为复用 Desktop observer 已持久化的最新 turn observation，但仅在 observer `lastRecencyAtMs` 与 catalog 当前 recency 完全一致时生效；`inProgress -> running`，可靠 terminal -> idle。recency 不一致、baseline 未完成或 interrupted 仍属 provisional 时继续 unknown，避免用旧终态覆盖新任务。
@@ -280,13 +288,15 @@ git commit -m "feat(web): add safe visible quick-action fills"
 5. `IntersectionObserver.root === #messages`；
 6. `replaceChildren()` 后旧 observer disconnect，新 DOM targets 重新 observe；
 7. 点击刻度定位对应 user message；
-8. 桌面 hover/focus 摘要有长度上限；
-9. 移动端轮次提示默认隐藏，仅在用户真实滚动消息窗口时显示 `当前第 X 轮 · 已加载 N 轮`，不得显示伪造全局 `X / Y`；
-10. 轮次提示透明度与上下浮动箭头一致，并靠近输入框上边沿；程序化 follow-latest / 轮询滚动不得触发，停止滚动约 6 秒后隐藏；
-11. 抽屉只列已加载轮次，并保留“加载更早”入口；
-12. `prefers-reduced-motion` 时不强制 smooth scroll；
-13. keyboard focus 和 `aria-label` 可用；
-14. 深色主题下轮次抽屉普通项、active、hover/focus 都使用深色 surface 和可读文字，且显式覆盖全局 primary button 配色，避免浅绿底 + 灰字低对比。
+8. 桌面 `.turn-rail` 使用 absolute overlay 贴左缘；普通 tick 为约 5px 低对比短线，hover/focus 适度拉长，active tick 约 20px 且更亮；
+9. 桌面 hover/focus 显示有界预览卡，包含用户请求和最近助手回复/错误摘要；附件 envelope 不泄露宿主路径，memory citation 不进入预览；
+10. 离开 tick、focus 退出、点击跳转或 history DOM 重建后预览卡立即隐藏；
+11. 移动端轮次提示默认隐藏，仅在用户真实滚动消息窗口时显示 `当前第 X 轮 · 已加载 N 轮`，不得显示伪造全局 `X / Y`；
+12. 轮次提示透明度与上下浮动箭头一致，并靠近输入框上边沿；程序化 follow-latest / 轮询滚动不得触发，停止滚动约 6 秒后隐藏；
+13. 抽屉只列已加载轮次，并保留“加载更早”入口；
+14. `prefers-reduced-motion` 时不强制 smooth scroll；
+15. keyboard focus 和 `aria-label` 可用；
+16. 深色主题下轮次抽屉与桌面预览卡都使用深色 surface 和可读文字，显式覆盖全局 primary button 配色。
 
 #### Step 3.2 — 实现
 
@@ -704,11 +714,11 @@ interface WebSessionMeta {
 2. `CodexWebSource.updateModel()`：实时 model catalog allowlist + verified-idle 双门禁；
 3. `POST /api/sessions/codex/:id/model`：auth/CSRF/body bounds、稳定错误和不含 model id 的安全审计；
 4. Composer model 展示位置直接使用原生下拉选择器；idle 时加载实时模型目录并可直接切换，running / approval / reconnect 时同一控件 disabled，且 disabled 状态必须有与停止按钮一致的视觉弱化和 title/ARIA 原因；
-5. active writer、running、approval、unknown-idle、offline 全部 fail closed，不尝试抢锁；
+5. running / approval / unknown-idle / offline 全部 fail closed；若 turn 已 idle 但 `thread/resume` 返回 `already has an active writer`，单独映射为 `model_update_writer_held`，明确表示其他 Codex 客户端仍持有 writer，不与 `model_update_busy` 混淆，也不尝试抢锁；
 6. 成功后只更新该 thread 的持久 settings，不修改 Sea-Bridge/Codex 全局默认模型，也不把 model 伪装进 `codex queue`；
 7. 成功和失败都统一在顶部消息区反馈；业务失败必须带“模型切换失败”前缀，网络失败进入 reconnect 时顶部连接消息也保留该上下文。
 
-回归必须覆盖：目录外 model 拒绝、active writer 拒绝、readback mismatch 不报成功、CSRF、审计脱敏、inline selector、切换后的即时 metadata、成功/失败顶部消息，以及 running 时同一 selector disabled。
+回归必须覆盖：目录外 model 拒绝、running 拒绝、external writer-held 与 running 错误分类分离、readback mismatch 不报成功、CSRF、审计脱敏、inline selector、切换后的即时 metadata、成功/失败顶部消息，以及 running 时同一 selector disabled。
 
 ### Step 8.5 — Phase D 门禁 — PASS
 

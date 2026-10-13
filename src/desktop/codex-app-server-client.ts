@@ -528,7 +528,7 @@ export class CodexAppServerClient {
     } catch (error) {
       if (error instanceof Error && ["model_update_invalid", "model_update_unconfirmed"].includes(error.message)) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      if (/already has an active writer|active writer/i.test(message)) throw new Error("model_update_busy", { cause: error });
+      if (/already has an active writer|active writer/i.test(message)) throw new Error("model_update_writer_held", { cause: error });
       if (/thread not found/i.test(message)) throw new Error("session_missing", { cause: error });
       if (/model.*(?:not found|unavailable|unsupported|invalid)|invalid.*model/i.test(message)) throw new Error("model_unavailable", { cause: error });
       throw new Error("model_update_unavailable", { cause: error });

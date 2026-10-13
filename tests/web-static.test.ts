@@ -25,6 +25,9 @@ test("dark turn dialog overrides the global primary-button palette for readable 
   expect(css).toContain('.message.error{background:#fff7f0;border-color:#d9783f;color:#a94414');
   expect(css).toContain('[data-theme="dark"] .message.error{background:#1b100a;color:#ff7a2f;border-color:#7b4024}');
   expect(css).toContain('.turn-indicator{opacity:.5;position:absolute;right:12px;bottom:8px;');
+  expect(css).toContain('.turn-tick::after{content:"";position:absolute;left:4px;top:3px;width:5px;height:1px;');
+  expect(css).toContain('.turn-tick.active::after{top:2px;width:20px;height:2px;');
+  expect(css).toContain('.turn-rail-preview{position:absolute;left:30px;top:12px;');
   expect(css).toContain('.floating-latest[data-turn-indicator-visible="true"] { bottom: 54px; }');
 });
 

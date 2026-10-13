@@ -88,6 +88,11 @@ function handleComposerEnter(event, enabled, hasDraft, canSend, submit) {
   return true;
 }
 
+/** Handle a composer key without returning a value that could cancel native keyboard behavior. */
+function onPromptKeydown(event, enabled, hasDraft, canSend, submit) {
+  handleComposerEnter(event, enabled, hasDraft, canSend, submit);
+}
+
 /** Read the browser-local Enter-to-send preference without blocking the composer when storage is unavailable. */
 function readEnterToSendPreference() {
   try { return localStorage.getItem("sea-enter-to-send") === "true"; } catch { return false; }
@@ -164,10 +169,35 @@ function loadedTurnModel(messages) {
   const result = [];
   for (const message of messages ?? []) {
     if (message?.role !== "user" || message.deliveryState) continue;
-    const summary = String(message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || "空消息";
+    const envelope = userAttachmentEnvelope(message.text);
+    const summary = String(envelope?.body ?? message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || "空消息";
     result.push({ index: result.length + 1, summary });
   }
   return result;
+}
+
+/** Build the compact request/response preview shown beside the desktop turn rail. */
+function loadedTurnPreview(messages, userMessage) {
+  const all = Array.isArray(messages) ? messages : [];
+  const start = all.findIndex((message) => message === userMessage || (message?.id && message.id === userMessage?.id));
+  const envelope = userAttachmentEnvelope(userMessage?.text);
+  const request = String(envelope?.body ?? userMessage?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 220) || "空消息";
+  let response = "";
+  let failure = "";
+  if (start >= 0) {
+    for (let index = start + 1; index < all.length; index++) {
+      const message = all[index];
+      if (message?.role === "user" && !message.deliveryState) break;
+      if (message?.role === "assistant") {
+        const visible = String(messageDisplayText(message) ?? "").replace(/\s+/g, " ").trim();
+        if (visible) response = visible.slice(0, 220);
+      } else if (message?.role === "error") {
+        const visible = String(message.text ?? "").replace(/\s+/g, " ").trim();
+        if (visible) failure = visible.slice(0, 220);
+      }
+    }
+  }
+  return { request, response: failure || response };
 }
 
 /** Derive activity copy from server evidence; reconnect copy marks the state as stale. */
@@ -601,7 +631,7 @@ async function requestApi(path, method = "GET", body) {
   }
   if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_writer_held: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -1212,6 +1242,31 @@ function syncLiveActivityCard(now = Date.now()) {
   }
 }
 
+/** Hide the desktop turn preview without changing rail selection. */
+function hideTurnRailPreview() {
+  const preview = el("turn-rail-preview"); if (preview) preview.hidden = true;
+}
+
+/** Position one non-interactive Codex-style turn preview beside the hovered desktop tick. */
+function showTurnRailPreview(tick, content) {
+  const width = typeof window !== "undefined" ? window.innerWidth : 1024;
+  if (width <= 760) return;
+  const preview = el("turn-rail-preview"); const request = el("turn-rail-preview-request"); const response = el("turn-rail-preview-response");
+  if (!preview || !request || !response) return;
+  request.textContent = content.request;
+  response.textContent = content.response;
+  response.hidden = !content.response;
+  preview.hidden = false;
+  const region = tick?.closest?.(".messages-region");
+  if (region?.getBoundingClientRect && tick?.getBoundingClientRect) {
+    const regionRect = region.getBoundingClientRect(); const tickRect = tick.getBoundingClientRect();
+    const previewHeight = preview.offsetHeight || 0;
+    const desired = tickRect.top - regionRect.top - 10;
+    const maxTop = Math.max(8, regionRect.height - previewHeight - 8);
+    preview.style.top = `${Math.max(8, Math.min(maxTop, desired))}px`;
+  }
+}
+
 /** Clear turn observers and controls when conversation identity or privacy context changes. */
 function clearTurnNavigation() {
   turnObserver?.disconnect?.(); turnObserver = null;
@@ -1219,6 +1274,7 @@ function clearTurnNavigation() {
   turnIndicatorTimer = null; turnRailButtons = []; turnDialogButtons = []; activeLoadedTurn = 0;
   const rail = el("turn-rail"); if (rail) { rail.replaceChildren(); rail.hidden = true; }
   const indicator = el("turn-indicator"); if (indicator) indicator.hidden = true;
+  hideTurnRailPreview();
   setTurnIndicatorAvoidance(false);
   const list = el("turn-dialog-list"); if (list) list.replaceChildren();
   const older = el("turn-load-older"); if (older) older.hidden = true;
@@ -1242,7 +1298,7 @@ function setActiveLoadedTurn(index, total = turnRailButtons.length) {
 
 /** Build navigation strictly from currently loaded executed user messages. */
 function syncTurnRail() {
-  turnObserver?.disconnect?.(); turnObserver = null; turnRailButtons = []; turnDialogButtons = [];
+  turnObserver?.disconnect?.(); turnObserver = null; turnRailButtons = []; turnDialogButtons = []; hideTurnRailPreview();
   const rail = el("turn-rail"); const list = el("turn-dialog-list"); const indicator = el("turn-indicator");
   if (!rail || !list || !indicator || !state.selected) { clearTurnNavigation(); return; }
   rail.replaceChildren(); list.replaceChildren();
@@ -1257,7 +1313,13 @@ function syncTurnRail() {
     const target = messageViews.get(key)?.item ?? null; targets.push(target);
     const tick = node("button", "", "turn-tick"); tick.type = "button"; tick.title = turn.summary;
     tick.setAttribute?.("aria-label", `跳到已加载第 ${turn.index} 轮：${turn.summary}`);
+    const preview = loadedTurnPreview(state.messages, message);
+    tick.onmouseenter = () => showTurnRailPreview(tick, preview);
+    tick.onmouseleave = hideTurnRailPreview;
+    tick.onfocus = () => showTurnRailPreview(tick, preview);
+    tick.onblur = hideTurnRailPreview;
     tick.onclick = () => {
+      hideTurnRailPreview();
       const behavior = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
       target?.scrollIntoView?.({ block: "start", inline: "nearest", behavior }); setActiveLoadedTurn(index, model.length);
     };
@@ -1689,7 +1751,15 @@ async function changeSessionModel(modelId, select = composerModelControl) {
     state.selected = { ...state.selected, sessionMeta: { ...(state.selected.sessionMeta ?? {}), model: result.model } };
     notice(`模型已切换为 ${result.model.displayName || result.model.id}`, { kind: "success" });
   } catch (error) {
-    const message = error?.message || "请求失败，请稍后重试";
+    let message = error?.message || "请求失败，请稍后重试";
+    if (error?.code === "model_update_writer_held") {
+      const creator = session.creationClient?.kind;
+      message = creator === "desktop"
+        ? "当前会话已空闲，但仍由 Codex Desktop 占用，暂不能从 Web 切换模型"
+        : creator === "cli"
+          ? "当前会话已空闲，但仍由 Codex CLI 占用，暂不能从 Web 切换模型"
+          : "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型";
+    }
     if (isTransportError(error)) enterDisconnected(`模型切换失败：${message}。已保留当前模型，恢复连接后可重试。`);
     else if (viewEpoch === state.viewEpoch && state.selected?.source === "codex" && state.selected?.id === sessionId) notice(`模型切换失败：${message}`, { sticky: true, kind: "error" });
   } finally {
@@ -1968,13 +2038,15 @@ el("notice-retry").onclick = retryConnection;
 el("create-retry").onclick = retryConnection;
 el("notice-close").onclick = clearNotice;
 el("prompt").oninput = () => { resizeComposer(); syncComposerControl(); };
-el("prompt").onkeydown = (event) => handleComposerEnter(
-  event,
-  readEnterToSendPreference(),
-  Boolean(el("prompt").value.trim()),
-  el("send-button").dataset.mode === "send" && !el("send-button").disabled,
-  () => el("send-form").requestSubmit(),
-);
+el("prompt").onkeydown = (event) => {
+  onPromptKeydown(
+    event,
+    readEnterToSendPreference(),
+    Boolean(el("prompt").value.trim()),
+    el("send-button").dataset.mode === "send" && !el("send-button").disabled,
+    () => el("send-form").requestSubmit(),
+  );
+};
 el("enter-to-send").checked = readEnterToSendPreference();
 el("enter-to-send").onchange = () => saveEnterToSendPreference(el("enter-to-send").checked);
 el("prompt").addEventListener("focus", syncViewport);
