@@ -138,7 +138,7 @@ test("Codex model update endpoint is CSRF-protected, bounded, and audits no mode
   const db = new Database(":memory:"); migrateWeb(db); const store = new WebStore(db);
   const auth = new WebAuth(store); const events = new WebEvents(store); const paired = await loginFixture(auth);
   if (!paired) throw new Error("fixture failed");
-  let outcome: "updated" | "model_unavailable" | "model_update_busy" | "model_update_unverified" | "model_update_unconfirmed" | "model_update_unavailable" | "session_missing" = "updated";
+  let outcome: "updated" | "model_unavailable" | "model_update_busy" | "model_update_writer_held" | "model_update_unverified" | "model_update_unconfirmed" | "model_update_unavailable" | "session_missing" = "updated";
   const calls: Array<{ id: string; modelId: string }> = [];
   const source: WebSource = {
     capabilities: () => ({ sessionsReadable: true, projectsReadable: false, modelsReadable: true, historyReadable: true, completeUserHistoryReadable: false, finalReplyReadable: true, createEnabled: false, sendEnabled: false, modelUpdateEnabled: true, approvalTransport: "telegram" }),
@@ -168,13 +168,13 @@ test("Codex model update endpoint is CSRF-protected, bounded, and audits no mode
     expect(accepted.status).toBe(200); expect((await accepted.json()).data).toEqual({ status: "updated", model: { id: "secret-model", displayName: "Selected" } });
     expect(calls.at(-1)).toEqual({ id: "thread-model", modelId: "secret-model" });
 
-    for (const [next, status] of [["model_unavailable", 409], ["model_update_busy", 409], ["model_update_unverified", 409], ["model_update_unconfirmed", 409], ["model_update_unavailable", 503], ["session_missing", 404]] as const) {
+    for (const [next, status] of [["model_unavailable", 409], ["model_update_busy", 409], ["model_update_writer_held", 409], ["model_update_unverified", 409], ["model_update_unconfirmed", 409], ["model_update_unavailable", 503], ["session_missing", 404]] as const) {
       outcome = next;
       const response = await request({ modelId: "secret-model" });
       expect(response.status).toBe(status); expect((await response.json()).data.errorCode).toBe(next);
     }
     const audits = db.query("SELECT action,detail_json AS detail FROM web_audit WHERE action='codex_thread_model_update' ORDER BY created_at").all() as Array<{ action: string; detail: string }>;
-    expect(audits).toHaveLength(7);
+    expect(audits).toHaveLength(8);
     expect(audits.every((item) => item.detail.includes("thread-model"))).toBe(true);
     expect(JSON.stringify(audits)).not.toContain("secret-model");
   } finally { events.close(); db.close(); }

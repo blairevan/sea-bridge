@@ -1,5 +1,13 @@
 # Sea-Bridge 借鉴 Codex 原生布局体验升级设计文档
 
+### v1.1.26 模型切换 writer-held 语义
+
+会话 `idle` 只表示当前没有 active turn，不代表 Desktop / CLI 已释放该 thread 的单 writer ownership。模型切换在临时 App Server `thread/resume` 返回 `already has an active writer` 时必须使用独立的 `model_update_writer_held` 错误，不能误报成“任务仍在运行”；UI 顶部消息按已知创建来源说明 Desktop / CLI 仍占用会话，并保留原模型。
+
+### v1.1.25 桌面轮次轨对齐 Codex
+
+桌面端 `.turn-rail` 改为覆盖在消息区左缘的极简细刻度轨，不再作为 flex 列挤占正文。普通轮次仅显示低对比短刻度，当前轮次拉长并增强对比；hover / keyboard focus 时在轨道右侧显示当前轮次的用户请求与最近助手回复/错误摘要，点击仍精确滚动到对应已加载 user message。移动端继续使用滚动时短暂出现的轮次提示与抽屉，不复用桌面 hover 卡。
+
 ### v1.1.23 会话列表状态投影修复
 
 会话列表不再只依赖 10 秒 live activity / active Hook TTL。若 Desktop observer 已对当前 catalog recency 完成对齐，则复用其持久化最新 turn observation：`inProgress` 显示执行中，可靠 terminal 显示空闲；若 catalog 已更新而 observer 尚未追上，则继续 fail-closed 显示状态未知，避免把新任务误判为空闲。
@@ -392,9 +400,9 @@ GPT-5.6 · 中 · Full Access
 
 模型切换必须是 **thread-scoped**，不能修改全局默认模型，也不能借 `codex queue` 猜测携带 model。实现契约：
 
-1. model 展示位置直接使用原生下拉控件，不再增加二级弹窗或冗余说明；仅 Codex、在线、服务端已确认 idle 时启用，其他状态直接 disabled，并必须像主停止按钮一样有明确不可用视觉反馈（降低透明度 + not-allowed），同时提供对应 title/ARIA 原因；
+1. model 展示位置直接使用原生下拉控件，不再增加二级弹窗或冗余说明；仅 Codex、在线、服务端已确认 idle 时启用，其他状态直接 disabled，并必须像主停止按钮一样有明确不可用视觉反馈（降低透明度 + not-allowed），同时提供对应 title/ARIA 原因；这里的 `idle` 只证明当前无 active turn，不等价于 thread writer 已释放；
 2. 选项必须来自实时 `model/list`，浏览器不能提交目录外 model；
-3. 后端启动临时 App Server，先 `thread/resume` 获取该 idle thread 的 writer；若返回 `already has an active writer`，以 `model_update_busy` fail closed；
+3. 后端启动临时 App Server，先 `thread/resume` 获取该 idle thread 的 writer；若返回 `already has an active writer`，必须区分为 `model_update_writer_held`，不能误报成 `model_update_busy`。前者表示 turn 已空闲但 Desktop/CLI 等其他 Codex 客户端仍持有 writer；真正检测到 active turn 才使用 `model_update_busy`；
 4. 在同一临时 session 调用实验性 `thread/settings/update { threadId, model }`；
 5. 随后用 `thread/read(includeTurns=false)` 回读，只有 `thread.model` 与请求完全一致才返回 `updated`；
 6. 无论成功失败都 `thread/unsubscribe`（已 resume 时）并关闭临时 session，不长期持有 writer；
@@ -454,12 +462,13 @@ Composer 使用与 Codex 一致的**单主按钮**，不并排放置 Send / Stop
 
 视口 `> 760px`：
 
-- 在消息区域左侧显示 `.turn-rail`；
-- 每个已加载 user message 一个 `.turn-tick`；
+- `.turn-rail` 以 absolute overlay 贴在消息区域左缘，正文仅保留极窄安全 gutter，轨道自身不作为 flex 列挤占消息宽度；
+- 每个已加载 user message 一个 `.turn-tick`；普通 tick 为约 5px 的低对比短线，hover/focus 适度拉长，当前轮次约 20px 并提高对比，避免常驻大面积控件；
 - `IntersectionObserver.root` 必须设为 `#messages`，不能默认观察 window；
 - 当前阅读轮次按最接近消息容器上方阅读锚点的 user message 高亮；
 - 点击刻度调用 `scrollIntoView({ block: "start" })`；
-- hover / focus 显示经过长度限制的用户问题摘要。
+- hover / keyboard focus 在轨道右侧显示非交互式预览卡：用户请求正文最多 220 字，若本轮已有助手 final/错误则显示最近一条最多 220 字摘要；附件 envelope 只使用正文，不暴露宿主路径；assistant memory citation 继续按现有 display 规则剥离；
+- 鼠标离开、focus 退出、历史重建或点击跳转时立即隐藏预览卡，避免悬浮内容滞留。
 
 当前 `loadHistory()` 会在内容变化时 `replaceChildren()`，因此重渲染后需要重新绑定 observer；不能长期保存已脱离 DOM 的 target。
 

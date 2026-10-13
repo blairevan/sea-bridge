@@ -192,7 +192,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
           return json(result);
         } catch (error) {
           const code = error instanceof Error ? error.message : "model_update_unavailable";
-          const stable = ["session_missing", "model_unavailable", "model_update_busy", "model_update_unverified", "model_update_unconfirmed", "model_update_unavailable"].includes(code)
+          const stable = ["session_missing", "model_unavailable", "model_update_busy", "model_update_writer_held", "model_update_unverified", "model_update_unconfirmed", "model_update_unavailable"].includes(code)
             ? code : "model_update_unavailable";
           audit(stable);
           const status = stable === "session_missing" ? 404
