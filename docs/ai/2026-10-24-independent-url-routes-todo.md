@@ -4,9 +4,9 @@
 - 任务标识：independent-url-routes
 - 项目 / 仓库 / Worktree：/opt/app/aitools/sea-bridge
 - 执行模式：standard
-- 授权记录：用户授权一镜到底模式，确认方案 1；自动推进工程交付
-- 分支 / 基线：codex/independent-url-routes (commit 780dc48)
-- 状态：in_progress
+- 授权记录：用户授权一镜到底模式，已完成代码交付、PR #16 合并至 main；飞书回写遇 personal profile 授权过期熔断
+- 分支 / 基线：main (commit c5a84fe)
+- 状态：awaiting_authorization
 
 | 阶段 | 状态 | 证据 | 未完成原因 / 下一步 |
 | --- | --- | --- | --- |
@@ -18,12 +18,12 @@
 | 6 | DONE | 方案 1 确认，授权一镜到底 | |
 | 7 | DONE | docs/ai/2026-10-24-independent-url-routes-{design,plan}.md 归档完成 | |
 | 8 | DONE | 创建并切换到 codex/independent-url-routes 分支 | |
-| 9 | IN_PROGRESS | TDD 编写测试与代码精准改造 | |
-| 10 | PENDING | 规约复核 | |
-| 11 | PENDING | 独立审查 | |
-| 12 | PENDING | Git 提交与发布 | |
-| 13 | PENDING | 飞书增量回写 | |
-| 14 | PENDING | 复盘与安全清理 | |
+| 9 | DONE | TDD 编写测试，492 项测试全通，类型检查与构建通过 | |
+| 10 | DONE | AGENTS.md 规约逐项复核无违背 | |
+| 11 | DONE | 独立审查 PASS，归档 docs/ai/2026-10-24-independent-url-routes-review.md | |
+| 12 | DONE | 提交 79207ad，创建并合并 PR #16 至 main (c5a84fe) | |
+| 13 | AWAITING_AUTHORIZATION | personal profile 用户 token 过期，需用户扫码授权写入 | |
+| 14 | PENDING | 飞书写入核验通过后收尾复盘 | |
 
 ## 阶段清单
 
@@ -35,9 +35,9 @@
 - [x] 6 方案、模式及 brainstorming 决策
 - [x] 7 Spec / Plan 归档
 - [x] 8 分支与工作区隔离
-- [ ] 9 TDD、精准改造及分层质量检查
-- [ ] 10 AGENTS.md 符合性复核
-- [ ] 11 独立审查与最终候选树 PASS
-- [ ] 12 Git 提交 / Push / PR / 合并及状态核验
-- [ ] 13 飞书增量回写、核验与完成标记
+- [x] 9 TDD、精准改造及分层质量检查
+- [x] 10 AGENTS.md 符合性复核
+- [x] 11 独立审查与最终候选树 PASS
+- [x] 12 Git 提交 / Push / PR / 合并及状态核验
+- [ ] 13 飞书增量回写、核验与完成标记 (待授权)
 - [ ] 14 复盘与安全清理与最终交付
