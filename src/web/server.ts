@@ -63,6 +63,11 @@ export class WebServer implements WebService {
       if (!(await asset.exists()) || asset.size > 1024 * 1024) throw new Error("web_asset_missing");
       const bytes = file === "index.html" ? renderVersionedShell(await asset.text()) : await asset.arrayBuffer();
       assets.set(path, { bytes, type });
+      if (path === "/") {
+        for (const route of ["/overview", "/sessions", "/records", "/settings"]) {
+          assets.set(route, { bytes, type });
+        }
+      }
     }
     this.server = Bun.serve({ hostname: "127.0.0.1", port: config.port, maxRequestBodySize: WEB_MAX_REQUEST_BYTES, idleTimeout: 30,
       fetch: async (request, server) => {
@@ -72,8 +77,9 @@ export class WebServer implements WebService {
         const asset = assets.get(url.pathname);
         if (asset && request.method === "GET") {
           if (!classifyRequest(request, { port: config.port, remoteOrigin: config.remoteOrigin, peer }, false)) return new Response("Forbidden", { status: 403 });
+          const isPageRoute = ["/", "/overview", "/sessions", "/records", "/settings"].includes(url.pathname);
           return new Response(asset.bytes, { headers: {
-            "Content-Type": asset.type, "Cache-Control": url.pathname !== "/" && url.searchParams.get("v") === APP_VERSION ? "public, max-age=31536000, immutable" : "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+            "Content-Type": asset.type, "Cache-Control": !isPageRoute && url.searchParams.get("v") === APP_VERSION ? "public, max-age=31536000, immutable" : "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           } });
         }

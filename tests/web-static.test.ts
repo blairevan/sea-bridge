@@ -42,7 +42,7 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
   expect(html).toContain('id="notice-bar"'); expect(html).toContain('id="notice-toggle"'); expect(html).toContain('id="notice-retry"'); expect(html).toContain('id="notice-close"');
-  for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog"]) expect(html).toContain(`id="${id}"`);
+  for (const id of ["overview-total", "overview-running", "overview-approval", "overview-new-session", "overview-privacy", "activity-filter", "catalog-dialog", "catalog-items", "catalog-new", "catalog-retry", "close-catalog", "default-page-select", "remember-path"]) expect(html).toContain(`id="${id}"`);
   expect(html).not.toContain("session-model-dialog"); expect(html).not.toContain("切换后应用于此会话后续轮次；运行中的任务不能切换。");
   expect(html).toContain('role="combobox"'); expect(html).toContain('aria-controls="record-suggestions"'); expect(html).toContain('会话标题'); expect(html).not.toContain('<label>会话 ID');
   expect(html).toContain('<label'); expect(html).not.toMatch(/https?:\/\//);
@@ -101,6 +101,14 @@ test("real loopback server sends strict static headers, allows no traversal, and
     expect(await response.text()).toContain(`v${APP_VERSION}`);
     expect(response.status).toBe(200); expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("Cache-Control")).toBe("no-store"); expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    for (const route of ["/overview", "/sessions", "/records", "/settings"]) {
+      const pageRes = await fetch(`http://127.0.0.1:${port}${route}`);
+      expect(pageRes.status).toBe(200);
+      expect(pageRes.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+      expect(pageRes.headers.get("Cache-Control")).toBe("no-store");
+      expect(await pageRes.text()).toContain(`v${APP_VERSION}`);
+    }
+    expect((await fetch(`http://127.0.0.1:${port}/unknown-route`)).status).toBe(404);
     const versioned = await fetch(`http://127.0.0.1:${port}/app.js?v=${APP_VERSION}`);
     expect(versioned.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
     const obsolete = await fetch(`http://127.0.0.1:${port}/app.js?v=0.0.0`);

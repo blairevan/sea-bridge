@@ -126,6 +126,68 @@ function restoreOverviewCache() {
   } catch { clearOverviewCache(); }
 }
 
+const VALID_PAGES = ["overview", "sessions", "records", "settings"];
+
+/** Normalize a pathname segment into a known console page ID. */
+function pageFromPathname(pathname) {
+  if (typeof pathname !== "string") return null;
+  const segment = pathname.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "";
+  return VALID_PAGES.includes(segment) ? segment : null;
+}
+
+/** Read the browser-local default start page without leaking state. */
+function readDefaultPagePreference() {
+  try {
+    const value = typeof localStorage !== "undefined" ? localStorage.getItem("sea-default-page") : null;
+    return VALID_PAGES.includes(value) ? value : "overview";
+  } catch { return "overview"; }
+}
+
+/** Persist the browser-local default start page. */
+function saveDefaultPagePreference(page) {
+  if (!VALID_PAGES.includes(page)) return;
+  try { if (typeof localStorage !== "undefined") localStorage.setItem("sea-default-page", page); } catch { /* The current-page selection still applies. */ }
+}
+
+/** Read the browser-local preference to restore the last visited console path. */
+function readRememberPathPreference() {
+  try {
+    const value = typeof localStorage !== "undefined" ? localStorage.getItem("sea-remember-path") : null;
+    return value === null ? true : value === "true";
+  } catch { return true; }
+}
+
+/** Persist the browser-local preference to restore the last visited console path. */
+function saveRememberPathPreference(enabled) {
+  try { if (typeof localStorage !== "undefined") localStorage.setItem("sea-remember-path", String(enabled)); } catch { /* The current-page selection still applies. */ }
+}
+
+/** Read the last visited console page from browser storage. */
+function readLastPage() {
+  try {
+    const value = typeof localStorage !== "undefined" ? localStorage.getItem("sea-last-page") : null;
+    return VALID_PAGES.includes(value) ? value : null;
+  } catch { return null; }
+}
+
+/** Persist the last visited console page to browser storage. */
+function saveLastPage(page) {
+  if (!VALID_PAGES.includes(page)) return;
+  try { if (typeof localStorage !== "undefined") localStorage.setItem("sea-last-page", page); } catch { /* The current-page selection still applies. */ }
+}
+
+/** Resolve the initial target page from the current URL, remembered path, and default page preference. */
+function resolveInitialPage(pathname) {
+  const currentPath = typeof pathname === "string" ? pathname : (typeof location !== "undefined" && typeof location.pathname === "string" ? location.pathname : "/");
+  const direct = pageFromPathname(currentPath);
+  if (direct) return { page: direct, replaceUrl: false };
+  if (readRememberPathPreference()) {
+    const remembered = readLastPage();
+    if (remembered) return { page: remembered, replaceUrl: true };
+  }
+  return { page: readDefaultPagePreference(), replaceUrl: true };
+}
+
 /** Generate an RFC 4122 UUID with secure randomness on HTTP Tailnet pages too. */
 function operationUuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -834,11 +896,25 @@ function connectEvents() {
     }
   });
 }
-/** Switch views using fixed IDs and load the corresponding data. */
-async function showPage(page) {
-  state.page = page;
-  for (const name of ["overview", "sessions", "records", "settings"]) el(name).hidden = name !== page;
-  document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
+/** Switch views using fixed IDs, sync browser history, and load the corresponding data. */
+async function showPage(page, options = {}) {
+  const push = options?.push ?? true;
+  const updateUrl = options?.updateUrl ?? true;
+  const target = VALID_PAGES.includes(page) ? page : "overview";
+  state.page = target;
+  saveLastPage(target);
+  if (updateUrl && typeof history !== "undefined" && typeof location !== "undefined") {
+    const targetPath = "/" + target;
+    if (location.pathname !== targetPath) {
+      if (push) history.pushState({ page: target }, "", targetPath);
+      else history.replaceState({ page: target }, "", targetPath);
+    }
+  }
+  for (const name of VALID_PAGES) {
+    const node = el(name);
+    if (node) node.hidden = name !== target;
+  }
+  document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.page === target));
   await refresh();
 }
 /** Refresh the active page only after authenticated settings validation. */
@@ -1543,6 +1619,8 @@ async function loadSettings() {
   const settings = await api("/api/settings");
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   state.settings = settings; el("redaction-enabled").checked = settings.redactionEnabled;
+  if (el("default-page-select")) el("default-page-select").value = readDefaultPagePreference();
+  if (el("remember-path")) el("remember-path").checked = readRememberPathPreference();
   renderDesktopRecoverySettings();
   const devices = await api("/api/devices");
   if (state.paused || viewEpoch !== state.viewEpoch) return;
@@ -2049,6 +2127,14 @@ el("prompt").onkeydown = (event) => {
 };
 el("enter-to-send").checked = readEnterToSendPreference();
 el("enter-to-send").onchange = () => saveEnterToSendPreference(el("enter-to-send").checked);
+if (el("default-page-select")) {
+  el("default-page-select").value = readDefaultPagePreference();
+  el("default-page-select").onchange = () => saveDefaultPagePreference(el("default-page-select").value);
+}
+if (el("remember-path")) {
+  el("remember-path").checked = readRememberPathPreference();
+  el("remember-path").onchange = () => saveRememberPathPreference(el("remember-path").checked);
+}
 el("prompt").addEventListener("focus", syncViewport);
 el("prompt").addEventListener("blur", syncViewport);
 window.visualViewport?.addEventListener("resize", syncViewport);
@@ -2132,8 +2218,14 @@ window.addEventListener("pageshow", () => {
 });
 window.addEventListener("online", () => { if (state.paused) { cancelReconnectTimer(); scheduleReconnect(true); } });
 window.addEventListener("offline", () => enterDisconnected());
+window.addEventListener("popstate", (event) => {
+  const target = event.state?.page || pageFromPathname(location.pathname) || readDefaultPagePreference();
+  run("page", () => showPage(target, { push: false, updateUrl: false }));
+});
 setInterval(() => run("poll", refresh), 3000);
 el("auth-loading-retry").onclick = () => run("auth-check", checkInitialLogin);
+const initialRoute = resolveInitialPage();
+void showPage(initialRoute.page, { push: false, updateUrl: initialRoute.replaceUrl });
 run("startup", checkInitialLogin);
 
 el("open-desktop").onclick = () => run("open-desktop", openSelectedDesktop);
