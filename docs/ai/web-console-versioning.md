@@ -1,5 +1,13 @@
 # Sea-Bridge 版本规则
 
+## v1.1.27
+
+- 支持概览、会话、操作记录、设置 4 个 Tab 的独立 URL 路由（`/overview`, `/sessions`, `/records`, `/settings`），支持直接访问与页面刷新，服务端白名单映射版本化 shell 并返回 `no-store`，非法路径保持 404。
+- 前端集成 History API（`pushState` / `replaceState` / `popstate`）与路径解析，支持浏览器原生前进与后退切换。
+- 设置页新增「导航偏好」配置：首次进入的默认 Tab 页（缺省为概览）与记住上次访问的路径开关（缺省开启，访问根路径 `/` 自动恢复至上次页面）。
+- 严格遵守安全与存储边界，偏好存取限定在安全白名单区间内，无 `innerHTML`。
+- 全量门禁 492 pass / 0 fail / 2321 expectations，typecheck、JS syntax、build、diff check 均通过。
+
 ## v0.14.1
 
 - 将额外项目搜索框改为单个可编辑项目下拉控件，点击展开、输入筛选、500ms 防抖、点击选择；输入期间必须重新选择，避免误提交旧项目。保留键盘下箭头/Enter 选择和 Escape 关闭。
