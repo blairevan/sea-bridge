@@ -4,9 +4,9 @@
 - 任务标识：foldable-filter-area
 - 项目 / 仓库 / Worktree：/opt/app/aitools/sea-bridge
 - 执行模式：one-take (一镜到底)
-- 授权记录：用户授权一镜到底；因当前 GitHub 账号权限熔断，暂停推送、PR与飞书标记
-- 分支 / 基线：codex/foldable-filter-area (commit f592b35，基线 main: 559c65f)
-- 状态：blocked
+- 授权记录：用户提供 GITHUB_02_BLAIREVAN_ACCESS_TOKEN 完成 PR #17 创建与 Squash and merge 合并至 main；飞书回写等待用户扫码授权 user 身份
+- 分支 / 基线：main (commit ffb1ee6)
+- 状态：awaiting_authorization
 
 | 阶段 | 状态 | 证据 | 未完成原因 / 下一步 |
 | --- | --- | --- | --- |
@@ -21,8 +21,8 @@
 | 9 | DONE | TDD 编写测试，495 项测试全通，类型检查与构建通过 | |
 | 10 | DONE | AGENTS.md 规约逐项复核无违背 | |
 | 11 | DONE | 独立审查 PASS，归档 docs/ai/2026-10-26-foldable-filter-area-review.md | |
-| 12 | BLOCKED | 推送触发熔断：当前 GitHub 账号 hunterlarcuad 对 blairevan/sea-bridge 仅有 pull 权限无 push 权限 (403) | 需用户切换至拥有写入权限的 GitHub 账号（如 blairevan）或授予 push 权限 |
-| 13 | PENDING | 飞书增量回写、核验与完成标记（等待发布完成） | |
+| 12 | DONE | 提交 fef0038，推送分支，创建 PR #17 并成功 Squash and merge 合并至 main (ffb1ee6) | |
+| 13 | IN_PROGRESS | 飞书个人文档写入需 user 身份授权，已发起 Device Code 授权流程，等待用户扫码确认 | 设备码: OgOxt0lfVu4t3VvUmCEYH6Ce0OtsUdCLGROOOOOOOOOOtmb7GROOOOOt.Aoja_1S8DhjuMUM_VRkGoSmnK3MQqhMg4cXdVk2amys |
 | 14 | PENDING | 复盘、安全清理与最终交付 |
 
 ## 阶段清单
@@ -38,7 +38,7 @@
 - [x] 9 TDD、精准改造及分层质量检查
 - [x] 10 AGENTS.md 符合性复核
 - [x] 11 独立审查与最终候选树 PASS
-- [ ] 12 Git 提交 / Push / PR / 合并及状态核验
+- [x] 12 Git 提交 / Push / PR / 合并及状态核验
 - [ ] 13 飞书增量回写、核验与完成标记
 - [ ] 14 复盘、安全清理与最终交付
 
