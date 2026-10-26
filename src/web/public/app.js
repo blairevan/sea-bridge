@@ -932,6 +932,7 @@ function overviewTime(value) {
 }
 /** Route overview actions to a clean list, retaining cached content during an outage. */
 async function openOverviewSessions(source = "", activity = "") {
+  if (source || activity) toggleSessionFilters(true);
   el("source-filter").value = source; if (el("creation-client-filter")) el("creation-client-filter").value = ""; syncCreationFilter(); el("activity-filter").value = activity; el("session-search").value = "";
   state.sessionCursor = null;
   el("sessions").classList.remove("detail-open"); el("sessions").classList.add("browse-only");
@@ -1099,6 +1100,26 @@ function renderOverview(status, sessions, continuation, cached = false) {
     }); recent.append(button);
   }
   if (!sessions.items.length) recent.append(node("p", sessions.partial ? "暂时无法读取会话，恢复后会自动更新" : "暂无会话，可在会话页创建任务", "overview-empty muted"));
+}
+/** Toggle visibility of the session filter panel and update the toggle button state. */
+function toggleSessionFilters(force) {
+  const panel = el("session-filter-panel");
+  const button = el("toggle-session-filters");
+  if (!panel || !button) return;
+  const nextExpanded = typeof force === "boolean" ? force : panel.hidden;
+  panel.hidden = !nextExpanded;
+  button.textContent = nextExpanded ? "收起筛选" : "展开筛选";
+  if (typeof button.setAttribute === "function") button.setAttribute("aria-expanded", String(nextExpanded));
+}
+/** Toggle visibility of the record filter form and update the toggle button state. */
+function toggleRecordFilters(force) {
+  const form = el("record-filter");
+  const button = el("toggle-record-filters");
+  if (!form || !button) return;
+  const nextExpanded = typeof force === "boolean" ? force : form.hidden;
+  form.hidden = !nextExpanded;
+  button.textContent = nextExpanded ? "收起筛选" : "展开筛选";
+  if (typeof button.setAttribute === "function") button.setAttribute("aria-expanded", String(nextExpanded));
 }
 /** Keep distinct filter changes independent while suppressing duplicate reads of one selection. */
 function reloadSessionFilters() {
@@ -2168,6 +2189,8 @@ el("catalog-retry").onclick = () => run("retry", retryConnection);
 el("close-catalog").onclick = () => el("catalog-dialog").close();
 el("catalog-new").onclick = () => run("overview-action", async () => { const source = state.catalogContext?.source; if (!source) return; el("catalog-dialog").close(); await openOverviewCreate(source); });
 el("refresh-status").onclick = () => run("refresh", refresh);
+if (el("toggle-session-filters")) el("toggle-session-filters").onclick = () => toggleSessionFilters();
+if (el("toggle-record-filters")) el("toggle-record-filters").onclick = () => toggleRecordFilters();
 el("activity-filter").onchange = reloadSessionFilters;
 el("source-filter").onchange = reloadSessionFilters;
 el("creation-client-filter").onchange = reloadSessionFilters;
