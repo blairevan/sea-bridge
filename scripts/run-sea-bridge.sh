@@ -9,7 +9,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# The env file is expected to be mode 0600 and contain KEY=value lines.
 set -a
 source "$ENV_FILE"
 set +a
@@ -24,4 +23,9 @@ if [[ -z "$BUN_BIN" || ! -x "$BUN_BIN" ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-exec "$BUN_BIN" run src/main.ts
+if [[ -f "$PROJECT_ROOT/dist/main.js" ]]; then
+  exec "$BUN_BIN" run dist/main.js
+else
+  exec "$BUN_BIN" run src/main.ts
+fi
+
