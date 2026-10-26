@@ -8,6 +8,12 @@ const reads = new Map();
 const messageViews = new Map();
 let historyTools;
 let creationProjects = { source: null, items: [] };
+let creationModels = { source: null, items: [] };
+const DESKTOP_REASONING_EFFORTS = [
+  { id: "low", label: "低（轻度）" },
+  { id: "medium", label: "中" },
+  { id: "high", label: "高" },
+];
 let projectSearchTimer = null;
 let turnObserver = null;
 let turnIndicatorTimer = null;
@@ -611,6 +617,7 @@ function hideConnectionNotice() { state.connectionDetail = ""; clearNotice(); }
 function setConnectionControls(disabled) {
   for (const button of el("device-items")?.querySelectorAll?.("button") ?? []) button.disabled = disabled || button.dataset?.revoked === "true";
   for (const id of ["create-source", "create-project-search", "create-project", "create-model"]) { const control = el(id); if (control) control.disabled = disabled; }
+  const effortSelect = el("create-reasoning-effort"); if (effortSelect) effortSelect.disabled = disabled || (effortSelect.children ? effortSelect.children.length <= 1 : false);
   const overviewCreate = el("overview-new-session"); if (overviewCreate) overviewCreate.disabled = disabled;
   const catalogCreate = el("catalog-new"); if (catalogCreate) catalogCreate.disabled = disabled || !state.caps[state.catalogContext?.source]?.createEnabled;
   const catalogRetry = el("catalog-retry"); if (catalogRetry) catalogRetry.hidden = !disabled;
@@ -635,13 +642,13 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
-  resetProjectSearch(); creationProjects = { source: null, items: [] }; state.interruptRequest = null;
+  resetProjectSearch(); creationProjects = { source: null, items: [] }; creationModels = { source: null, items: [] }; state.interruptRequest = null;
   sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 }; composerModelControl = null; sessionModelUpdate = null;
   if (state.device?.id) clearOverviewCache();
   closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
   state.viewEpoch++; reads.clear();
-  for (const id of ["record-items", "log-items", "device-items", "create-project", "create-project-options", "create-model", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
+  for (const id of ["record-items", "log-items", "device-items", "create-project", "create-project-options", "create-model", "create-reasoning-effort", "status-cards", "session-items", "recent-sessions", "catalog-items"]) el(id).replaceChildren();
   clearRecordSuggestions(); state.recordChoice = null; if (el("record-session")) el("record-session").value = "";
   const freshness = el("overview-freshness"); if (freshness) { freshness.hidden = true; freshness.textContent = ""; }
   for (const id of ["overview-session-count", "overview-running-count", "overview-approval-count"]) { const value = el(id); if (value) value.textContent = "—"; }
@@ -1715,6 +1722,40 @@ function projectSearchKeydown(event) {
   } else if (event.key === "ArrowDown") { event.preventDefault(); el("create-project-options").querySelector("button")?.focus(); }
   else if (event.key === "Enter" && !el("create-project-options").hidden) { event.preventDefault(); el("create-project-options").querySelector("button")?.click(); }
 }
+/** Populate desktop reasoning effort options when the selected model supports them. */
+function syncReasoningEffortControl() {
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+  const effortSelect = el("create-reasoning-effort");
+  if (!effortSelect) return;
+  const previousValue = effortSelect.value;
+  const selectedModelId = el("create-model")?.value;
+  const model = creationModels.items.find((item) => item.id === selectedModelId);
+  const supported = model?.supportedReasoningEfforts;
+  effortSelect.replaceChildren(node("option", "使用模型默认设置"));
+  effortSelect.firstChild.value = "";
+  if (!Array.isArray(supported) || supported.length === 0) {
+    effortSelect.value = "";
+    effortSelect.disabled = true;
+    return;
+  }
+  const available = DESKTOP_REASONING_EFFORTS.filter((item) => supported.includes(item.id));
+  if (available.length === 0) {
+    effortSelect.value = "";
+    effortSelect.disabled = true;
+    return;
+  }
+  for (const item of available) {
+    const option = node("option", item.label);
+    option.value = item.id;
+    effortSelect.append(option);
+  }
+  effortSelect.disabled = Boolean(state.paused);
+  if (available.some((item) => item.id === previousValue)) {
+    effortSelect.value = previousValue;
+  } else {
+    effortSelect.value = "";
+  }
+}
 /** Discover source-specific catalogs without storing a global default model. */
 async function loadCatalogs() {
   const viewEpoch = state.viewEpoch;
@@ -1728,11 +1769,13 @@ async function loadCatalogs() {
   await loadSessions(false);
   if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
   creationProjects = { source, items: projects.items };
+  creationModels = { source, items: models.items };
   el("create-model").replaceChildren(node("option", "使用来源默认模型")); el("create-model").firstChild.value = "";
   renderCreationProjects(projectSelection);
   closeProjectOptions(); el("create-project-search").value = creationProjects.items.find((project) => project.id === el("create-project").value)?.name ?? "";
   for (const model of models.items) { const option = node("option", model.name); option.value = model.id; el("create-model").append(option); }
   if (models.items.some((model) => model.id === modelSelection)) el("create-model").value = modelSelection;
+  syncReasoningEffortControl();
   const allowed = state.caps[source]?.createEnabled;
   el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
@@ -1993,7 +2036,8 @@ async function submitWrite(create) {
   const session = state.selected; if (!create && !session) return;
   if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
   const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
-  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
+  const reasoningEffort = create ? (el("create-reasoning-effort")?.value || null) : null;
+  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   if (!create) setComposerStatus("发送中…");
   try {
@@ -2207,6 +2251,7 @@ el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open"
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
 el("create-source").onchange = () => { resetProjectSearch(); el("create-project").replaceChildren(); run("catalog-" + el("create-source").value, loadCatalogs); };
+el("create-model").onchange = syncReasoningEffortControl;
 el("create-project-search").oninput = scheduleProjectSearch;
 el("create-project-search").onfocus = openProjectOptions;
 el("create-project-search").onkeydown = projectSearchKeydown;

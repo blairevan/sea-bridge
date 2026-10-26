@@ -107,7 +107,14 @@ interface ProjectListResponse {
 }
 
 interface ModelListResponse {
-  data?: Array<{ id?: string; model?: string; displayName?: string; hidden?: boolean }>;
+  data?: Array<{
+    id?: string;
+    model?: string;
+    displayName?: string;
+    hidden?: boolean;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts?: Array<{ reasoningEffort?: string } | string>;
+  }>;
   nextCursor?: string | null;
 }
 
@@ -471,7 +478,14 @@ export class CodexReadService {
   }
 
   async listModels(): Promise<ModelOption[]> {
-    const models: Array<{ id?: string; model?: string; displayName?: string; hidden?: boolean }> = [];
+    const models: Array<{
+      id?: string;
+      model?: string;
+      displayName?: string;
+      hidden?: boolean;
+      defaultReasoningEffort?: string;
+      supportedReasoningEfforts?: Array<{ reasoningEffort?: string } | string>;
+    }> = [];
     let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
       const response: ModelListResponse = await this.query<ModelListResponse>("model/list", { cursor, limit: 100, includeHidden: false });
@@ -489,7 +503,20 @@ export class CodexReadService {
       const id = model.id ?? model.model;
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      result.push({ id, displayName: model.displayName || id });
+      const supportedReasoningEfforts = Array.isArray(model.supportedReasoningEfforts)
+        ? model.supportedReasoningEfforts
+            .map((item) => typeof item === "string" ? item : item?.reasoningEffort)
+            .filter((item): item is string => typeof item === "string" && item.length > 0)
+        : undefined;
+      const defaultReasoningEffort = typeof model.defaultReasoningEffort === "string" && model.defaultReasoningEffort.length > 0
+        ? model.defaultReasoningEffort
+        : undefined;
+      result.push({
+        id,
+        displayName: model.displayName || id,
+        ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+        ...(supportedReasoningEfforts && supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
+      });
     }
     return result;
   }

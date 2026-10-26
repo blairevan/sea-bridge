@@ -16,6 +16,8 @@ export interface ProjectItem {
 export interface ModelOption {
   id: string;
   displayName: string;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts?: string[];
 }
 
 export interface StartedThread {
@@ -81,7 +83,14 @@ interface ProjectListResponse {
 }
 
 interface ModelListResponse {
-  data?: Array<{ id?: string; model?: string; displayName?: string; hidden?: boolean }>;
+  data?: Array<{
+    id?: string;
+    model?: string;
+    displayName?: string;
+    hidden?: boolean;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts?: Array<{ reasoningEffort?: string } | string>;
+  }>;
   nextCursor?: string | null;
 }
 
@@ -589,7 +598,14 @@ export class CodexAppServerClient {
   async listModels(): Promise<ModelOption[]> {
     const session = await this.openSession();
     try {
-      const models: Array<{ id?: string; model?: string; displayName?: string; hidden?: boolean }> = [];
+      const models: Array<{
+        id?: string;
+        model?: string;
+        displayName?: string;
+        hidden?: boolean;
+        defaultReasoningEffort?: string;
+        supportedReasoningEfforts?: Array<{ reasoningEffort?: string } | string>;
+      }> = [];
       let cursor: string | null = null;
       for (let page = 0; page < 20; page++) {
         const response: ModelListResponse = await session.request<ModelListResponse>(
@@ -609,7 +625,20 @@ export class CodexAppServerClient {
         const id = model.id ?? model.model;
         if (!id || seen.has(id)) continue;
         seen.add(id);
-        result.push({ id, displayName: model.displayName || id });
+        const supportedReasoningEfforts = Array.isArray(model.supportedReasoningEfforts)
+          ? model.supportedReasoningEfforts
+              .map((item) => typeof item === "string" ? item : item?.reasoningEffort)
+              .filter((item): item is string => typeof item === "string" && item.length > 0)
+          : undefined;
+        const defaultReasoningEffort = typeof model.defaultReasoningEffort === "string" && model.defaultReasoningEffort.length > 0
+          ? model.defaultReasoningEffort
+          : undefined;
+        result.push({
+          id,
+          displayName: model.displayName || id,
+          ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+          ...(supportedReasoningEfforts && supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
+        });
       }
       return result;
     } finally {
@@ -622,6 +651,7 @@ export class CodexAppServerClient {
     projectId: string;
     cwd: string;
     model?: string;
+    reasoningEffort?: string | null;
     prompt: string;
     permissions?: ResolvedDesktopPermissions;
     onThreadStarted?: (threadId: string) => void;
@@ -673,7 +703,7 @@ export class CodexAppServerClient {
       params.onThreadStarted?.(threadId);
 
       const turnPermissions = permissions.turnStart(params.cwd);
-      const turnResponse = await session.request<{ turn?: { id?: string } }>("turn/start", {
+      const turnStartParams: Record<string, unknown> = {
         threadId,
         input: [{
           type: "text",
@@ -683,7 +713,11 @@ export class CodexAppServerClient {
         approvalPolicy: turnPermissions.approvalPolicy,
         approvalsReviewer: turnPermissions.approvalsReviewer,
         sandboxPolicy: turnPermissions.sandboxPolicy,
-      });
+      };
+      if (params.reasoningEffort) {
+        turnStartParams.effort = params.reasoningEffort;
+      }
+      const turnResponse = await session.request<{ turn?: { id?: string } }>("turn/start", turnStartParams);
       const turnId = turnResponse?.turn?.id;
       if (!turnId) throw new Error("app_server_turn_start_missing_id");
 
@@ -697,6 +731,7 @@ export class CodexAppServerClient {
           model: threadResponse?.model ?? params.model ?? null,
           sandbox: permissions.threadStart.sandbox,
           approvalPolicy: turnPermissions.approvalPolicy,
+          ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
         },
       });
       handedToBackground = true;
