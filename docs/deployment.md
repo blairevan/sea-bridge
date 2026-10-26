@@ -25,7 +25,7 @@ Cloudflare Tunnel 创建、DNS 路由与指定配置运行的流程以 [Cloudfla
 | 项目 | 当前配置 |
 | --- | --- |
 | 源码目录 | `/opt/app/aitools/sea-bridge` |
-| 发布目录 | `/opt/app/aitools/sea-bridge-releases/sea-bridge-v0.14.1-20261004-170828` |
+| 运行脚本 | `/opt/app/aitools/sea-bridge/scripts/run-sea-bridge.sh` (固定指向本地仓库) |
 | 本机地址 | `http://127.0.0.1:7310` |
 | 公网地址 | `https://code.example.com` |
 | 应用环境配置 | `~/.config/sea-bridge/env` |
