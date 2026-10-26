@@ -77,6 +77,7 @@
     <label for="create-source">执行来源</label><select id="create-source"><option value="codex">Codex</option><option value="dsh">dsh</option></select>
     <div id="create-project-field" class="project-field"><label for="create-project-search">项目</label><input id="create-project-search" type="search" placeholder="选择或搜索项目" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="create-project-options" required><div id="create-project-options" class="record-suggestions project-options" role="listbox" aria-label="项目" hidden></div><select id="create-project" hidden aria-hidden="true" tabindex="-1"></select></div>
     <label for="create-model">模型</label><select id="create-model"><option value="">使用来源默认模型</option></select>
+    <label id="create-reasoning-label" for="create-reasoning-effort">推理强度</label><select id="create-reasoning-effort"><option value="">使用模型默认设置</option></select>
     <label for="create-prompt">首条消息</label><textarea id="create-prompt" rows="6" maxlength="32000" required placeholder="描述你希望完成的任务"></textarea>
     <p id="create-hint" class="muted"></p><button id="create-retry" type="button" class="quiet" hidden>立即重试连接</button><button id="create-reconcile" type="button" class="quiet" hidden>刷新核查</button><button id="create-submit" type="submit">创建并发送</button>
   </form></dialog>

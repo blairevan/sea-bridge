@@ -353,7 +353,7 @@ describe("CodexAppServerClient", () => {
           id: message.id,
           result: {
             data: [
-              { id: "gpt-5-codex", displayName: "GPT-5 Codex", hidden: false },
+              { id: "gpt-5-codex", displayName: "GPT-5 Codex", hidden: false, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }, { reasoningEffort: "high" }] },
               { id: "hidden", displayName: "Hidden", hidden: true },
             ],
             nextCursor: "m2",
@@ -373,7 +373,7 @@ describe("CodexAppServerClient", () => {
 
     const client = new CodexAppServerClient("/codex", { spawner: () => proc as any, requestTimeoutMs: 500 });
     await expect(client.listModels()).resolves.toEqual([
-      { id: "gpt-5-codex", displayName: "GPT-5 Codex" },
+      { id: "gpt-5-codex", displayName: "GPT-5 Codex", defaultReasoningEffort: "medium", supportedReasoningEfforts: ["low", "medium", "high"] },
       { id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
     ]);
   });
@@ -401,6 +401,7 @@ describe("CodexAppServerClient", () => {
         expect(registeredThread).toBe("thread-1");
         expect(message.params).toEqual({
           threadId: "thread-1",
+          effort: "high",
           input: [{ type: "text", text: "review this", textElements: [] }],
           approvalPolicy: "never",
           approvalsReviewer: "user",
@@ -416,6 +417,7 @@ describe("CodexAppServerClient", () => {
       projectId: "p1",
       cwd: "/repo",
       model: "gpt-5.3-codex",
+      reasoningEffort: "high",
       prompt: "review this",
       onThreadStarted: (threadId) => {
         registeredThread = threadId;

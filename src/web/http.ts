@@ -267,9 +267,15 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const source = deps.sources[executionSource]; if (!source) throw new HttpError(503, "source_unavailable");
         const operationId = text(body.operationId, 36) ?? "";
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId)) throw new HttpError(400, "invalid_operation_id");
+        const rawEffort = send ? null : body.reasoningEffort;
+        const reasoningEffort = rawEffort != null && rawEffort !== "" ? text(rawEffort, 80) : null;
+        if (reasoningEffort !== null && !/^[a-zA-Z0-9_-]{1,80}$/.test(reasoningEffort)) {
+          throw new HttpError(400, "invalid_reasoning_effort");
+        }
         const operation = await dispatchWebOperation({ operationId, source: executionSource, kind: send ? "send" : "create",
           targetId: send ? text(decodeURIComponent(send[2] ?? ""), 200) : null,
-          projectId: send ? null : text(body.projectId, 200), modelId: send ? null : text(body.modelId, 2000, true), prompt: text(body.prompt, 32000) ?? "",
+          projectId: send ? null : text(body.projectId, 200), modelId: send ? null : text(body.modelId, 2000, true),
+          reasoningEffort, prompt: text(body.prompt, 32000) ?? "",
         }, device.id, source, deps.store, deps.pepper, deps.redaction);
         return json(operation);
       }

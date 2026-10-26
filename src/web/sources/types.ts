@@ -38,7 +38,12 @@ export interface WebTurnControl {
 }
 export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[]; turnControl?: WebTurnControl; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
-export interface CatalogItem { id: string; name: string; }
+export interface CatalogItem {
+  id: string;
+  name: string;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts?: string[];
+}
 /** Runtime evidence is separate from durable delivery state. */
 export interface ExecutionEvidence {
   state: "running" | "waiting_external_approval" | "session_ended" | "unknown";
@@ -48,7 +53,7 @@ export interface ExecutionEvidence {
 export interface SourceResult { state: OperationState; sessionId: string | null; turnId?: string; errorCode?: string; }
 /** Explicit per-request model choice and early persistence callback. */
 export interface CreateRequest {
-  operationId: string; projectId: string; modelId: string | null; prompt: string;
+  operationId: string; projectId: string; modelId: string | null; reasoningEffort?: string | null; prompt: string;
   onSessionKnown: (id: string) => void;
 }
 /** Web adapter boundary independent of Telegram IDs and preferences. */

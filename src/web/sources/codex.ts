@@ -252,7 +252,12 @@ export class CodexWebSource implements WebSource {
     try {
       const models = await this.modelCache.get(); this.modelsReadable = true;
       for (const model of models) this.modelNames.set(model.id, model.displayName);
-      return models.map((model) => ({ id: model.id, name: model.displayName }));
+      return models.map((model) => ({
+        id: model.id,
+        name: model.displayName,
+        ...(model.defaultReasoningEffort ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
+        ...(model.supportedReasoningEfforts && model.supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts: model.supportedReasoningEfforts } : {}),
+      }));
     } catch { this.modelsReadable = false; throw new Error("models_unavailable"); }
   }
 
@@ -338,12 +343,18 @@ export class CodexWebSource implements WebSource {
       let models: CatalogItem[];
       try { models = await this.models(); }
       catch { return { state: "failed", sessionId: null, errorCode: "models_unavailable" }; }
-      if (!models.some((model) => model.id === input.modelId)) return { state: "failed", sessionId: null, errorCode: "model_unavailable" };
+      const matched = models.find((model) => model.id === input.modelId);
+      if (!matched) return { state: "failed", sessionId: null, errorCode: "model_unavailable" };
+      if (input.reasoningEffort && (!matched.supportedReasoningEfforts || !matched.supportedReasoningEfforts.includes(input.reasoningEffort))) {
+        return { state: "failed", sessionId: null, errorCode: "reasoning_effort_unavailable" };
+      }
     }
     let known: string | null = null;
     try {
       const result = await this.actions.startThreadAndTurn({
-        projectId: project.id, cwd: project.primaryRoot, prompt: input.prompt, ...(input.modelId ? { model: input.modelId } : {}),
+        projectId: project.id, cwd: project.primaryRoot, prompt: input.prompt,
+        ...(input.modelId ? { model: input.modelId } : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         onThreadStarted: (id) => { known = id; this.owners.add(id); input.onSessionKnown(id); this.deps.registerCreatedThread?.(id); },
         onOwnershipReleased: (id) => { this.owners.delete(id); },
       });

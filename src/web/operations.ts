@@ -6,7 +6,8 @@ import type { WebSource } from "./sources/types.ts";
 /** Browser operation input is validated before being durably claimed. */
 export interface WebWriteRequest {
   operationId: string; source: "codex" | "dsh"; kind: "create" | "send";
-  targetId: string | null; projectId: string | null; modelId: string | null; prompt: string;
+  targetId: string | null; projectId: string | null; modelId: string | null;
+  reasoningEffort?: string | null; prompt: string;
 }
 
 /** Atomically claim and dispatch once; no transport failure triggers an implicit replay. */
@@ -32,7 +33,7 @@ export async function dispatchWebOperation(input: WebWriteRequest, deviceId: str
     const raced = store.getOperation(input.operationId); if (!raced) throw new Error("operation_missing"); return raced;
   }
   try {
-    const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, prompt: input.prompt,
+    const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? null, prompt: input.prompt,
       onSessionKnown: (id) => { store.setOperationSession(input.operationId, id, Date.now()); },
     }) : await source.send(input.targetId ?? "", input.operationId, input.prompt);
     if (result.sessionId) {

@@ -232,4 +232,30 @@ describe("CodexReadService", () => {
     await expect(service.listThreads()).rejects.toThrow("codex_thread_list_cursor_loop");
     await service.close();
   });
+  test("listModels returns visible models with reasoning effort capabilities", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "model/list") {
+        return proc.send({
+          id: message.id,
+          result: {
+            data: [
+              { id: "gpt-5.5", displayName: "GPT-5.5", defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }, { reasoningEffort: "high" }] },
+              { id: "hidden", displayName: "Hidden", hidden: true },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+    });
+    const service = new CodexReadService("/codex", "/home/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+      requestTimeoutMs: 500,
+    });
+    await expect(service.listModels()).resolves.toEqual([
+      { id: "gpt-5.5", displayName: "GPT-5.5", defaultReasoningEffort: "medium", supportedReasoningEfforts: ["low", "medium", "high"] },
+    ]);
+    await service.close();
+  });
 });
