@@ -167,3 +167,9 @@ header .header-actions button { margin-left: 0; white-space: nowrap; }
 @media(max-width:760px){.messages-region #messages{padding-left:0}.turn-rail,.turn-rail-preview{display:none!important}.turn-indicator{display:block}.turn-dialog{width:100vw;height:auto;max-height:75dvh;max-width:100vw;margin:auto 0 0;padding:16px;border:0;border-top:1px solid var(--line);border-radius:14px 14px 0 0}.turn-dialog-list{max-height:52dvh}.live-activity-card{margin:8px 0 10px;padding:10px 12px}.composer{padding-top:5px}.composer-shell{border-radius:10px}.composer-control-row{padding:5px 6px 6px 10px}.composer-state>#composer-session-status{font-size:10px}.composer-control-row>#send-button{min-height:34px;height:34px;padding:5px 10px;font-size:12px}}
 @media(min-width:761px){.turn-indicator{display:none!important}}
 @media(prefers-reduced-motion:reduce){.live-activity-dot{animation:none}.turn-tick::after{transition:none}}
+
+/* Foldable filter panels and mobile anti-overflow rules */
+.session-heading-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.session-filter-toggle,.record-filter-toggle{padding:5px 10px;font-size:12px;min-height:32px;white-space:nowrap}
+.session-filter-panel{margin-bottom:12px}
+#log-items pre.record-row{white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;max-width:100%}
