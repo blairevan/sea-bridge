@@ -1208,6 +1208,7 @@ function setTurnIndicatorAvoidance(visible) {
 }
 /** Position the latest rendered message inside the actual message scroller. */
 function scrollMessagesToLatest(container) {
+  if (!container) return;
   container.scrollTop = container.scrollHeight;
   container.lastElementChild?.scrollIntoView?.({ block: "end", inline: "nearest" });
   updateLatestShortcut();
@@ -2065,11 +2066,16 @@ function syncViewport() {
   if (window.innerWidth > 760) return;
   const viewport = window.visualViewport;
   if (viewport && viewport.scale !== 1) return;
-  const messages = el("messages"); const follow = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 100;
   document.documentElement.style.setProperty("--app-height", `${viewport?.height ?? window.innerHeight}px`);
   document.documentElement.style.setProperty("--app-top", `${viewport?.offsetTop ?? 0}px`);
   document.documentElement.classList.toggle("keyboard-open", document.activeElement === el("prompt") && window.innerHeight - (viewport?.height ?? window.innerHeight) > 120);
-  if (follow && !state.paused) scrollMessagesToLatest(messages);
+  if (state.page === "sessions" && !el("sessions")?.hidden) {
+    const messages = el("messages");
+    if (messages && messages.clientHeight > 0) {
+      const follow = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 100;
+      if (follow && !state.paused) scrollMessagesToLatest(messages);
+    }
+  }
 }
 
 /** Explicit host-side navigation only; an OS receipt does not prove execution resumed. */
@@ -2159,7 +2165,6 @@ if (el("remember-path")) {
 el("prompt").addEventListener("focus", syncViewport);
 el("prompt").addEventListener("blur", syncViewport);
 window.visualViewport?.addEventListener("resize", syncViewport);
-window.visualViewport?.addEventListener("scroll", syncViewport);
 window.addEventListener("resize", syncViewport);
 syncViewport();
 

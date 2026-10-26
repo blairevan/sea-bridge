@@ -1,5 +1,12 @@
 # Sea-Bridge 版本规则
 
+## v1.1.29
+
+- 修复移动端滑动手势导致页面反向向上翻滚的严重 Bug：
+  1. 移除对 visualViewport.scroll 的全局无差别监听，避免页面拖动时被频繁打断；
+  2. syncViewport 增加严格的页面作用域与可见性守卫（仅在会话页且消息容器可见时响应），彻底杜绝概览页、设置页与记录页误触发会话消息吸底与 scrollIntoView 连累主容器滚动。
+- 全量门禁 498 pass / 0 fail / 2344 expectations，typecheck、JS syntax、build 均通过。
+
 ## v1.1.28
 
 - 会话 Tab 筛选区域默认改为折叠，在“新建”按钮左侧新增“展开/折叠”按钮，并支持从概览页快捷跳转带筛选时自动展开。
