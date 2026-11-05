@@ -6,6 +6,7 @@ export interface TaskTurnInput {
   projectId: string; repositoryPath: string; worktreePath: string; baseSha: string;
   mode: 'implement' | 'review'; model: string | null; reasoningEffort: string | null; prompt: string;
   title?: string;
+  context?: string;
 }
 export interface TaskTurnReport { summary: string; details: string; limitations: string[] }
 export interface TaskOperation {
@@ -66,7 +67,8 @@ export function parseTaskTurn(value: unknown): TaskTurnInput {
     revision: Number(data.revision), projectId: identifier(data.projectId),
     repositoryPath: absolutePath(data.repositoryPath), worktreePath: absolutePath(data.worktreePath), baseSha,
     mode: data.mode, model: modelName(data.model), reasoningEffort: modelName(data.reasoningEffort), prompt: field(data.prompt, 48000),
-    ...(data.title === undefined ? {} : { title: field(data.title, 160) }) };
+    ...(data.title === undefined ? {} : { title: field(data.title, 160) }),
+    ...(data.context === undefined ? {} : { context: field(data.context, 16000) }) };
 }
 
 /** Parse the model report, which is narrative only and never an execution receipt. */
@@ -75,6 +77,3 @@ export function parseTurnReport(value: unknown): TaskTurnReport {
   if (!Array.isArray(data.limitations) || data.limitations.length > 30) throw new TaskBridgeError('invalid_report');
   return { summary: field(data.summary, 4000), details: field(data.details, 24000), limitations: data.limitations.map(item => field(item, 1000)) };
 }
-
-export const TASK_REPORT_SCHEMA = { type: 'object', additionalProperties: false, required: ['summary', 'details', 'limitations'],
-  properties: { summary: { type: 'string' }, details: { type: 'string' }, limitations: { type: 'array', items: { type: 'string' } } } };

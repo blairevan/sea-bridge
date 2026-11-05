@@ -68,6 +68,10 @@ describe('persistent native task turns', () => {
     expect(report.details).toBe(answer);
     expect(report.summary).toContain('尚未验收');
     expect(report.limitations.join(' ')).toContain('报告原文');
+    const codeExample = '{"enabled":true}\n这是用户要求的配置示例，不是任务协议。';
+    expect(reportForTurn({ id: 'turn', status: 'completed', items: [
+      { type: 'agentMessage', phase: 'final_answer', text: codeExample },
+    ] }, 'turn').details).toBe(codeExample);
     expect(() => reportForTurn({ id: 'turn', status: 'completed', items: [
       { type: 'agentMessage', phase: 'final_answer', text: '   ' },
     ] }, 'turn')).toThrow();

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createNativeConversation, sendNativeConversationMessage } from './codex-conversation-requests.ts';
 import {
   resolveDesktopPermissions,
   type ResolvedDesktopPermissions,
@@ -672,19 +673,10 @@ export class CodexAppServerClient {
     };
     try {
       const permissions = params.permissions ?? this.permissionsResolver();
-      const threadParams: Record<string, unknown> = {
-        projectId: params.projectId,
-        cwd: params.cwd,
-        sandbox: permissions.threadStart.sandbox,
-        approvalPolicy: permissions.threadStart.approvalPolicy,
-        approvalsReviewer: permissions.threadStart.approvalsReviewer,
-      };
-      if (params.model) threadParams.model = params.model;
-
-      const threadResponse = await session.request<{
-        thread?: { id?: string };
-        model?: string;
-      }>("thread/start", threadParams);
+      const threadResponse = await createNativeConversation(session, {
+        projectId: params.projectId, cwd: params.cwd, policy: permissions.threadStart,
+        ...(params.model ? { model: params.model } : {}),
+      });
       const threadId = threadResponse?.thread?.id;
       if (!threadId) throw new Error("app_server_thread_start_missing_id");
       ownedThreadId = threadId;
@@ -703,21 +695,10 @@ export class CodexAppServerClient {
       params.onThreadStarted?.(threadId);
 
       const turnPermissions = permissions.turnStart(params.cwd);
-      const turnStartParams: Record<string, unknown> = {
-        threadId,
-        input: [{
-          type: "text",
-          text: params.prompt,
-          textElements: [],
-        }],
-        approvalPolicy: turnPermissions.approvalPolicy,
-        approvalsReviewer: turnPermissions.approvalsReviewer,
-        sandboxPolicy: turnPermissions.sandboxPolicy,
-      };
-      if (params.reasoningEffort) {
-        turnStartParams.effort = params.reasoningEffort;
-      }
-      const turnResponse = await session.request<{ turn?: { id?: string } }>("turn/start", turnStartParams);
+      const turnResponse = await sendNativeConversationMessage(session, {
+        threadId, prompt: params.prompt, policy: turnPermissions,
+        ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+      });
       const turnId = turnResponse?.turn?.id;
       if (!turnId) throw new Error("app_server_turn_start_missing_id");
 

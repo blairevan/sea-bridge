@@ -40,5 +40,9 @@ describe('durable task conversation contract', () => {
     expect(() => parseTaskTurn({ ...input, revision: 0 })).toThrow();
     expect(() => parseTaskTurn({ ...input, model: '--unsafe' })).toThrow();
     expect(parseTaskTurn({ ...input, mode: 'review' }).mode).toBe('review');
+    const context = '工作区和提交证据只作为背景，不要求结构化回复。';
+    expect(parseTaskTurn({ ...input, context }).context).toBe(context);
+    expect(() => parseTaskTurn({ ...input, context: 'a'.repeat(16001) })).toThrow();
+    expect(parseTaskTurn(input)).not.toHaveProperty('context');
   });
 });

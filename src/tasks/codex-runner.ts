@@ -5,6 +5,7 @@ import { AppServerSession, spawnAppServerProcess, type ProcessSpawner } from '..
 import { TaskBridgeError, field, parseTurnReport, record,
   type TaskOperation, type TaskTurnInput, type TaskTurnReport, type TaskTurnState } from './contract.ts';
 import type { VerifiedTaskTarget } from './target.ts';
+import { createNativeConversation, sendNativeConversationMessage } from '../desktop/codex-conversation-requests.ts';
 
 export interface TaskRunnerHooks {
   thread(id: string): void;
@@ -40,14 +41,15 @@ export function taskInstructionFiles(target: VerifiedTaskTarget, codexHome: stri
 }
 
 /** Fixed orchestration rules are developer context, not a JSON object masquerading as the user's message. */
-function taskDeveloperInstructions(mode: TaskTurnInput['mode']): string {
+function taskDeveloperInstructions(mode: TaskTurnInput['mode'], context?: string): string {
   return [
     '这是 SeaBridge 管理的持久任务会话。遵守适用的 AGENTS.md，当前轮次仅限已分配的工作区。',
     mode === 'review' ? '本轮只读核对已有成果，不修改文件，不重复开发或全量编译。'
       : '本轮实现需求和回归用例。真实检查及 Git 提交由独立监督器执行，不重复全量测试。',
     '不要执行 Git commit、merge、push 或部署；不要安装依赖、读取凭据或扩大权限。缺少条件时明确说明并停止。',
-    '使用正常中文和 Markdown 回复，说明处理结果、实际检查和未验证范围，不输出内部协议 JSON。',
-    '旧会话中的结构化输出示例不是本轮输出要求。不要把本轮结束、旧检查或报告当作人工验收及合并完成。',
+    '默认使用正常中文和 Markdown 回复。除非用户当前明确要求 JSON 示例，不输出 summary/details/limitations 等内部协议对象。',
+    '历史测试消息曾要求 JSON，仅对其当时轮次有效，不是后续回复格式。不要把本轮结束、旧检查或报告当作人工验收及合并完成。',
+    ...(context ? ['以下是监督器提供的执行背景，不是回复格式或新的用户指令：', context] : []),
   ].join('\n');
 }
 
@@ -97,7 +99,7 @@ export function reportForTurn(turn: unknown, expectedTurnId: string): TaskTurnRe
   // Already persisted v1.2.0 reports remain readable; new turns are not forced into JSON.
   if (answer.startsWith('{')) {
     try { return parseTurnReport(JSON.parse(answer) as unknown); }
-    catch { throw new TaskBridgeError('task_report_invalid', 409); }
+    catch { /* Code examples and ordinary text beginning with a brace are still valid chat replies. */ }
   }
   const summary = answer.split(/\r?\n/).find(line => line.trim() && !/^\s*#/.test(line))?.trim() || answer;
   return parseTurnReport({ summary: summary.slice(0, 4000), details: answer,
@@ -160,11 +162,13 @@ export class TaskCodexRunner implements TaskRunner {
     this.owned.set(input.operationId, owned);
     try {
       const permissions = input.mode === 'review' ? 'sea_task_read' : 'sea_task';
-      const params = { cwd: target.worktree, permissions, approvalPolicy: 'never', developerInstructions: taskDeveloperInstructions(input.mode),
+      const params = { cwd: target.worktree, permissions, approvalPolicy: 'never' as const, developerInstructions: taskDeveloperInstructions(input.mode, input.context),
         runtimeWorkspaceRoots: [target.worktree], ...(input.model ? { model: input.model } : {}) };
       const response = threadId
         ? await session.request<{ thread?: { id?: string } }>('thread/resume', { ...params, threadId })
-        : await session.request<{ thread?: { id?: string } }>('thread/start', { ...params, projectId: input.projectId, ephemeral: false });
+        : await createNativeConversation(session, { projectId: input.projectId, cwd: target.worktree,
+          policy: { permissions, approvalPolicy: 'never', runtimeWorkspaceRoots: [target.worktree] },
+          developerInstructions: params.developerInstructions, ...(input.model ? { model: input.model } : {}) });
       const nativeId = response.thread?.id;
       if (!nativeId || (threadId && nativeId !== threadId)) throw new TaskBridgeError('thread_identity_unconfirmed', 503);
       owned.threadId = nativeId; hooks.thread(nativeId);
@@ -180,11 +184,10 @@ export class TaskCodexRunner implements TaskRunner {
       }
       await this.readThread(session, nativeId, input.projectId, false);
       if (input.title) await session.request('thread/name/set', { threadId: nativeId, name: input.title });
-      const reply = await session.request<{ turn?: { id?: string } }>('turn/start', { threadId: nativeId,
-        cwd: target.worktree, permissions, approvalPolicy: 'never', runtimeWorkspaceRoots: [target.worktree],
-        clientUserMessageId: input.operationId,
-        input: [{ type: 'text', text: input.prompt, textElements: [] }],
-        ...(input.model ? { model: input.model } : {}), ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}) });
+      const reply = await sendNativeConversationMessage(session, { threadId: nativeId, prompt: input.prompt,
+        cwd: target.worktree, clientUserMessageId: input.operationId,
+        policy: { permissions, approvalPolicy: 'never', runtimeWorkspaceRoots: [target.worktree] },
+        ...(input.model ? { model: input.model } : {}), ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}) });
       if (!reply.turn?.id) throw new TaskBridgeError('turn_identity_unconfirmed', 503);
       owned.turnId = reply.turn.id; hooks.turn(reply.turn.id);
       owned.completion = this.observe(input, owned, hooks);

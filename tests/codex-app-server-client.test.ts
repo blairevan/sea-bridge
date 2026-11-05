@@ -389,6 +389,7 @@ describe("CodexAppServerClient", () => {
       if (message.method === "thread/start") {
         expect(message.params).toEqual({
           projectId: "p1",
+          ephemeral: false,
           cwd: "/repo",
           model: "gpt-5.3-codex",
           sandbox: "danger-full-access",
@@ -449,6 +450,7 @@ describe("CodexAppServerClient", () => {
       if (message.method === "thread/start") {
         expect(message.params).toEqual({
           projectId: "p1",
+          ephemeral: false,
           cwd: "/repo",
           sandbox: "workspace-write",
           approvalPolicy: "on-request",

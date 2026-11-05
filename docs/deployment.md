@@ -1,5 +1,14 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.2.2 复用现有新建会话的消息路径
+
+普通 `POST /api/sessions` → `CodexWebSource.create` → `startThreadAndTurn` 与任务入口现在共用 `createNativeConversation` / `sendNativeConversationMessage`。原样文本只放入 `input.text`，项目/模型/权限与可选监督上下文是独立参数；二者均不传 outputSchema，不把检查报告字段当作聊天格式。保留各自鉴权及任务的工作区、检查和人工验收边界，不借浏览器 Cookie 调用私有接口，也不沿用 Desktop full-access。
+
+旧测试消息显式要求 JSON，旧回复不会因代码更新而被改写。新的读写/续接采用普通会话输出，历史结构化要求不继续套用；仅当用户当前明确要求 JSON 示例时才按其需求回复。读取以左花括号开头但不是旧报告 schema 的正常文本，不再误判为任务失败。
+
+验证包括普通新建与任务入口相同原文/无 schema 的协议回归；真实验证只在原业务线程进行一次只读接续，不创建测试线程、不改写旧消息、不重做或验收业务候选。最终真实回复、服务版本和回退证据保存在 `/Users/zhuhaijun/.toolhub/deployments/20261105-native-chat-55kyirj9`，是否上线以回执为准。
+
+
 ## v1.2.1 Desktop 恢复权限与会话可读性修复
 
 v1.2.0 的任务权限只允许工作区和私有运行目录，没有覆盖原生恢复阶段需要读取的全局及祖先目录 AGENTS.md / AGENTS.override.md。已使用原 tokscale 会话复现 Desktop 同款 Operation not permitted，并通过明确的指令文件只读规则修复；不授予整个 HOME、父项目或全盘读取/写入权限。
@@ -10,7 +19,7 @@ v1.2.0 的任务权限只允许工作区和私有运行目录，没有覆盖原�
 
 生产排障只恢复/命名原有会话，不再创建用户可见的测试会话，不自动重跑 tokscale。发布需无活动任务，保留数据库、旧构建和启动配置；实际回执保存在本轮联合发布目录，不因源码修改即宣称部署成功。
 
-适用：macOS、Bun、Cloudflare 固定域名 Tunnel、Sea-Bridge 单管理员账号密码登录。本轮 2026-11-05 配套版本为 v1.2.0；实际本机上线状态以发布回执核验。公开文档中的域名、Tunnel UUID 和用户目录均已替换为示例值，不能原样连接维护者的部署；使用时以你自己的配置为准。
+适用：macOS、Bun、Cloudflare 固定域名 Tunnel、Sea-Bridge 单管理员账号密码登录。本轮 2026-11-05 配套版本为 v1.2.2；实际本机上线状态以发布回执核验。公开文档中的域名、Tunnel UUID 和用户目录均已替换为示例值，不能原样连接维护者的部署；使用时以你自己的配置为准。
 
 
 ## v1.2.0 ToolHub 私有任务接入
