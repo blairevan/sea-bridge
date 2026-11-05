@@ -1,5 +1,15 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.2.1 Desktop 恢复权限与会话可读性修复
+
+v1.2.0 的任务权限只允许工作区和私有运行目录，没有覆盖原生恢复阶段需要读取的全局及祖先目录 AGENTS.md / AGENTS.override.md。已使用原 tokscale 会话复现 Desktop 同款 Operation not permitted，并通过明确的指令文件只读规则修复；不授予整个 HOME、父项目或全盘读取/写入权限。
+
+启动与恢复共用该规则；释放 writer 时保存完整 sea_task_read 命名权限，不再用旧版 sandboxPolicy 投影丢失细粒度读取要求。通过 SeaBridge 打开已完成轮次前先检查并重设只读恢复配置，不发送新 turn，也不改需求或验收证据；忙碌会话不强行打开/接管。
+
+新轮次的约束通过 developerInstructions 传递，不强制 outputSchema。正常中文/Markdown 回复会保存为报告，仍由独立检查、Git 和人工验收判定交付。保留旧 JSON 报告读取兼容；不修改旧会话消息来伪造历史。请求新增可选 title，通过原生 thread/name/set 显示可读标题。配套 ToolHub v2.19.1 使用自然语言说明。
+
+生产排障只恢复/命名原有会话，不再创建用户可见的测试会话，不自动重跑 tokscale。发布需无活动任务，保留数据库、旧构建和启动配置；实际回执保存在本轮联合发布目录，不因源码修改即宣称部署成功。
+
 适用：macOS、Bun、Cloudflare 固定域名 Tunnel、Sea-Bridge 单管理员账号密码登录。本轮 2026-11-05 配套版本为 v1.2.0；实际本机上线状态以发布回执核验。公开文档中的域名、Tunnel UUID 和用户目录均已替换为示例值，不能原样连接维护者的部署；使用时以你自己的配置为准。
 
 

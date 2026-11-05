@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { AppServerSession, spawnAppServerProcess, type ProcessSpawner } from '../desktop/codex-app-server-client.ts';
-import { TASK_REPORT_SCHEMA, TaskBridgeError, field, parseTurnReport, record,
+import { TaskBridgeError, field, parseTurnReport, record,
   type TaskOperation, type TaskTurnInput, type TaskTurnReport, type TaskTurnState } from './contract.ts';
 import type { VerifiedTaskTarget } from './target.ts';
 
@@ -26,10 +26,36 @@ interface OwnedTask {
   settled: boolean; completion: Promise<void> | null;
 }
 
+/** Native resume loads instructions from CODEX_HOME and cwd ancestors, even outside the writable worktree. */
+export function taskInstructionFiles(target: VerifiedTaskTarget, codexHome: string): string[] {
+  const files = new Set<string>();
+  for (const name of ['AGENTS.md', 'AGENTS.override.md']) files.add(join(codexHome, name));
+  for (const start of [target.worktree, target.repository]) {
+    for (let path = start; ; path = dirname(path)) {
+      for (const name of ['AGENTS.md', 'AGENTS.override.md']) files.add(join(path, name));
+      if (path === dirname(path)) break;
+    }
+  }
+  return [...files];
+}
+
+/** Fixed orchestration rules are developer context, not a JSON object masquerading as the user's message. */
+function taskDeveloperInstructions(mode: TaskTurnInput['mode']): string {
+  return [
+    '这是 SeaBridge 管理的持久任务会话。遵守适用的 AGENTS.md，当前轮次仅限已分配的工作区。',
+    mode === 'review' ? '本轮只读核对已有成果，不修改文件，不重复开发或全量编译。'
+      : '本轮实现需求和回归用例。真实检查及 Git 提交由独立监督器执行，不重复全量测试。',
+    '不要执行 Git commit、merge、push 或部署；不要安装依赖、读取凭据或扩大权限。缺少条件时明确说明并停止。',
+    '使用正常中文和 Markdown 回复，说明处理结果、实际检查和未验证范围，不输出内部协议 JSON。',
+    '旧会话中的结构化输出示例不是本轮输出要求。不要把本轮结束、旧检查或报告当作人工验收及合并完成。',
+  ].join('\n');
+}
+
 /** Build a task-local profile; do not inherit Desktop full-access or browser-supplied permissions. */
 export function taskCodexArguments(target: VerifiedTaskTarget, codexHome: string): string[] {
   const common: Record<string, string> = { ':root': 'deny', ':minimal': 'read', ':tmpdir': 'write', ':slash_tmp': 'deny',
     [target.temporary]: 'write', [target.commonDir]: 'read', [dirname(realpathSync(process.execPath))]: 'read' };
+  for (const path of taskInstructionFiles(target, codexHome)) common[path] = 'read';
   const profiles = ['sea_task', 'sea_task_read'].flatMap(name => {
     const files = { ...common, [target.worktree]: name === 'sea_task' ? 'write' : 'read',
       [join(target.worktree, '.git')]: 'read', [join(target.worktree, '.codex')]: 'read', [join(target.worktree, '.agents')]: 'read' };
@@ -66,8 +92,16 @@ export function reportForTurn(turn: unknown, expectedTurnId: string): TaskTurnRe
     .filter(item => item.type === 'agentMessage' && typeof item.text === 'string' && (!item.phase || item.phase === 'final_answer'));
   const last = messages.at(-1);
   if (!last || typeof last.text !== 'string' || last.text.length > 36000) throw new TaskBridgeError('task_report_missing', 409);
-  try { return parseTurnReport(JSON.parse(last.text) as unknown); }
-  catch { throw new TaskBridgeError('task_report_invalid', 409); }
+  const answer = last.text.trim();
+  if (!answer || answer.length > 24000) throw new TaskBridgeError('task_report_invalid', 409);
+  // Already persisted v1.2.0 reports remain readable; new turns are not forced into JSON.
+  if (answer.startsWith('{')) {
+    try { return parseTurnReport(JSON.parse(answer) as unknown); }
+    catch { throw new TaskBridgeError('task_report_invalid', 409); }
+  }
+  const summary = answer.split(/\r?\n/).find(line => line.trim() && !/^\s*#/.test(line))?.trim() || answer;
+  return parseTurnReport({ summary: summary.slice(0, 4000), details: answer,
+    limitations: ['未验证范围请查看报告原文；实际检查、验收和合并状态以任务中心的独立证据为准。'] });
 }
 
 /** SeaBridge owns persistent App Server turns; ToolHub never starts a hidden model process. */
@@ -126,7 +160,7 @@ export class TaskCodexRunner implements TaskRunner {
     this.owned.set(input.operationId, owned);
     try {
       const permissions = input.mode === 'review' ? 'sea_task_read' : 'sea_task';
-      const params = { cwd: target.worktree, permissions, approvalPolicy: 'never',
+      const params = { cwd: target.worktree, permissions, approvalPolicy: 'never', developerInstructions: taskDeveloperInstructions(input.mode),
         runtimeWorkspaceRoots: [target.worktree], ...(input.model ? { model: input.model } : {}) };
       const response = threadId
         ? await session.request<{ thread?: { id?: string } }>('thread/resume', { ...params, threadId })
@@ -145,10 +179,11 @@ export class TaskCodexRunner implements TaskRunner {
         if (resumed.thread?.id !== nativeId) throw new TaskBridgeError('thread_identity_unconfirmed', 503);
       }
       await this.readThread(session, nativeId, input.projectId, false);
+      if (input.title) await session.request('thread/name/set', { threadId: nativeId, name: input.title });
       const reply = await session.request<{ turn?: { id?: string } }>('turn/start', { threadId: nativeId,
         cwd: target.worktree, permissions, approvalPolicy: 'never', runtimeWorkspaceRoots: [target.worktree],
         clientUserMessageId: input.operationId,
-        input: [{ type: 'text', text: input.prompt, textElements: [] }], outputSchema: TASK_REPORT_SCHEMA,
+        input: [{ type: 'text', text: input.prompt, textElements: [] }],
         ...(input.model ? { model: input.model } : {}), ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}) });
       if (!reply.turn?.id) throw new TaskBridgeError('turn_identity_unconfirmed', 503);
       owned.turnId = reply.turn.id; hooks.turn(reply.turn.id);
@@ -197,7 +232,7 @@ export class TaskCodexRunner implements TaskRunner {
     if (!owned) return operation.released;
     if (!owned.settled) throw new TaskBridgeError('turn_not_terminal', 409);
     await owned.session.request('thread/settings/update', { threadId: owned.threadId,
-      sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never' });
+      permissions: 'sea_task_read', approvalPolicy: 'never' });
     await owned.session.closeGracefully();
     if (!owned.session.isClosed()) return false;
     this.owned.delete(operation.id); return true;

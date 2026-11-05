@@ -5,6 +5,7 @@ export interface TaskTurnInput {
   operationId: string; taskId: string; runId: string; revision: number;
   projectId: string; repositoryPath: string; worktreePath: string; baseSha: string;
   mode: 'implement' | 'review'; model: string | null; reasoningEffort: string | null; prompt: string;
+  title?: string;
 }
 export interface TaskTurnReport { summary: string; details: string; limitations: string[] }
 export interface TaskOperation {
@@ -64,7 +65,8 @@ export function parseTaskTurn(value: unknown): TaskTurnInput {
   return { operationId: identifier(data.operationId), taskId: identifier(data.taskId), runId: identifier(data.runId),
     revision: Number(data.revision), projectId: identifier(data.projectId),
     repositoryPath: absolutePath(data.repositoryPath), worktreePath: absolutePath(data.worktreePath), baseSha,
-    mode: data.mode, model: modelName(data.model), reasoningEffort: modelName(data.reasoningEffort), prompt: field(data.prompt, 48000) };
+    mode: data.mode, model: modelName(data.model), reasoningEffort: modelName(data.reasoningEffort), prompt: field(data.prompt, 48000),
+    ...(data.title === undefined ? {} : { title: field(data.title, 160) }) };
 }
 
 /** Parse the model report, which is narrative only and never an execution receipt. */

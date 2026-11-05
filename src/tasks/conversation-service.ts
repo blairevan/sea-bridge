@@ -143,6 +143,12 @@ export class TaskConversationService {
   async open(id: string): Promise<void> {
     const op = this.get(id);
     if (!op.threadId || !this.options.openDesktop) throw new TaskBridgeError('desktop_open_unavailable', 503);
+    if (!op.released) throw new TaskBridgeError('task_busy_wait_for_writer_release', 409);
+    if (op.state === 'succeeded') {
+      // Reapply the scoped portable read profile for legacy sessions before asking Desktop to resume.
+      await this.guard(id);
+      await this.release(id);
+    }
     await this.options.openDesktop(op.threadId);
   }
 
