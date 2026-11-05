@@ -31,6 +31,9 @@ let liveActivityStreamSig = "";
 let composerModelControl = null;
 let sessionModelUpdate = null;
 let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
+let taskLinkedThread = typeof location !== "undefined" && typeof URLSearchParams !== "undefined"
+  ? new URLSearchParams(location.search).get("sessionId") : null;
+if (taskLinkedThread && !/^[0-9a-f-]{36}$/i.test(taskLinkedThread)) taskLinkedThread = null;
 
 /** Keep platform labels independent of the original client. */
 function sourceDisplayName(source) {
@@ -929,7 +932,19 @@ async function refresh() {
   if (state.paused || document.hidden) return;
   if (state.executionWatch) await refreshExecutionStatus();
   if (state.page === "overview") await loadStatus();
-  if (state.page === "sessions") { await loadSessions(false); if (state.selected && !el("sessions").classList?.contains?.("browse-only")) await loadHistory(false); }
+  if (state.page === "sessions") {
+    await loadSessions(false);
+    if (taskLinkedThread) {
+      const result = await api("/api/sessions?" + new URLSearchParams({ source: "codex", sessionId: taskLinkedThread, limit: "1" }));
+      const session = result.items.find(item => item.id === taskLinkedThread && item.source === "codex");
+      if (session) {
+        taskLinkedThread = null; state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
+        state.sessionCache = mergeSessionCache(state.sessionCache, [session]);
+        el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open");
+      }
+    }
+    if (state.selected && !el("sessions").classList?.contains?.("browse-only")) await loadHistory(false);
+  }
   if (state.page === "records") await loadRecords(false);
   if (state.page === "settings") await loadSettings();
 }

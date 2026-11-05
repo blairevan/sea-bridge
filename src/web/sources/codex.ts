@@ -13,6 +13,12 @@ import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
+  taskConversations?: {
+    locked(id: string): boolean;
+    activity(id: string): { state: 'active' | 'idle' | 'unknown'; turnId: string | null } | null;
+    send(id: string, operationId: string, prompt: string): Promise<SourceResult | null>;
+    interruptThread(id: string, turnId: string): Promise<boolean>;
+  };
   openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
   appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
@@ -108,7 +114,7 @@ export class CodexWebSource implements WebSource {
 
   /** Prefer the shared Action registry; local callbacks are only a compatibility fallback for narrow test doubles. */
   private ownsThread(id: string): boolean {
-    return this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id);
+    return !!this.deps.taskConversations?.locked(id) || (this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id));
   }
 
   /** Resolve field-wise metadata without exposing evidence provenance or private source paths to Web. */
@@ -142,6 +148,8 @@ export class CodexWebSource implements WebSource {
 
   /** Project exact active-turn control through the server-side provider router. */
   private turnControl(id: string, activity: { state: "active" | "idle" | "unknown"; turnId: string | null } | CodexActivity | null = null): WebTurnControl {
+    const task = this.deps.taskConversations?.activity(id);
+    if (task?.state === 'active' && task.turnId) return { activeTurnId: task.turnId, interrupt: { status: 'available', scope: 'exact_codex_turn' } };
     const owned = this.actions.ownedTurn?.(id) ?? null;
     const activeTurnId = owned && !owned.terminalObserved ? owned.turnId
       : activity?.state === "active" && activity.turnId ? activity.turnId : null;
@@ -215,7 +223,9 @@ export class CodexWebSource implements WebSource {
         const sessionMeta = this.sessionMeta(thread.id, thread);
         return {
           source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
-          state: approval ? "waiting_external_approval" as const
+          state: this.deps.taskConversations?.activity(thread.id)?.state === 'active' ? 'running' as const
+            : this.deps.taskConversations?.activity(thread.id)?.state === 'idle' ? 'idle' as const
+            : approval ? "waiting_external_approval" as const
             : ownedActive || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
           ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
           sendEnabled: this.deps.queueUsable && !this.ownsThread(thread.id),
@@ -319,6 +329,7 @@ export class CodexWebSource implements WebSource {
 
   /** Interrupt an exact turn through a verified provider selected by the server-side router. */
   async interrupt(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }> {
+    if (await this.deps.taskConversations?.interruptThread(id, expectedTurnId)) return { status: 'interrupting' };
     if (!this.deps.interruptRouter) throw new Error("interrupt_provider_unavailable");
     const result = await this.deps.interruptRouter.interrupt({ threadId: id, expectedTurnId });
     if (result.status === "interrupting") return result;
@@ -363,7 +374,9 @@ export class CodexWebSource implements WebSource {
   }
 
   /** Reject owned/missing threads before queueing; queue success proves only admission. */
-  async send(id: string, _operationId: string, prompt: string): Promise<SourceResult> {
+  async send(id: string, operationId: string, prompt: string): Promise<SourceResult> {
+    const managed = await this.deps.taskConversations?.send(id, operationId, prompt);
+    if (managed) return managed;
     if (!this.deps.queueUsable) return { state: "failed", sessionId: id, errorCode: "queue_unavailable" };
     if (this.ownsThread(id)) return { state: "failed", sessionId: id, errorCode: "first_turn_owned" };
     if (!this.deps.threads.getThread?.(id)) return { state: "failed", sessionId: id, errorCode: "session_missing" };

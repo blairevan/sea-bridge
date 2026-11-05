@@ -37,6 +37,8 @@ import { DshReadOnlyBridge } from "./dsh/read-only-bridge.ts";
 import { DshSessionObserver } from "./dsh/session-observer.ts";
 import { DshReplyRouter } from "./dsh/reply-router.ts";
 import { DshNewSessionManager } from "./dsh/new-session-manager.ts";
+import { startConfiguredTaskConversations } from "./tasks/runtime.ts";
+import { randomUUID } from 'node:crypto';
 
 function seedCapabilities(state: StateDb): void {
   const now = Date.now();
@@ -244,7 +246,20 @@ async function main(): Promise<void> {
     dshObserver ?? undefined,
   );
 
+  const taskConversations = await startConfiguredTaskConversations({ db: state.db, dbPath: config.dbPath,
+    binary: config.codexCliPath, codexHome: config.codexHome, projects: () => readService.listProjects(),
+    registerThread: id => observerStore.registerCreatedThread(id) });
+  if (taskConversations) queueClient.setTaskRouter(async (threadId, prompt, context) => {
+    const requestId = context?.source === 'telegram' && context.updateId !== undefined
+      ? 'telegram-task-' + String(context.updateId) : randomUUID();
+    const result = await taskConversations.service.send(threadId, requestId, prompt);
+    if (!result) return null;
+    return { status: result.state === 'queued' || result.state === 'accepted' ? 'delivered'
+      : result.state === 'failed' ? 'failed' : 'delivery_unknown', exitCode: result.state === 'failed' ? 1 : null,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
+  });
   const codexSource = new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
+    ...(taskConversations ? { taskConversations: taskConversations.service } : {}),
     catalogs: readService, actions: actionClient, readThread: (id) => readService.getThread(id),
     catalogHealth: () => catalogStore.health().state,
     sourceStatus: () => {
@@ -311,6 +326,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
     await queueRecovery?.stop();
+    await taskConversations?.stop().catch(() => logger.warn('task_bridge_stop_failed', {}));
     await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
     await telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));

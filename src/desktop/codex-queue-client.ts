@@ -72,6 +72,12 @@ function observe(action: () => void): void {
 }
 
 export class ProcessCodexQueueClient {
+  private taskRouter: ((threadId: string, text: string, context?: QueueDeliveryContext) => Promise<QueueResult | null>) | undefined;
+
+  /** Managed task conversations must go through their lifecycle owner, including Telegram replies. */
+  setTaskRouter(router: (threadId: string, text: string, context?: QueueDeliveryContext) => Promise<QueueResult | null>): void {
+    this.taskRouter = router;
+  }
   /** Configure a bounded CLI admission deadline without changing message arguments. */
   constructor(
     private readonly codexCliPath: string,
@@ -86,6 +92,8 @@ export class ProcessCodexQueueClient {
 
   /** Queue once; a timed-out process cannot prove whether admission already happened. */
   async queue(threadId: string, text: string, context?: QueueDeliveryContext): Promise<QueueResult> {
+    const managed = await this.taskRouter?.(threadId, text, context);
+    if (managed) return managed;
     if (!this.admissionAllowed()) {
       return { status: "failed", exitCode: null, errorCode: "codex_environment_reinitialize_required" };
     }

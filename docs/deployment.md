@@ -1,6 +1,26 @@
 # Sea-Bridge 部署与运维指南
 
-适用：macOS、Bun、Cloudflare 固定域名 Tunnel、Sea-Bridge 单管理员账号密码登录。2026-10-04 根据源码和运行配置核对，当前发布版本 v0.14.1。公开文档中的域名、Tunnel UUID 和用户目录均已替换为示例值，不能原样连接维护者的部署；使用时以你自己的配置为准。
+适用：macOS、Bun、Cloudflare 固定域名 Tunnel、Sea-Bridge 单管理员账号密码登录。本轮 2026-11-05 配套版本为 v1.2.0；实际本机上线状态以发布回执核验。公开文档中的域名、Tunnel UUID 和用户目录均已替换为示例值，不能原样连接维护者的部署；使用时以你自己的配置为准。
+
+
+## v1.2.0 ToolHub 私有任务接入
+
+本机服务环境显式设置 `SEA_BRIDGE_TASKS_ENABLED=true`，默认监听 `~/Library/Application Support/SeaBridge/run/tasks.sock`，父目录0700、socket0600且同属主。接口不暴露到7310公共HTTP，不共享浏览器密码或Cookie。`SEA_BRIDGE_TASK_SOCKET`、`SEA_BRIDGE_TASK_WORKSPACE_ROOT`、`SEA_BRIDGE_TOOLHUB_CONTROL_SOCKET` 可由操作者指定绝对路径，默认任务工作区为 `~/.toolhub/tasks/engineering`，回传控制为 `~/.toolhub/tasks/control.sock`。
+
+私有协议提供 `/v1/health`、`POST /v1/turns`、`GET /v1/operations/:id` 及固定的 interrupt/release/guard/open/reconcile 操作，不接受任意命令。稳定 operationId 在源调用前保存；超时只查询同一请求，未知结果不得重新创建会话。持久关联使用实际 Desktop 内置 Codex 协议（支持 projectId），不是全局 CLI 的不等价 schema。
+
+每次执行独立核验项目、真实仓库和预先创建的任务 worktree，命名权限策略不继承 Desktop full-access，模型不得写 Git 元数据、真实主工作区或任务账本。实现阶段不联网或安装依赖，报告不是交付回执；监督器检查和创建提交后才进入任务待验收。任务会话的Web/Telegram续聊请求回到ToolHub返工，不直接绕过交付核验；只读接续必须明确此前由CLI完成的历史边界。
+
+会话页支持 `/sessions?source=codex&sessionId=<原生线程UUID>` 深链接，仍要求账号登录。原生会话持久保存和项目归属通过官方协议回读确认；Desktop打开请求不等于UI已现场检查，也不表示任务已完成。模型阶段终态与成功报告严格绑定同一turn；服务重启保留未知状态，用户可核对已知原轮次，不隐式重做需求。
+
+部署保持现有直接仓库构建运行：先完成typecheck、bun test、JS语法、build，备份旧dist、SQLite一致性快照及四项相关LaunchAgent；无活动任务时先停ToolHub Worker，再切换SeaBridge和ToolHub，验证健康/原账号/静态资源后启动Worker。不修改Tunnel、dsh宿主或第二台机器。回退仅恢复程序与plist，不能用旧库覆盖新会话数据。实际提交、版本及原任务接续记录在本机联合发布目录中。
+
+
+### 2026-11-05 原生协议联调补充
+
+真实 Desktop 内置 Codex `0.166.0-alpha.6` 中，新建空会话的活动投影可能暂不含项目关联；先持久化创建并确认释放创建进程，再恢复同一个 thread（不是重复创建）发起首轮。活动投影的缺失字段通过独立只读原生查询核对，绝不直接写 Codex SQLite 或容忍不同项目。第一次 ToolHub 关联的空值、并发交付守卫与释放后的会话状态回落均有回归覆盖。
+
+隔离原生演练已通过真实模型修改、commit、固定检查、测试操作员验收、实际合并及持久会话回读。它只使用隔离样例，不代表 tokscale 已获人工验收。证据及本机联合发布目录：`~/.toolhub/deployments/20261105-joint-v219-I5QmM9/`；部署、原业务会话接续和最终版本以当次回执为准。
 
 ## 1. 访问链路与密码所在位置
 
