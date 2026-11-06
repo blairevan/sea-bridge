@@ -1,5 +1,11 @@
 # Sea-Bridge 版本规则
 
+## v1.2.3
+
+- 会话列表主动核对请求页的轮次证据，列表与详情共用状态解析及文件变化缓存，不再依赖打开详情产生的 10 秒状态缓存。
+- 对未确认中断和证据冲突显示“正在确认／暂无法确认”，定期重查同一轮次；保留上次已确认状态作为上下文，不冒充当前运行证据。
+- 增加会话列表刷新入口；限制远端查询并发、等待时间及缓存规模，不改变执行验收或操作权限。研发验证及交付边界见 [修复记录](2026-11-06-session-status-reconciliation.md)。
+
 ## v1.2.2 复用现有新建会话的消息路径
 
 普通 `POST /api/sessions` → `CodexWebSource.create` → `startThreadAndTurn` 与任务入口现在共用 `createNativeConversation` / `sendNativeConversationMessage`。原样文本只放入 `input.text`，项目/模型/权限与可选监督上下文是独立参数；二者均不传 outputSchema，不把检查报告字段当作聊天格式。保留各自鉴权及任务的工作区、检查和人工验收边界，不借浏览器 Cookie 调用私有接口，也不沿用 Desktop full-access。

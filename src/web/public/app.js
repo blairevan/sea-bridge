@@ -4,6 +4,8 @@ const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
 const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", idle: "空闲", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
+
+
 const reads = new Map();
 const messageViews = new Map();
 let historyTools;
@@ -68,6 +70,16 @@ function mergeSessionCache(...groups) {
   return [...merged.values()].slice(-300);
 }
 
+/** Show uncertainty explicitly without treating the previous state as current execution evidence. */
+function sessionStateLabel(session) {
+  const confirmation = session?.stateConfirmation;
+  if (session?.state === "unknown" && confirmation) {
+    const current = confirmation.phase === "checking" ? "正在确认" : "暂无法确认";
+    const previous = confirmation.lastKnownState ? labels[confirmation.lastKnownState] : "";
+    return previous ? `${current} · 上次为${previous}` : current;
+  }
+  return labels[session?.state] ?? "状态未知";
+}
 /** Apply a visual preference without storing account or conversation data. */
 function applyTheme(theme) {
   const dark = theme === "dark";
@@ -1069,7 +1081,7 @@ function renderContinueSession(session) {
     if (button.dataset) button.dataset.sessionSignature = signature;
     const heading = node("span", "", "continue-heading"); heading.append(node("small", "最新会话"), node("span", "进入 →", "continue-arrow"));
     const title = node("strong", session.title, "continue-title"); title.title = session.title;
-    button.replaceChildren(heading, title, node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "状态未知"} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
+    button.replaceChildren(heading, title, node("small", `${sessionSourceLabel(session)} · ${sessionStateLabel(session)} · ${overviewTime(session.updatedAt)}`, "continue-meta"));
   }
   button.onclick = () => run("continue-session", () => openContinueSession(session));
 }
@@ -1113,7 +1125,7 @@ function renderOverview(status, sessions, continuation, cached = false) {
   for (const session of sessions.items.slice(0, 6)) {
     const button = node("button", "", "session-row overview-session"); button.type = "button";
     const text = node("span", "", "overview-session-text"); text.append(node("strong", session.title), node("small", `${sessionSourceLabel(session)} · ${overviewTime(session.updatedAt)}`, "muted"));
-    button.append(text, node("small", labels[session.state] ?? "状态未知", "status-badge"));
+    button.append(text, node("small", sessionStateLabel(session), "status-badge"));
     button.onclick = () => run("select", async () => {
       if (state.paused && (state.selected?.id !== session.id || state.selected?.source !== session.source)) { showConnectionNotice("该会话消息尚未加载，恢复连接后可打开。已加载页面内容继续保留。"); return; }
       el("source-filter").value = session.source; el("creation-client-filter").value = ""; syncCreationFilter(); el("activity-filter").value = ""; el("session-search").value = ""; state.sessionCursor = null;
@@ -1174,7 +1186,7 @@ async function loadSessions(more) {
     for (const session of state.sessions) {
       const isSelected = state.selected?.id === session.id && state.selected?.source === session.source;
       const button = node("button", "", isSelected ? "session-row selected" : "session-row"); button.type = "button";
-      button.append(node("span", session.title), node("small", `${sessionSourceLabel(session)} · ${labels[session.state] ?? "未知"}`, "muted"));
+      button.append(node("span", session.title), node("small", `${sessionSourceLabel(session)} · ${sessionStateLabel(session)}`, "muted"));
       button.onclick = () => run("select", async () => {
         if (state.paused) {
           if (state.selected?.id === session.id && state.selected.source === session.source) {
@@ -1187,7 +1199,7 @@ async function loadSessions(more) {
       });
       container.append(button);
     }
-    if (!container.childElementCount) container.append(node("p", result.partial ? "部分来源暂不可用" : "暂无会话", "muted"));
+    if (!container.childElementCount) container.append(node("p", result.scanLimited ? "本批未找到匹配会话，可继续加载" : result.partial ? "部分来源暂不可用" : "暂无会话", "muted"));
   }
   if (state.selected) {
     let live = state.sessions.find((item) => item.id === state.selected.id && item.source === state.selected.source);
@@ -1487,7 +1499,7 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState, startedAt: result.activeTurnStartedAt, activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [], sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
+    state.selected = { ...state.selected, state: result.sessionState, stateConfirmation: result.stateConfirmation ?? null, startedAt: result.activeTurnStartedAt, activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [], sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
     renderSessionStatus();
   }
   const previousMessages = state.messages;
@@ -1945,7 +1957,7 @@ function syncComposerControl(now = Date.now()) {
     status.textContent = hideIdle ? ""
       : !session ? "选择会话后可继续"
         : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
-          : labels[session.state] ?? "状态未知";
+          : sessionStateLabel(session);
   }
   const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
   const hasDraft = Boolean(String(prompt?.value ?? "").trim());
@@ -2156,7 +2168,7 @@ function renderSessionStatus() {
   const knownStart = Number.isFinite(session.startedAt) && session.startedAt > 0;
   const elapsed = session.state === "running" && knownStart
     ? ` · 已运行 ${formatRunningDuration(Date.now() - session.startedAt)}` : "";
-  const text = `${sessionSourceLabel(session)} · ${labels[session.state] ?? "未知"}`;
+  const text = `${sessionSourceLabel(session)} · ${sessionStateLabel(session)}`;
   el("session-meta").textContent = text;
   el("session-meta").title = text;
   const timer = el("execution-timer");
@@ -2253,6 +2265,7 @@ el("catalog-retry").onclick = () => run("retry", retryConnection);
 el("close-catalog").onclick = () => el("catalog-dialog").close();
 el("catalog-new").onclick = () => run("overview-action", async () => { const source = state.catalogContext?.source; if (!source) return; el("catalog-dialog").close(); await openOverviewCreate(source); });
 el("refresh-status").onclick = () => run("refresh", refresh);
+if (el("refresh-sessions")) el("refresh-sessions").onclick = () => run("refresh", refresh);
 if (el("toggle-session-filters")) el("toggle-session-filters").onclick = () => toggleSessionFilters();
 if (el("toggle-record-filters")) el("toggle-record-filters").onclick = () => toggleRecordFilters();
 el("activity-filter").onchange = reloadSessionFilters;

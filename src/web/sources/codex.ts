@@ -1,3 +1,5 @@
+import { SessionActivityResolver } from "../session-activity.ts";
+import type { CodexReadTurn } from "../../desktop/codex-read-service.ts";
 import { readCodexAttachment } from "../codex-attachment.ts";
 import type { CodexAppServerClient, ProjectItem, ModelOption } from "../../desktop/codex-app-server-client.ts";
 import type { CodexReadService } from "../../desktop/codex-read-service.ts";
@@ -9,7 +11,7 @@ import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.t
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, WebSessionMeta, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence } from "./types.ts";
+import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, WebSessionMeta, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence, SessionListOptions } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
@@ -24,6 +26,7 @@ export interface CodexSourceDependencies {
   appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
   catalogs?: Pick<CodexReadService, "listProjects" | "listModels">;
   actions?: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
+  readLatestTurn?: (id: string) => Promise<CodexReadTurn | null>;
   readThread?: Pick<CodexReadService, "getThread">["getThread"];
   catalogHealth?: () => CodexCatalogHealth["state"];
   sourceStatus?: () => WebSourceStatusState;
@@ -46,7 +49,7 @@ export class CodexWebSource implements WebSource {
   private desktopOpening = false;
   private desktopOpenedAt = 0;
   private readonly owners = new Set<string>();
-  private readonly nativeActivity = new Map<string, { activity: CodexActivity; readAt: number }>();
+  private readonly sessionActivity: SessionActivityResolver;
   private readonly projectCache: CatalogCache<ProjectItem[]>;
   private readonly modelCache: CatalogCache<ModelOption[]>;
   private readonly actions: Pick<CodexAppServerClient, "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
@@ -59,6 +62,7 @@ export class CodexWebSource implements WebSource {
 
   /** Reuse existing clients without changing Telegram preferences or mappings. */
   constructor(private readonly deps: CodexSourceDependencies) {
+    this.sessionActivity = new SessionActivityResolver(deps.sessionRoots, deps.readLatestTurn);
     const catalogs = deps.catalogs ?? deps.appServer;
     const actions = deps.actions ?? deps.appServer;
     if (!catalogs || !actions) throw new Error("codex_source_dependencies_missing");
@@ -208,26 +212,41 @@ export class CodexWebSource implements WebSource {
     finally { this.desktopOpening = false; }
   }
 
-  /** List verified nonarchived threads without inventing project ownership. */
-  async sessions(): Promise<WebSession[]> {
+  /** Refresh only the requested page with shared list/detail lifecycle evidence. */
+  async sessions(options: SessionListOptions = {}): Promise<WebSession[]> {
     try {
       const health = this.deps.catalogHealth?.();
       if (health === "unavailable" || health === "reinitialize_required") throw new Error("catalog_unavailable");
-      const threads = this.deps.threads.listActive(); this.sessionsReadable = true;
-      return threads.sort((a, b) => b.updatedAtMs - a.updatedAtMs).map((thread) => {
-        const approval = this.deps.pendingApproval(thread.id);
-        const cached = this.nativeActivity.get(thread.id);
-        const activity = cached && Date.now() - cached.readAt < 10_000 ? cached.activity : this.deps.activity?.(thread.id) ?? null;
+      const threads = this.deps.threads.listActive().sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+      const candidates = threads.filter((thread) => (!options.sessionId || thread.id === options.sessionId)
+        && (!options.sessionIds || options.sessionIds.includes(thread.id))
+        && (!options.query || thread.title.toLowerCase().includes(options.query.toLowerCase()))
+        && (!options.creationClient || (thread.creationClient?.kind ?? "unknown") === options.creationClient));
+      const visible = candidates.slice(options.offset ?? 0, (options.offset ?? 0) + Math.min(options.limit ?? 30, 100));
+      const refreshed = new Map<string, Awaited<ReturnType<SessionActivityResolver["resolve"]>>>();
+      let index = 0;
+      await Promise.all(Array.from({ length: Math.min(4, visible.length) }, async () => {
+        while (index < visible.length) {
+          const thread = visible[index++];
+          if (thread) refreshed.set(thread.id, await this.sessionActivity.resolve(thread, this.deps.activity?.(thread.id) ?? null));
+        }
+      }));
+      this.sessionsReadable = true;
+      return threads.map((thread) => {
+        const resolved = refreshed.get(thread.id);
+        const activity = resolved?.activity ?? this.deps.activity?.(thread.id) ?? null;
+        const task = this.deps.taskConversations?.activity(thread.id);
         const owned = this.actions.ownedTurn?.(thread.id) ?? null;
         const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(thread.id);
+        const state = this.deps.pendingApproval(thread.id) ? "waiting_external_approval" as const
+          : task?.state === "active" || ownedActive ? "running" as const : task?.state === "idle" ? "idle" as const
+          : resolved?.state ?? (activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const);
         const sessionMeta = this.sessionMeta(thread.id, thread);
         return {
-          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}), id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null,
-          state: this.deps.taskConversations?.activity(thread.id)?.state === 'active' ? 'running' as const
-            : this.deps.taskConversations?.activity(thread.id)?.state === 'idle' ? 'idle' as const
-            : approval ? "waiting_external_approval" as const
-            : ownedActive || activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const,
-          ...(cached?.activity.state === "active" && Date.now() - cached.readAt < 10_000 ? { startedAt: cached.activity.observedAt } : {}),
+          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}),
+          id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null, state,
+          ...(state === "unknown" && resolved?.stateConfirmation ? { stateConfirmation: resolved.stateConfirmation } : {}),
+          ...(state === "running" && resolved?.activity?.state === "active" ? { startedAt: resolved.activity.observedAt } : {}),
           sendEnabled: this.deps.queueUsable && !this.ownsThread(thread.id),
         };
       });
@@ -277,25 +296,22 @@ export class CodexWebSource implements WebSource {
     if (!thread) { this.historyReadable = false; throw new Error("session_missing"); }
     if (!thread.rolloutPath) { this.historyReadable = false; throw new Error("history_unavailable"); }
     try {
-      const [history, activity] = await Promise.all([
+      const [history, resolved] = await Promise.all([
         readCodexTranscript(thread.rolloutPath, this.deps.sessionRoots, cursor, limit),
-        readCodexActivity(thread.rolloutPath, this.deps.sessionRoots).catch(() => null),
+        this.sessionActivity.resolve(thread, this.deps.activity?.(id) ?? null),
       ]);
-      if (activity) {
-        this.nativeActivity.delete(id);
-        this.nativeActivity.set(id, { activity, readAt: Date.now() });
-        if (this.nativeActivity.size > 100) this.nativeActivity.delete(this.nativeActivity.keys().next().value ?? "");
-      } else this.nativeActivity.delete(id);
+      const activity = resolved.activity;
+      const task = this.deps.taskConversations?.activity(id);
       const owned = this.actions.ownedTurn?.(id) ?? null;
       const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(id);
       const sessionState: WebSession["state"] = this.deps.pendingApproval(id) ? "waiting_external_approval"
-        : ownedActive || activity?.state === "active" ? "running" : activity?.state === "idle" ? "idle" : "unknown";
+        : task?.state === "active" || ownedActive ? "running" : task?.state === "idle" ? "idle" : resolved.state;
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
       const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt, activeTurnItems: activity.items ?? [] } : {};
       const turnControl = this.turnControl(id, activity);
       const sessionMeta = this.sessionMeta(id, thread);
-      const detail = { ...history, ...timing, ...(sessionMeta ? { sessionMeta } : {}), turnControl, sessionState };
+      const detail = { ...history, ...timing, ...(sessionMeta ? { sessionMeta } : {}), turnControl, sessionState, ...(sessionState === "unknown" && resolved.stateConfirmation ? { stateConfirmation: resolved.stateConfirmation } : {}) };
       return queue ? { ...detail, ...(queue.available ? { queuedMessages: queue.messages } : {}), queueUnavailable: !queue.available } : detail;
     } catch (error) {
       this.historyReadable = false;

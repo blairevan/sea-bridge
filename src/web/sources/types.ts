@@ -20,10 +20,26 @@ export interface WebSessionMeta {
   };
 }
 /** Source-owned identity plus evidence-based display metadata. */
+export interface StateConfirmation {
+  phase: "checking" | "unavailable";
+  reason: "conflicting_evidence" | "read_unavailable" | "missing_evidence";
+  lastKnownState?: "running" | "idle";
+}
+/** Page selection bounds active probing while preserving the existing session catalog contract. */
+export interface SessionListOptions {
+  sessionIds?: readonly string[];
+  sessionId?: string | null;
+  query?: string;
+  creationClient?: string | null;
+  offset?: number;
+  limit?: number;
+}
+/** Source-owned identity plus evidence-based display metadata. */
 export interface WebSession {
   source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
   creationClient?: CreationClient;
   sessionMeta?: WebSessionMeta;
+  stateConfirmation?: StateConfirmation;
   state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
 }
 /** Executed conversation, terminal source errors, and explicitly marked native queue inputs share safe display fields. */
@@ -36,7 +52,7 @@ export interface WebTurnControl {
     | { status: "interrupting"; scope: "exact_codex_turn" }
     | { status: "unavailable"; reason: "turn_unknown" | "provider_unavailable" | "provider_unverified" };
 }
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[]; turnControl?: WebTurnControl; }
+export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; stateConfirmation?: StateConfirmation; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[]; turnControl?: WebTurnControl; }
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem {
   id: string;
@@ -67,7 +83,7 @@ export interface WebSource {
   attachment?(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }>;
   openDesktop?(id: string): Promise<void>;
   capabilities(): WebSourceCapabilities;
-  sessions(): Promise<WebSession[]>;
+  sessions(options?: SessionListOptions): Promise<WebSession[]>;
   projects(): Promise<CatalogItem[]>;
   models(): Promise<CatalogItem[]>;
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;

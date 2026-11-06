@@ -260,7 +260,9 @@ async function main(): Promise<void> {
   });
   const codexSource = new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
     ...(taskConversations ? { taskConversations: taskConversations.service } : {}),
-    catalogs: readService, actions: actionClient, readThread: (id) => readService.getThread(id),
+    catalogs: readService, actions: actionClient,
+    readLatestTurn: async (id) => (await readService.listTurnPage(id)).data[0] ?? null,
+    readThread: (id) => readService.getThread(id),
     catalogHealth: () => catalogStore.health().state,
     sourceStatus: () => {
       const catalog = catalogStore.health().state;

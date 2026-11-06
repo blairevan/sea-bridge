@@ -5,6 +5,7 @@ import type { WebEvents } from "./events.ts";
 import { createStatusService, type TelegramStatus } from "./status.ts";
 import { dispatchWebOperation } from "./operations.ts";
 import { operationRecords, withSessionTitles } from "./records.ts";
+import { listWebSessions } from "./session-list.ts";
 import type { WebSource, ExecutionEvidence } from "./sources/types.ts";
 
 export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
@@ -148,9 +149,8 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         if (creationClient !== null && !["desktop", "cli", "sea_bridge", "exec", "unknown"].includes(creationClient)) throw new HttpError(400, "invalid_creation_client");
         const activity = url.searchParams.get("activity");
         if (activity && !["running", "waiting_external_approval", "unknown"].includes(activity)) throw new HttpError(400, "invalid_activity");
-        const results = await Promise.allSettled(Object.entries(deps.sources).filter(([name]) => (!selected || name === selected) && (!creationClient || name === "codex")).map(async ([, source]) => source?.sessions() ?? []));
-        const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []).filter((item) => item.title.toLowerCase().includes(query.toLowerCase()) && (!sessionId || item.id === sessionId) && (!activity || item.state === activity) && (!creationClient || (item.source === "codex" && (item.creationClient?.kind ?? "unknown") === creationClient))).sort((a, b) => b.updatedAt - a.updatedAt);
-        return json({ items: items.slice(offset, offset + limit), cursor: items.length > offset + limit ? String(offset + limit) : null, partial: results.some((result) => result.status === "rejected"), capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
+        const page = await listWebSessions(deps.sources, { source: selected, sessionId, query, creationClient, activity, offset, limit });
+        return json({ ...page, capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
       const attachment = path.match(/^\/api\/sessions\/codex\/([^/]+)\/attachments\/([^/]+)\/(\d+)$/);
       if (attachment && method === "GET") {
