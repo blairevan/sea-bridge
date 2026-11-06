@@ -302,7 +302,23 @@ export interface CodexActivity {
   state: "active" | "idle";
   turnId: string;
   observedAt: number;
+  lastActivityAt?: number;
   items?: LiveActivityItem[];
+}
+
+/** Accept execution records, excluding metadata edits and unrelated turns, as liveness evidence. */
+function executionTimestamp(row: Record<string, unknown>, turnId: string): number | null {
+  if (!row.payload || typeof row.payload !== "object" || typeof row.timestamp !== "string") return null;
+  const payload = row.payload as Record<string, unknown>;
+  if (typeof payload.turn_id === "string" && payload.turn_id !== turnId) return null;
+  const type = String(payload.type);
+  if (type === "message" && payload.role !== "assistant") return null;
+  const execution = row.type === "response_item"
+    ? ["reasoning", "custom_tool_call", "custom_tool_call_output", "function_call", "function_call_output", "message"].includes(type)
+    : row.type === "event_msg" && ["item_started", "item_completed", "agent_message", "agent_reasoning", "token_count"].includes(type);
+  if (!execution) return null;
+  const timestamp = Date.parse(row.timestamp);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 /** Reuse the confined bounded reader and select the newest complete lifecycle record by file offset. */
@@ -345,12 +361,15 @@ export async function readCodexActivity(path: string, roots: readonly string[]):
 
   const items: LiveActivityItem[] = [];
   const seenCommentary = new Set<string>();
+  let lastActivityAt = latestObservedAt;
 
   for (const { line, offset } of observedRows) {
     if (offset <= activeTurnStartOffset) continue;
     let record: unknown; try { record = JSON.parse(line); } catch { continue; }
     if (!record || typeof record !== "object") continue;
     const obj = record as Record<string, unknown>;
+    const executionAt = executionTimestamp(obj, latestTurnId);
+    if (executionAt !== null) lastActivityAt = Math.max(lastActivityAt, executionAt);
     if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
       const payload = obj.payload as Record<string, unknown>;
       if (payload.type === "message" && payload.role === "assistant" && payload.phase === "commentary" && Array.isArray(payload.content)) {
@@ -395,5 +414,6 @@ export async function readCodexActivity(path: string, roots: readonly string[]):
     }
   }
 
-  return { state: "active", turnId: latestTurnId, observedAt: latestObservedAt, ...(items.length > 0 ? { items } : {}) };
+  return { state: "active", turnId: latestTurnId, observedAt: latestObservedAt,
+    ...(lastActivityAt > latestObservedAt ? { lastActivityAt } : {}), ...(items.length > 0 ? { items } : {}) };
 }

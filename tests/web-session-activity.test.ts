@@ -78,6 +78,41 @@ test("a start record alone does not claim running when live confirmation is unav
   expect((await f.source.sessions())[0]).toMatchObject({ state: "unknown", stateConfirmation: { phase: "checking" } });
 });
 
+test.each(["unknown", "idle"] as const)("fresh native execution overrides a stale %s observer for the same turn", async (state) => {
+  const now = Date.now();
+  const f = fixture(record("task_started", "turn", (now - 600_000) / 1000));
+  appendFileSync(f.path, JSON.stringify({ type: "response_item", timestamp: new Date(now - 1000).toISOString(),
+    payload: { type: "custom_tool_call", name: "exec_command", call_id: "fresh-call" } }) + "\n");
+  f.observe({ state, turnId: "turn" });
+  f.latest({ id: "turn", status: "interrupted", startedAtMs: now - 600_000, completedAtMs: null, itemsView: "summary" });
+  expect((await f.source.sessions())[0]?.state).toBe("running");
+  expect((await f.source.history("thread", null, 20)).sessionState).toBe("running");
+});
+
+test("progress from before a terminal or a newer turn cannot keep the old turn running", async () => {
+  const now = Date.now();
+  const progress = JSON.stringify({ type: "response_item", timestamp: new Date(now - 1000).toISOString(), payload: { type: "reasoning" } }) + "\n";
+  const f = fixture(record("task_started", "old", (now - 2000) / 1000) + progress + record("task_complete", "old", now / 1000));
+  expect((await f.source.sessions())[0]?.state).toBe("idle");
+  appendFileSync(f.path, record("task_started", "new", (now + 1) / 1000));
+  f.observe({ state: "unknown", turnId: "new" });
+  expect((await f.source.sessions())[0]?.state).toBe("unknown");
+});
+
+test.each(["stale", "metadata", "user", "other-turn"])("%s records are not live execution evidence", async (kind) => {
+  const now = Date.now();
+  const f = fixture(record("task_started", "turn", (now - 600_000) / 1000));
+  const row = kind === "metadata"
+    ? { type: "event_msg", timestamp: new Date(now).toISOString(), payload: { type: "thread_settings_applied" } }
+    : kind === "user"
+      ? { type: "response_item", timestamp: new Date(now).toISOString(), payload: { type: "message", role: "user", content: [] } }
+      : { type: "response_item", timestamp: new Date(kind === "stale" ? now - 300_000 : now).toISOString(),
+        payload: { type: "reasoning", ...(kind === "other-turn" ? { turn_id: "other" } : {}) } };
+  appendFileSync(f.path, JSON.stringify(row) + "\n");
+  f.observe({ state: "unknown", turnId: "turn" });
+  expect((await f.source.sessions())[0]?.state).toBe("unknown");
+});
+
 test("unchanged terminal evidence survives expiry without reopening history", async () => {
   const f = fixture(record("task_complete"));
   let now = 1000;

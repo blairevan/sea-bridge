@@ -115,9 +115,13 @@ export class SessionActivityResolver {
     const native = failed ? null : cache.native;
     const differentTurn = Boolean(observed?.turnId && native && observed.turnId !== native.turnId);
     const newerSnapshot = native?.state === "idle" && thread.updatedAtMs > native.observedAt;
+    const progressAge = native?.lastActivityAt === undefined ? Infinity : this.now() - native.lastActivityAt;
+    const freshExecution = native?.state === "active" && native.lastActivityAt !== undefined
+      && native.lastActivityAt > native.observedAt && progressAge >= -5000 && progressAge <= 120_000 && !differentTurn;
     let activity: CodexActivity | null = null;
     let reason: StateConfirmation["reason"] = failed ? "read_unavailable" : "missing_evidence";
-    if (native?.state === "idle" && !differentTurn && !newerSnapshot) activity = native;
+    if (freshExecution) activity = native;
+    else if (native?.state === "idle" && !differentTurn && !newerSnapshot) activity = native;
     else if (observed?.state !== "unknown" && observed?.turnId && !differentTurn && !newerSnapshot) {
       // A terminal local record takes precedence over a lagging active observer for the same turn.
       activity = { state: observed.state, turnId: observed.turnId, observedAt: native?.observedAt ?? thread.updatedAtMs };
