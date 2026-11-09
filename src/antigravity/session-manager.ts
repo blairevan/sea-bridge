@@ -31,7 +31,7 @@ export class AntigravitySessionManager {
     desktopReader?: AntigravityDesktopReader | undefined; desktopAppDataDir?: string | undefined;
     approvalPolicy?: "auto" | "ask" | undefined; externalSessionsEnabled?: boolean | undefined;
     getAllowedProjects: () => readonly AllowedAntigravityProject[]; clientFactory?: AcpClientFactory | undefined;
-    onSessionEvent?: ((sessionId: string) => void) | undefined;
+    onSessionEvent?: ((sessionId: string) => void) | undefined; onDesktopTurnSettled?: ((sessionId: string) => void) | undefined;
   }) {}
 
   /** Synchronously execute `session/new` + model/effort setup, then dispatch `session/prompt` asynchronously. */
@@ -317,7 +317,7 @@ export class AntigravitySessionManager {
     if (actor.retireWorkerAfterTurn || status === "cancelled" || sess?.sessionOrigin === "desktop") {
       actor.retireWorkerAfterTurn = false;
       const client = actor.client; actor.client = null;
-      if (client) { if (sess?.sessionOrigin === "desktop" && typeof client.closeSession === "function") void client.closeSession(actor.sessionId).catch(() => {}).finally(() => client.close()); else client.close(); }
+      if (client) { if (sess?.sessionOrigin === "desktop" && typeof client.closeSession === "function") void client.closeSession(actor.sessionId).catch(() => {}).finally(() => { client.close(); this.deps.onDesktopTurnSettled?.(actor.sessionId); }); else { client.close(); if (sess?.sessionOrigin === "desktop") this.deps.onDesktopTurnSettled?.(actor.sessionId); } }
     }
     this.deps.onSessionEvent?.(actor.sessionId);
   }
@@ -339,6 +339,7 @@ export class AntigravitySessionManager {
       if (sess) this.deps.store.upsertSession({ ...sess, status: "unknown", lastError: errorMessage, updatedAt: now });
     }
     actor.client?.close(); actor.client = null;
+    if (sess?.sessionOrigin === "desktop") this.deps.onDesktopTurnSettled?.(actor.sessionId);
     this.deps.onSessionEvent?.(actor.sessionId);
   }
 

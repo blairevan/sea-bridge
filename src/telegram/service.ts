@@ -729,7 +729,7 @@ export class TelegramService {
       }
       if (routed.provider === "antigravity") {
         const agyResult = routed.result;
-        if (agyResult.status === "duplicate") return;
+        if (agyResult.status === "duplicate" || agyResult.status === "desktop_app_open") return;
         if (agyResult.status === "delivered") {
           await this.client.sendMessage(message.chat.id, "已投递到对应的 Antigravity 会话。");
           return;

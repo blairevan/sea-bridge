@@ -5,6 +5,7 @@ import { AntigravityWebSource } from "../web/sources/antigravity.ts";
 import { AntigravityApprovalBridge } from "./approval-bridge.ts";
 import { AntigravityCapabilityGate } from "./capabilities.ts";
 import { loadAntigravityConfig, type AntigravityConfig } from "./config.ts";
+import { AntigravityDesktopAppController } from "./desktop-app-controller.ts";
 import { AntigravityDesktopObserver } from "./desktop-observer.ts";
 import { AntigravityDesktopReader } from "./desktop-reader.ts";
 import { AntigravityModelCatalog } from "./model-catalog.ts";
@@ -54,6 +55,7 @@ export function createAntigravityRuntime(
 
   let boundWebStore: WebStore | undefined;
   let activeObserver: AntigravityDesktopObserver | null = null;
+  let activeDesktopAppController: AntigravityDesktopAppController | null = null;
   const webStoreProxy = {
     transitionQueuedOperation: (
       operationId: string,
@@ -104,6 +106,9 @@ export function createAntigravityRuntime(
     onSessionEvent: () => {
       activeObserver?.wake();
     },
+    onDesktopTurnSettled: (sessionId) => {
+      void activeDesktopAppController?.onDesktopTurnSettled(sessionId);
+    },
   });
 
   return {
@@ -124,6 +129,12 @@ export function createAntigravityRuntime(
     },
     createTelegramComponents(telegram: TelegramHandlerClient, chatId: string) {
       if (!config.enabled) return undefined;
+      const desktopAppController = new AntigravityDesktopAppController({
+        desktopAppDataDir: config.desktopAppDataDir,
+        tgStore,
+        telegram,
+      });
+      activeDesktopAppController = desktopAppController;
       const newSessions = new AntigravityNewSessionManager({
         store,
         tgStore,
@@ -133,6 +144,7 @@ export function createAntigravityRuntime(
       const replyRouter = new AntigravityReplyRouter({
         tgStore,
         externalSessionsEnabled: config.externalSessionsEnabled,
+        desktopAppController,
         sessionManager,
       });
       const observer = new AntigravityDesktopObserver({
@@ -155,6 +167,7 @@ export function createAntigravityRuntime(
         approvalBridge,
         newSessions,
         replyRouter,
+        desktopAppController,
         observer,
         telegram,
       });

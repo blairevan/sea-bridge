@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import type { SourceResult } from "../web/sources/types.ts";
+import type { AntigravityDesktopAppController } from "./desktop-app-controller.ts";
 import type { AntigravityTelegramStore } from "./telegram-store.ts";
 
 export type AntigravityReplyResult =
   | { status: "duplicate"; sessionId: string }
   | { status: "delivered"; sessionId: string }
+  | { status: "desktop_app_open"; sessionId: string }
   | { status: "session_busy"; sessionId: string }
   | { status: "desktop_read_only"; sessionId: string }
   | { status: "failed"; sessionId: string; errorCode: string }
@@ -24,6 +26,7 @@ export class AntigravityReplyRouter {
     private readonly deps: {
       tgStore: AntigravityTelegramStore;
       externalSessionsEnabled?: boolean | undefined;
+      desktopAppController?: AntigravityDesktopAppController | undefined;
       sessionManager: {
         send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
       };
@@ -40,7 +43,8 @@ export class AntigravityReplyRouter {
     updateId: number,
     chatId: string,
     replyMessageId: number,
-    text: string
+    text: string,
+    options?: { bypassDesktopOpenCheck?: boolean }
   ): Promise<AntigravityReplyResult> {
     const link = this.deps.tgStore.findMessageLink(chatId, replyMessageId);
     if (!link) {
@@ -53,6 +57,25 @@ export class AntigravityReplyRouter {
     const normalized = text.trim();
     if (!normalized) {
       return { status: "failed", sessionId: link.sessionId, errorCode: "empty_prompt" };
+    }
+
+    if (
+      !options?.bypassDesktopOpenCheck &&
+      link.sessionOrigin === "desktop" &&
+      this.deps.desktopAppController &&
+      !this.deps.tgStore.getDelivery(updateId)
+    ) {
+      const openInApp = await this.deps.desktopAppController.isSessionOpenInDesktopApp(link.sessionId);
+      if (openInApp) {
+        await this.deps.desktopAppController.sendConfirmationPrompt({
+          updateId,
+          chatId,
+          replyToMessageId: replyMessageId,
+          sessionId: link.sessionId,
+          text: normalized,
+        });
+        return { status: "desktop_app_open", sessionId: link.sessionId };
+      }
     }
 
     const hash = deliveryHash(link.sessionId, normalized);

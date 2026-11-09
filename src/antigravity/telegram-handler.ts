@@ -3,12 +3,9 @@ import type { BotCommand, InlineButton } from "../telegram/client.ts";
 import type { AntigravityApprovalBridge } from "./approval-bridge.ts";
 import type { AntigravityCapabilityGate } from "./capabilities.ts";
 import type { AntigravityConfig } from "./config.ts";
+import type { AntigravityDesktopAppController } from "./desktop-app-controller.ts";
 import type { AntigravityDesktopObserver } from "./desktop-observer.ts";
-import {
-  createAntigravityCallback,
-  renderAntigravityModelMenu,
-  renderAntigravityProjectMenu,
-} from "./menu-ui.ts";
+import { createAntigravityCallback, renderAntigravityModelMenu, renderAntigravityProjectMenu } from "./menu-ui.ts";
 import type { AntigravityModelCatalog } from "./model-catalog.ts";
 import type { AntigravityNewSessionManager } from "./new-session-manager.ts";
 import type { AntigravityReplyRouter } from "./reply-router.ts";
@@ -27,16 +24,11 @@ export interface TelegramHandlerClient {
 export class AntigravityTelegramHandler {
   constructor(
     private readonly deps: {
-      config: AntigravityConfig;
-      store: AntigravityStore;
-      tgStore: AntigravityTelegramStore;
-      capabilityGate: AntigravityCapabilityGate;
-      modelCatalog: AntigravityModelCatalog;
-      approvalBridge: AntigravityApprovalBridge;
-      newSessions: AntigravityNewSessionManager;
-      replyRouter: AntigravityReplyRouter;
-      observer?: AntigravityDesktopObserver | undefined;
-      telegram: TelegramHandlerClient;
+      config: AntigravityConfig; store: AntigravityStore; tgStore: AntigravityTelegramStore;
+      capabilityGate: AntigravityCapabilityGate; modelCatalog: AntigravityModelCatalog;
+      approvalBridge: AntigravityApprovalBridge; newSessions: AntigravityNewSessionManager;
+      replyRouter: AntigravityReplyRouter; desktopAppController?: AntigravityDesktopAppController | undefined;
+      observer?: AntigravityDesktopObserver | undefined; telegram: TelegramHandlerClient;
     }
   ) {}
 
@@ -183,6 +175,11 @@ export class AntigravityTelegramHandler {
         eventKind: "reply_prompt",
         eventFingerprint: createHash("sha256").update(`agy_reply_prompt:${chatId}:${promptMsg.message_id}:${sessionId}`).digest("hex"),
       });
+      return true;
+    }
+
+    if (action.action === "desktop.reply.decide" && this.deps.desktopAppController) {
+      await this.deps.desktopAppController.handleCallback(chatId, sourceMessageId, action.payload, this.deps.replyRouter);
       return true;
     }
 
