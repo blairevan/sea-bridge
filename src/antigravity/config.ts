@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { resolveAllowedProjectRoot, type AllowedAntigravityProject } from "./policy.ts";
+
+export type AntigravityApprovalPolicy = "auto" | "ask";
 
 export interface AntigravityConfig {
   enabled: boolean;
@@ -12,6 +15,7 @@ export interface AntigravityConfig {
   desktopAppDataDir: string;
   maxActive: number;
   approvalTimeoutMs: number;
+  approvalPolicy?: AntigravityApprovalPolicy | undefined;
   externalSessionsEnabled: boolean;
   allowedProjects: AllowedAntigravityProject[];
 }
@@ -65,6 +69,34 @@ function parseAllowedProjects(rawJson: string | undefined): AllowedAntigravityPr
   return projects;
 }
 
+function resolveApprovalPolicy(raw: string | undefined, geminiDir: string): AntigravityApprovalPolicy {
+  const mode = raw?.trim().toLowerCase() || "desktop";
+  if (mode === "auto") return "auto";
+  if (mode === "ask") return "ask";
+  if (mode !== "desktop") {
+    throw new Error("SEA_BRIDGE_ANTIGRAVITY_APPROVAL_POLICY must be auto, ask, or desktop");
+  }
+  try {
+    const cfgPath = join(geminiDir, "config", "config.json");
+    if (!existsSync(cfgPath)) return "ask";
+    const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as {
+      userSettings?: { permissionPreset?: string; autoExecutionPolicy?: string };
+    };
+    const preset = parsed?.userSettings?.permissionPreset;
+    const execPolicy = parsed?.userSettings?.autoExecutionPolicy;
+    if (
+      preset === "AGENT_PERMISSION_PRESET_TURBO" ||
+      preset === "AGENT_PERMISSION_PRESET_AUTO" ||
+      execPolicy === "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER"
+    ) {
+      return "auto";
+    }
+  } catch {
+    // Fall back to explicit approval prompt if desktop config cannot be parsed
+  }
+  return "ask";
+}
+
 /** Load and validate Antigravity configuration from environment variables. */
 export function loadAntigravityConfig(
   env: Readonly<Record<string, string | undefined>> = process.env
@@ -103,6 +135,7 @@ export function loadAntigravityConfig(
       300_000,
       "SEA_BRIDGE_ANTIGRAVITY_APPROVAL_TIMEOUT_MS"
     ),
+    approvalPolicy: resolveApprovalPolicy(env.SEA_BRIDGE_ANTIGRAVITY_APPROVAL_POLICY, geminiDir),
     externalSessionsEnabled,
     allowedProjects: parseAllowedProjects(env.SEA_BRIDGE_ANTIGRAVITY_PROJECTS_JSON),
   };

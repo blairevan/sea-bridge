@@ -24,16 +24,15 @@ export class AntigravitySessionManager {
   private nextGeneration = 1;
   private readonly actors = new Map<string, SessionActor>();
 
-  constructor(
-    private readonly deps: {
-      store: AntigravityStore; webStore?: WebStore | undefined; approvalBridge: AntigravityApprovalBridge;
-      capabilityGate: AntigravityCapabilityGate; modelCatalog: AntigravityModelCatalog;
-      cliPath: string; geminiDir?: string | undefined; appDataDir?: string | undefined;
-      desktopReader?: AntigravityDesktopReader | undefined; desktopAppDataDir?: string | undefined;
-      externalSessionsEnabled?: boolean | undefined; getAllowedProjects: () => readonly AllowedAntigravityProject[];
-      clientFactory?: AcpClientFactory | undefined; onSessionEvent?: ((sessionId: string) => void) | undefined;
-    }
-  ) {}
+  constructor(private readonly deps: {
+    store: AntigravityStore; webStore?: WebStore | undefined; approvalBridge: AntigravityApprovalBridge;
+    capabilityGate: AntigravityCapabilityGate; modelCatalog: AntigravityModelCatalog;
+    cliPath: string; geminiDir?: string | undefined; appDataDir?: string | undefined;
+    desktopReader?: AntigravityDesktopReader | undefined; desktopAppDataDir?: string | undefined;
+    approvalPolicy?: "auto" | "ask" | undefined; externalSessionsEnabled?: boolean | undefined;
+    getAllowedProjects: () => readonly AllowedAntigravityProject[]; clientFactory?: AcpClientFactory | undefined;
+    onSessionEvent?: ((sessionId: string) => void) | undefined;
+  }) {}
 
   /** Synchronously execute `session/new` + model/effort setup, then dispatch `session/prompt` asynchronously. */
   async create(input: CreateRequest): Promise<SourceResult> {
@@ -139,9 +138,7 @@ export class AntigravitySessionManager {
   }
 
   /** Update a managed or P4-adopted Desktop session's model and reasoning effort while idle. */
-  async updateModel(
-    sessionId: string, modelId: string, reasoningEffort?: string | null
-  ): Promise<{ status: "updated"; model: { id: string; displayName?: string }; reasoningEffort?: string }> {
+  async updateModel(sessionId: string, modelId: string, reasoningEffort?: string | null): Promise<{ status: "updated"; model: { id: string; displayName?: string }; reasoningEffort?: string }> {
     const resolvedSess = this.resolveOrAdoptSession(sessionId);
     if (!resolvedSess.session) throw new Error(resolvedSess.errorCode ?? "session_not_found");
     const session = resolvedSess.session;
@@ -149,15 +146,10 @@ export class AntigravitySessionManager {
     if (actor?.activeTurn || actor?.replaying || session.status === "running" || session.status === "cancelling") throw new Error("session_busy");
     const resolved = await this.deps.modelCatalog.resolveSelection(modelId, reasoningEffort);
     if (!resolved) throw new Error("invalid_model");
-    if (actor?.client && !actor.client.identity().closed) {
-      await this.applyModelConfig(actor.client, sessionId, resolved.baseModelId, resolved.reasoningEffort);
-    }
+    if (actor?.client && !actor.client.identity().closed) await this.applyModelConfig(actor.client, sessionId, resolved.baseModelId, resolved.reasoningEffort);
     this.deps.store.upsertSession({ ...session, modelId: resolved.baseModelId, reasoningEffort: resolved.reasoningEffort, updatedAt: Date.now() });
     this.deps.onSessionEvent?.(sessionId);
-    return {
-      status: "updated", model: { id: resolved.baseModelId, displayName: resolved.displayName },
-      ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
-    };
+    return { status: "updated", model: { id: resolved.baseModelId, displayName: resolved.displayName }, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) };
   }
 
   /** Explicitly reload a managed session via `session/load` and atomically swap its history snapshot. */
@@ -377,6 +369,7 @@ export class AntigravitySessionManager {
   }
 
   private spawnClient(generation: number, cwd: string, getSessionId: () => string | null, appDataDir = this.deps.appDataDir): AcpClient {
+    const autoApprove = this.deps.approvalPolicy === "auto";
     const callbacks: AcpClientCallbacks = {
       onSessionUpdate: (update, gen) => this.handleSessionUpdate(getSessionId(), update, gen),
       onPermissionRequest: async (id, req, gen) => {
@@ -384,6 +377,8 @@ export class AntigravitySessionManager {
         const actor = this.actors.get(targetId);
         if (!actor || actor.generation !== gen || !actor.activeTurn) return { outcome: { outcome: "cancelled" } };
         this.markTurnAccepted(actor.activeTurn);
+        const allowOpt = autoApprove ? (req.options.find((o) => o.kind.startsWith("allow") || o.optionId === "allow") ?? req.options[0]) : undefined;
+        if (allowOpt) return { outcome: { outcome: "selected", optionId: allowOpt.optionId } };
         const { promise } = this.deps.approvalBridge.requestPermission({
           sessionId: targetId, executionId: actor.activeTurn.executionId, processGeneration: gen, rpcRequestId: id, request: req,
         });
@@ -392,7 +387,7 @@ export class AntigravitySessionManager {
       },
     };
     if (this.deps.clientFactory) { const custom = this.deps.clientFactory(generation, cwd, callbacks, appDataDir); custom.start(); return custom; }
-    const args = ["acp", ...(this.deps.geminiDir ? [`--gemini-dir=${this.deps.geminiDir}`] : []), ...(appDataDir ? [`--app-data-dir=${appDataDir}`] : [])];
+    const args = ["acp", ...(autoApprove ? ["--dangerously-skip-permissions"] : []), ...(this.deps.geminiDir ? [`--gemini-dir=${this.deps.geminiDir}`] : []), ...(appDataDir ? [`--app-data-dir=${appDataDir}`] : [])];
     const client = new AcpClient({ cliPath: this.deps.cliPath, args, cwd, processGeneration: generation }, callbacks);
     client.start(); return client;
   }

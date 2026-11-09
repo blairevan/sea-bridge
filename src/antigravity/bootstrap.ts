@@ -98,6 +98,7 @@ export function createAntigravityRuntime(
     appDataDir: config.appDataDir,
     desktopReader,
     desktopAppDataDir: config.desktopAppDataDir,
+    approvalPolicy: config.approvalPolicy,
     externalSessionsEnabled: config.externalSessionsEnabled,
     getAllowedProjects,
     onSessionEvent: () => {

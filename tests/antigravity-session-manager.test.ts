@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { AntigravityApprovalBridge } from "../src/antigravity/approval-bridge.ts";
 import { AntigravityCapabilityGate } from "../src/antigravity/capabilities.ts";
 import type { AcpClient, AcpClientCallbacks } from "../src/antigravity/client.ts";
+import { loadAntigravityConfig } from "../src/antigravity/config.ts";
 import { AntigravityModelCatalog } from "../src/antigravity/model-catalog.ts";
 import { AntigravitySessionManager } from "../src/antigravity/session-manager.ts";
 import { AntigravityStore, migrateAntigravityBridgeTables } from "../src/antigravity/store.ts";
@@ -172,6 +174,104 @@ describe("AntigravitySessionManager", () => {
       expect(store.getExecution(send2.turnId!)?.status).toBe("completed");
     } finally {
       db.close();
+    }
+  });
+
+  test("aligns approvalPolicy with Desktop Turbo config and auto-approves permission requests without queueing approval cards", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "agy-turbo-cfg-"));
+    const db = new Database(":memory:");
+    try {
+      mkdirSync(path.join(tmp, "config"), { recursive: true });
+      writeFileSync(
+        path.join(tmp, "config", "config.json"),
+        JSON.stringify({ userSettings: { permissionPreset: "AGENT_PERMISSION_PRESET_TURBO" } }),
+        "utf8"
+      );
+      const desktopCfg = loadAntigravityConfig({
+        SEA_BRIDGE_ANTIGRAVITY_ENABLED: "true",
+        SEA_BRIDGE_ANTIGRAVITY_GEMINI_DIR: tmp,
+      });
+      expect(desktopCfg.approvalPolicy).toBe("auto");
+
+      const askCfg = loadAntigravityConfig({
+        SEA_BRIDGE_ANTIGRAVITY_ENABLED: "true",
+        SEA_BRIDGE_ANTIGRAVITY_GEMINI_DIR: tmp,
+        SEA_BRIDGE_ANTIGRAVITY_APPROVAL_POLICY: "ask",
+      });
+      expect(askCfg.approvalPolicy).toBe("ask");
+
+      migrateAntigravityBridgeTables(db);
+      const store = new AntigravityStore(db);
+      const approvalBridge = new AntigravityApprovalBridge(store);
+      const capabilityGate = new AntigravityCapabilityGate({ enabled: true, writeEnabled: true, desktopReadEnabled: true });
+      const modelCatalog = new AntigravityModelCatalog({
+        cliPath: "/Users/zhuhaijun/.local/bin/agy",
+        runner: async () => modelsFixture,
+      });
+
+      let currentCallbacks!: AcpClientCallbacks;
+      let currentGeneration = 0;
+      let resolvePrompt!: (value: { stopReason: string }) => void;
+
+      const manager = new AntigravitySessionManager({
+        store,
+        approvalBridge,
+        capabilityGate,
+        modelCatalog,
+        cliPath: "/bin/echo",
+        approvalPolicy: "auto",
+        getAllowedProjects: () => [{ id: "proj-1", name: "SeaBridge", rootPath: "/opt/app/aitools/sea-bridge" }],
+        clientFactory: (generation, _cwd, callbacks) => {
+          currentGeneration = generation;
+          currentCallbacks = callbacks;
+          return {
+            start() {},
+            identity: () => ({ pid: 3000 + generation, startedAt: Date.now(), generation, closed: false }),
+            initialize: async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, close: {} } },
+            }),
+            sessionNew: async () => ({ sessionId: "9d3547fd-5f23-4178-b143-38a82ad31d85" }),
+            prompt: () => ({
+              rpcRequestId: "1",
+              promise: new Promise((resolve) => {
+                resolvePrompt = resolve;
+              }),
+            }),
+            close: () => {},
+          } as unknown as AcpClient;
+        },
+      });
+
+      const createRes = await manager.create({
+        operationId: "op-turbo-1",
+        projectId: "proj-1",
+        modelId: null,
+        prompt: "Run checks",
+        onSessionKnown: () => {},
+      });
+      expect(createRes.state).toBe("queued");
+
+      const permRes = await currentCallbacks.onPermissionRequest!(
+        99,
+        {
+          sessionId: "9d3547fd-5f23-4178-b143-38a82ad31d85",
+          toolCall: { toolCallId: "tc-1", name: "run_command", title: "ls -la" },
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        },
+        currentGeneration
+      );
+      expect(permRes).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+      expect(store.listPendingApprovals("9d3547fd-5f23-4178-b143-38a82ad31d85")).toHaveLength(0);
+
+      resolvePrompt({ stopReason: "end_turn" });
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      db.close();
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

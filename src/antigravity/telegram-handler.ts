@@ -283,6 +283,7 @@ export class AntigravityTelegramHandler {
         `托管会话: 共 ${sessions.length} 个（运行中 ${runningCount} 个）`,
         `桌面端只读展示: ${this.deps.config.desktopReadEnabled ? "已开启" : "已关闭"}`,
         `桌面端原会话写入互通: ${this.deps.config.externalSessionsEnabled ? "已开启" : "已关闭"}`,
+        `工具权限策略: ${this.deps.config.approvalPolicy === "auto" ? "自动批准 (Turbo)" : "逐次询问 (Ask)"}`,
         ...(obs
           ? [
               `通知观察器: ${obs.running ? "运行中" : "已停止"}`,
