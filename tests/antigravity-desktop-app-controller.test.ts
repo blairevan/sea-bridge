@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -51,8 +52,16 @@ describe("AntigravityDesktopAppController", () => {
       const tg = createFakeTelegram();
 
       const sessionId = "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404";
+      const nativeProjectId = "43e4063c-f55e-4006-90df-7f7aea9ee9ad";
       mkdirSync(path.join(tmpDir, "presence"), { recursive: true });
       writeFileSync(path.join(tmpDir, "presence", `${sessionId}.lock`), "");
+
+      const summariesDb = new Database(path.join(tmpDir, "conversation_summaries.db"));
+      summariesDb.exec("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT);");
+      summariesDb
+        .prepare("INSERT INTO conversation_summaries (conversation_id, project_id) VALUES (?, ?)")
+        .run(sessionId, nativeProjectId);
+      summariesDb.close();
 
       let desktopAppOpen = true;
       const executedCommands: Array<{ cmd: string; args: string[] }> = [];
@@ -126,10 +135,12 @@ describe("AntigravityDesktopAppController", () => {
       expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(false);
       expect(desktopAppOpen).toBe(true);
 
-      // Step 2: Turn finishes -> automatically performs fast quit + open restart
+      // Step 2: Turn finishes -> automatically performs fast quit + open restart with project deep link
       await controller.onDesktopTurnSettled(sessionId);
       expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(true);
-      expect(executedCommands.some((c) => c.cmd === "open")).toBe(true);
+      const openCmd = executedCommands.find((c) => c.cmd === "open");
+      expect(openCmd).toBeDefined();
+      expect(openCmd?.args).toContain(`antigravity://open?project=${nativeProjectId}`);
       expect(desktopAppOpen).toBe(true);
 
       stateDb.close();
@@ -147,8 +158,16 @@ describe("AntigravityDesktopAppController", () => {
       const tg = createFakeTelegram();
 
       const sessionId = "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404";
+      const nativeProjectId = "43e4063c-f55e-4006-90df-7f7aea9ee9ad";
       mkdirSync(path.join(tmpDir, "presence"), { recursive: true });
       writeFileSync(path.join(tmpDir, "presence", `${sessionId}.lock`), "");
+
+      const summariesDb = new Database(path.join(tmpDir, "conversation_summaries.db"));
+      summariesDb.exec("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT);");
+      summariesDb
+        .prepare("INSERT INTO conversation_summaries (conversation_id, project_id) VALUES (?, ?)")
+        .run(sessionId, nativeProjectId);
+      summariesDb.close();
 
       let desktopAppOpen = true;
       const executedCommands: Array<{ cmd: string; args: string[] }> = [];

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -145,10 +146,37 @@ export class AntigravityDesktopAppController {
     return res.exitCode === 0 && Boolean(res.stdout.trim());
   }
 
-  /** Reopen `Antigravity.app` on macOS. */
-  async reopenDesktopApp(): Promise<boolean> {
+  /** Resolve the native Antigravity Desktop `project_id` UUID for `sessionId` from `conversation_summaries.db`. */
+  resolveNativeProjectId(sessionId: string): string | null {
+    if (!isValidDesktopConversationId(sessionId)) return null;
+    const summariesDbPath = path.join(this.deps.desktopAppDataDir, "conversation_summaries.db");
+    if (!existsSync(summariesDbPath)) return null;
+    let db: Database | null = null;
+    try {
+      db = new Database(summariesDbPath, { readonly: true });
+      const row = db
+        .query("SELECT project_id FROM conversation_summaries WHERE conversation_id = ? LIMIT 1")
+        .get(sessionId) as { project_id?: string | null } | null;
+      const projectId = typeof row?.project_id === "string" ? row.project_id.trim() : "";
+      return projectId || null;
+    } catch {
+      return null;
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // Ignore close errors
+      }
+    }
+  }
+
+  /** Reopen `Antigravity.app` on macOS, deep-linking to the session's native project when available. */
+  async reopenDesktopApp(sessionId?: string): Promise<boolean> {
     const bundle = this.deps.appBundlePath ?? "/Applications/Antigravity.app";
-    const args = existsSync(bundle) ? ["-a", bundle] : ["-a", "Antigravity"];
+    const baseArgs = existsSync(bundle) ? ["-a", bundle] : ["-a", "Antigravity"];
+    const nativeProjectId = sessionId ? this.resolveNativeProjectId(sessionId) : null;
+    const deepLink = nativeProjectId ? `antigravity://open?project=${encodeURIComponent(nativeProjectId)}` : null;
+    const args = deepLink ? [...baseArgs, deepLink, "--args", deepLink] : baseArgs;
     const res = await this.runCommand("open", args, 5000);
     return res.exitCode === 0;
   }
@@ -158,7 +186,7 @@ export class AntigravityDesktopAppController {
     const quitOk = await this.quitDesktopApp(sessionId);
     if (!quitOk) return false;
     await this.sleepFn(150);
-    return await this.reopenDesktopApp();
+    return await this.reopenDesktopApp(sessionId);
   }
 
   /** Mark a Desktop session to be refreshed in `Antigravity.app` once its background `agy acp` turn finishes. */
