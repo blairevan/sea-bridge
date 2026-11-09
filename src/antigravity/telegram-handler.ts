@@ -165,6 +165,10 @@ export class AntigravityTelegramHandler {
         await this.deps.telegram.sendMessage(chatId, "Antigravity 回复功能当前不可用。");
         return true;
       }
+      const origin =
+        this.deps.store.getSession(sessionId)?.sessionOrigin ??
+        (sourceMessageId !== undefined ? this.deps.tgStore.findMessageLink(String(chatId), sourceMessageId)?.sessionOrigin : undefined) ??
+        "sea_bridge";
       const promptMsg = await this.deps.telegram.sendForceReply(
         chatId,
         "💬 请回复此消息，内容将投递给该 Antigravity 会话：",
@@ -175,7 +179,7 @@ export class AntigravityTelegramHandler {
         chatId: String(chatId),
         messageId: promptMsg.message_id,
         sessionId,
-        sessionOrigin: "sea_bridge",
+        sessionOrigin: origin,
         eventKind: "reply_prompt",
         eventFingerprint: createHash("sha256").update(`agy_reply_prompt:${chatId}:${promptMsg.message_id}:${sessionId}`).digest("hex"),
       });
@@ -278,6 +282,7 @@ export class AntigravityTelegramHandler {
         `状态: ${statusState}`,
         `托管会话: 共 ${sessions.length} 个（运行中 ${runningCount} 个）`,
         `桌面端只读展示: ${this.deps.config.desktopReadEnabled ? "已开启" : "已关闭"}`,
+        `桌面端原会话写入互通: ${this.deps.config.externalSessionsEnabled ? "已开启" : "已关闭"}`,
         ...(obs
           ? [
               `通知观察器: ${obs.running ? "运行中" : "已停止"}`,

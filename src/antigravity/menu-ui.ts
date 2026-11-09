@@ -237,10 +237,12 @@ export function formatAntigravityTerminal(
   eventKind: string,
   title?: string,
   assistantText?: string | null,
-  origin: AntigravitySessionOrigin = "sea_bridge"
+  origin: AntigravitySessionOrigin = "sea_bridge",
+  desktopWritable = false
 ): { eventKind: string; parts: string[] } {
   const displayTitle = safeTitle(title);
-  const sourcePrefix = origin === "desktop" ? "Antigravity 桌面端（只读）" : "Antigravity (Sea-Bridge)";
+  const sourcePrefix =
+    origin === "desktop" ? (desktopWritable ? "Antigravity 桌面端" : "Antigravity 桌面端（只读）") : "Antigravity (Sea-Bridge)";
   const header = `${sourcePrefix}: ${displayTitle}\n状态: ${statusLabel(eventKind)}`;
   const answer = typeof assistantText === "string" ? String(redact(assistantText)) : "";
   const chunks = splitAnswer(answer);

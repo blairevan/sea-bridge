@@ -62,10 +62,9 @@ export async function routeProviderReply(
   }
 
   if (agyLink) {
-    if (agyLink.sessionOrigin === "desktop") {
-      return { status: "antigravity_desktop_read_only" };
+    if (!agyRouter) {
+      return { status: agyLink.sessionOrigin === "desktop" ? "antigravity_desktop_read_only" : "antigravity_read_only" };
     }
-    if (!agyRouter) return { status: "antigravity_read_only" };
     const agyRes = await agyRouter.deliver(updateId, chatId, targetMessageId, message.text?.trim() ?? "");
     if (agyRes.status === "desktop_read_only") {
       return { status: "antigravity_desktop_read_only" };

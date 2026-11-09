@@ -111,7 +111,7 @@ export class AntigravityDesktopObserver {
   private observeManagedSessions(): void {
     const sessions = this.deps.store.listSessions(200);
     for (const sess of sessions) {
-      if (!sess.lastExecutionId) continue;
+      if (sess.sessionOrigin === "desktop" || !sess.lastExecutionId) continue;
       const exec = this.deps.store.getExecution(sess.lastExecutionId);
       if (!exec || !["completed", "cancelled", "incomplete", "failed"].includes(exec.status)) continue;
 
@@ -164,8 +164,9 @@ export class AntigravityDesktopObserver {
   private observeDesktopSessions(): void {
     if (!this.deps.desktopReader) return;
     const desktopSessions = this.deps.desktopReader.listSessions(100);
+    const desktopWritable = Boolean(this.deps.replyEnabled && this.deps.externalSessionsEnabled);
     for (const desk of desktopSessions) {
-      if (this.deps.store.getSession(desk.id)) continue;
+      if (this.deps.store.getSession(desk.id)?.sessionOrigin === "sea_bridge") continue;
       const history = this.deps.desktopReader.readHistory(desk.id, 400);
       if (!history) continue;
 
@@ -187,7 +188,7 @@ export class AntigravityDesktopObserver {
       let lastFp = prev.lastEventFingerprint;
       const newMsgs = assistantMsgs.slice(prev.cursor);
       for (const msg of newMsgs) {
-        const formatted = formatAntigravityTerminal("completed", desk.title, msg.text, "desktop");
+        const formatted = formatAntigravityTerminal("completed", desk.title, msg.text, "desktop", desktopWritable);
         for (let i = 0; i < formatted.parts.length; i++) {
           const isFinal = i === formatted.parts.length - 1;
           const fp = createHash("sha256")

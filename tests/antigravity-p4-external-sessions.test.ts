@@ -13,6 +13,8 @@ import { AntigravityReplyRouter } from "../src/antigravity/reply-router.ts";
 import { AntigravitySessionManager } from "../src/antigravity/session-manager.ts";
 import { AntigravityStore } from "../src/antigravity/store.ts";
 import { AntigravityTelegramStore } from "../src/antigravity/telegram-store.ts";
+import { DesktopMessageStore } from "../src/state/desktop-message-store.ts";
+import { routeProviderReply } from "../src/telegram/provider-reply-router.ts";
 import { AntigravityWebSource } from "../src/web/sources/antigravity.ts";
 
 function createFakeClient(
@@ -309,6 +311,33 @@ describe("P4 Antigravity Desktop & CLI External Session Write Interoperability",
       });
       const tgReply = await replyRouter.deliver(9901, "chat-1", 8801, "Continue from Telegram");
       expect(tgReply).toEqual({ status: "delivered", sessionId: deskIdleId });
+
+      // Wait for async turn completion so session returns to idle before testing routeProviderReply
+      for (let i = 0; i < 40; i++) {
+        if (store.getSession(deskIdleId)?.status === "idle") break;
+        await Bun.sleep(10);
+      }
+
+      const codexStore = new DesktopMessageStore(state);
+      const routedViaProvider = await routeProviderReply(
+        9902,
+        {
+          message_id: 8802,
+          chat: { id: "chat-1", type: "private" } as any,
+          reply_to_message: { message_id: 8801, chat: { id: "chat-1", type: "private" } as any },
+          text: "Continue via routeProviderReply",
+        },
+        codexStore,
+        undefined,
+        undefined,
+        undefined,
+        tgStore,
+        replyRouter
+      );
+      expect(routedViaProvider).toEqual({
+        provider: "antigravity",
+        result: { status: "delivered", sessionId: deskIdleId },
+      });
     } finally {
       state.close();
       rmSync(tempRoot, { recursive: true, force: true });
