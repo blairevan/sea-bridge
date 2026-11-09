@@ -81,11 +81,14 @@ export class AntigravityDesktopAppController {
     if (!isValidDesktopConversationId(sessionId)) return false;
     const lockPath = path.join(this.deps.desktopAppDataDir, "presence", `${sessionId}.lock`);
     const dbPath = path.join(this.deps.desktopAppDataDir, "conversations", `${sessionId}.db`);
-    const targets = [lockPath, dbPath].filter((p) => existsSync(p));
+    const walPath = path.join(this.deps.desktopAppDataDir, "conversations", `${sessionId}.db-wal`);
+    const targets = [dbPath, walPath, lockPath].filter((p) => existsSync(p));
     if (targets.length === 0) return false;
 
+    // Note: macOS `lsof` returns exitCode 1 if ANY listed file has no open handles,
+    // even when other listed files DO have open handles and print PIDs to stdout.
     const lsofRes = await this.runCommand("lsof", ["-t", "--", ...targets], 3000);
-    if (lsofRes.exitCode !== 0 || !lsofRes.stdout.trim()) return false;
+    if (!lsofRes.stdout.trim()) return false;
     const pids = Array.from(
       new Set(
         lsofRes.stdout
@@ -115,18 +118,22 @@ export class AntigravityDesktopAppController {
     }
   }
 
-  /** Gracefully quit `Antigravity.app` and wait until its `language_server` releases the session lock. */
+  /** Gracefully quit `Antigravity.app` and wait until both the Electron app and `language_server` exit. */
   async quitDesktopApp(sessionId?: string): Promise<boolean> {
     await this.runCommand("osascript", ["-e", 'tell application "Antigravity" to quit'], 5000);
-    for (let i = 0; i < 15; i++) {
-      const stillOpen = sessionId ? await this.isSessionOpenInDesktopApp(sessionId) : await this.isDesktopAppRunning();
-      if (!stillOpen) return true;
+    const isStillAlive = async () => {
+      if (await this.isDesktopAppRunning()) return true;
+      if (sessionId && (await this.isSessionOpenInDesktopApp(sessionId))) return true;
+      return false;
+    };
+    for (let i = 0; i < 20; i++) {
+      if (!(await isStillAlive())) return true;
       await this.sleepFn(200);
     }
     await this.runCommand("pkill", ["-TERM", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], 2000);
+    await this.runCommand("pkill", ["-TERM", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], 2000);
     for (let i = 0; i < 10; i++) {
-      const stillOpen = sessionId ? await this.isSessionOpenInDesktopApp(sessionId) : await this.isDesktopAppRunning();
-      if (!stillOpen) return true;
+      if (!(await isStillAlive())) return true;
       await this.sleepFn(200);
     }
     return false;

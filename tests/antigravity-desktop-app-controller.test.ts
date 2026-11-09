@@ -68,8 +68,14 @@ describe("AntigravityDesktopAppController", () => {
         runCommand: async (cmd, args) => {
           executedCommands.push({ cmd, args });
           if (cmd === "lsof") {
+            // Simulate macOS lsof exitCode=1 when .lock was released by agy acp but .db is still held by Antigravity.app
             return desktopAppOpen
-              ? { exitCode: 0, stdout: "5921\n", stderr: "" }
+              ? { exitCode: 1, stdout: "5921\n", stderr: "" }
+              : { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (cmd === "pgrep") {
+            return desktopAppOpen
+              ? { exitCode: 0, stdout: "5894\n", stderr: "" }
               : { exitCode: 1, stdout: "", stderr: "" };
           }
           if (cmd === "ps") {
@@ -169,8 +175,14 @@ describe("AntigravityDesktopAppController", () => {
         runCommand: async (cmd, args) => {
           executedCommands.push({ cmd, args });
           if (cmd === "lsof") {
+            // Simulate macOS lsof exitCode=1 when .lock was released by agy acp but .db is still held by Antigravity.app
             return desktopAppOpen
-              ? { exitCode: 0, stdout: "5921\n", stderr: "" }
+              ? { exitCode: 1, stdout: "5921\n", stderr: "" }
+              : { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (cmd === "pgrep") {
+            return desktopAppOpen
+              ? { exitCode: 0, stdout: "5894\n", stderr: "" }
               : { exitCode: 1, stdout: "", stderr: "" };
           }
           if (cmd === "ps") {

@@ -147,7 +147,7 @@ export class AcpClient {
 
   /** Close an active session (`session/close`). */
   async closeSession(sessionId: string): Promise<void> {
-    const { promise } = this.transport.request("session/close", { sessionId });
+    const { promise } = this.transport.request("session/close", { sessionId }, 1500);
     await promise;
   }
 
