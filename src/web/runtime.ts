@@ -23,7 +23,7 @@ export class WebRuntime implements WebService {
   /** Accept shared resources without taking ownership of the core database or clients. */
   constructor(private readonly options: {
     config: WebConfig; db: Database; secrets: readonly string[];
-    sourceFactory: (store: WebStore) => Partial<Record<"codex" | "dsh", WebSource>>;
+    sourceFactory: (store: WebStore) => Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>;
     telegramStatus: () => TelegramStatus; staticRoot?: string;
   }) {}
 

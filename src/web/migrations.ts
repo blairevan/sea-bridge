@@ -42,6 +42,27 @@ export function migrateWeb(db: Database, beforeCommit?: () => void): void {
         INSERT INTO web_schema_migrations VALUES(2);
       `);
     }
+    if (!db.query("SELECT version FROM web_schema_migrations WHERE version=3").get()) {
+      db.exec(`
+        CREATE TABLE web_operations_v3(
+          id TEXT PRIMARY KEY, digest TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('create','send')),
+          source TEXT NOT NULL CHECK(source IN ('codex','dsh','antigravity')), device_id TEXT NOT NULL,
+          target_id TEXT, project_id TEXT, model_id TEXT,
+          state TEXT NOT NULL CHECK(state IN ('received','dispatching','queued','accepted','failed','delivery_unknown')),
+          session_id TEXT, turn_id TEXT, error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        INSERT INTO web_operations_v3 SELECT id,digest,kind,source,device_id,target_id,project_id,model_id,state,session_id,turn_id,error_code,created_at,updated_at FROM web_operations;
+        CREATE TABLE web_message_snapshots_v3(
+          operation_id TEXT PRIMARY KEY REFERENCES web_operations_v3(id) ON DELETE CASCADE,
+          source TEXT NOT NULL, session_id TEXT, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+        INSERT INTO web_message_snapshots_v3 SELECT operation_id,source,session_id,text,created_at FROM web_message_snapshots;
+        DROP TABLE web_message_snapshots;
+        DROP TABLE web_operations;
+        ALTER TABLE web_operations_v3 RENAME TO web_operations;
+        ALTER TABLE web_message_snapshots_v3 RENAME TO web_message_snapshots;
+        CREATE INDEX IF NOT EXISTS web_operations_time ON web_operations(created_at);
+        INSERT INTO web_schema_migrations VALUES(3);
+      `);
+    }
     beforeCommit?.();
   })();
 }

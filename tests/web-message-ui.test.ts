@@ -149,6 +149,7 @@ class ElementFixture {
   className = "";
   /** Capture the emitted tag without interpreting HTML. */
   constructor(readonly tag: string) {}
+  get firstChild(): ElementFixture | null { return this.children[0] ?? null; }
   get lastElementChild(): ElementFixture | null { return this.children.at(-1) ?? null; }
   /** Append only already-constructed nodes. */
   append(...nodes: ElementFixture[]): void { this.children.push(...nodes); }
@@ -1554,4 +1555,256 @@ test("mobile turn indicator stays hidden for programmatic scroll and appears bri
   expect(delays.at(-1)).toBe(6000);
   timers.at(-1)?.();
   expect(indicator.hidden).toBe(true); expect(latest.dataset.turnIndicatorVisible).toBeUndefined();
+});
+
+test("Antigravity create dialog links model family selection to default reasoning effort and disables single-tier effort", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const nodes = new Map<string, any>();
+  const get = (id: string) => {
+    if (!nodes.has(id)) nodes.set(id, Object.assign(new ElementFixture("div"), { value: "", disabled: false }));
+    return nodes.get(id)!;
+  };
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, syncReasoningEffortControl, setCreationModels: (m) => { creationModels = m; } })", {
+    el: get,
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => Object.assign(new ElementFixture(tag), { value: "", disabled: false }),
+      createTextNode: (text: string) => { const n = new ElementFixture("#text"); n.textContent = text; return n; },
+    },
+  }) as any;
+
+  ui.state.paused = false;
+  ui.setCreationModels({
+    source: "antigravity",
+    items: [
+      { id: "gemini-4-argon", name: "Gemini 4 Argon", supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" },
+      { id: "claude-opus-5-5", name: "Claude Opus 5.5", supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "low" },
+      { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", supportedReasoningEfforts: [], defaultReasoningEffort: null },
+    ],
+  });
+
+  const modelSelect = get("create-model");
+  const effortSelect = get("create-reasoning-effort");
+
+  modelSelect.value = "gemini-4-argon";
+  ui.syncReasoningEffortControl();
+  expect(effortSelect.disabled).toBe(false);
+  expect(effortSelect.value).toBe("medium");
+  expect(effortSelect.children.map((o: any) => o.value)).toEqual(["", "low", "medium", "high"]);
+
+  modelSelect.value = "claude-opus-5-5";
+  ui.syncReasoningEffortControl();
+  expect(effortSelect.disabled).toBe(false);
+  expect(effortSelect.value).toBe("low");
+
+  modelSelect.value = "gpt-oss-120b-medium";
+  ui.syncReasoningEffortControl();
+  expect(effortSelect.disabled).toBe(true);
+  expect(effortSelect.value).toBe("");
+});
+
+test("Antigravity desktop read-only sessions disable composer input and show read-only status", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const elements = new Map<string, any>([
+    ["composer-session-status", { textContent: "", hidden: false }],
+    ["send-button", { textContent: "", disabled: false, type: "submit", title: "", dataset: {} }],
+    ["prompt", { value: "", disabled: false, placeholder: "输入消息…" }],
+  ]);
+  const ui = runInNewContext(script.slice(0, end) + "\n({ state, sessionSourceLabel, syncComposerControl })", {
+    document: { getElementById: (id: string) => elements.get(id) ?? null },
+  }) as any;
+
+  ui.state.paused = false;
+  const desktopSession = {
+    source: "antigravity",
+    id: "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404",
+    state: "idle",
+    sendEnabled: false,
+    creationClient: { kind: "desktop", evidence: "explicit" },
+  };
+  const managedSession = {
+    source: "antigravity",
+    id: "managed-1",
+    state: "idle",
+    sendEnabled: true,
+    creationClient: { kind: "sea_bridge", evidence: "explicit" },
+  };
+
+  expect(ui.sessionSourceLabel(desktopSession)).toBe("Antigravity · 桌面端（只读）");
+  expect(ui.sessionSourceLabel(managedSession)).toBe("Antigravity · Sea-Bridge 托管");
+
+  ui.state.selected = desktopSession;
+  ui.syncComposerControl(1000);
+  expect(elements.get("prompt").disabled).toBe(true);
+  expect(elements.get("prompt").placeholder).toContain("只读");
+  expect(elements.get("composer-session-status").hidden).toBe(false);
+  expect(elements.get("composer-session-status").textContent).toContain("只读");
+  expect(elements.get("send-button").disabled).toBe(true);
+
+  ui.state.selected = managedSession;
+  ui.syncComposerControl(1000);
+  expect(elements.get("prompt").disabled).toBe(false);
+  expect(elements.get("prompt").placeholder).toBe("输入消息…");
+});
+
+test("Antigravity pending approval cards render options, submit decision once, and prevent duplicate clicks", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementFixture("div")); return nodes.get(id)!; };
+  const messages = get("messages");
+  const calls: Array<{ path: string; method: string; body: any }> = [];
+  let resolveDecision!: (val: any) => void;
+  const decisionPromise = new Promise((r) => { resolveDecision = r; });
+
+  const ui = runInNewContext(script.slice(0, end) + `
+    api = async (path, method, body) => { calls.push({ path, method, body }); return decisionPromise; };
+    loadHistory = async () => {};
+    notice = () => {};
+    ({ state, syncLiveActivityCard, decidePendingApproval })`, {
+    el: get,
+    calls,
+    decisionPromise,
+    encodeURIComponent,
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => Object.assign(new ElementFixture(tag), { disabled: false }),
+      createTextNode: (text: string) => { const n = new ElementFixture("#text"); n.textContent = text; return n; },
+    },
+  }) as any;
+
+  ui.state.paused = false;
+  ui.state.selected = {
+    source: "antigravity",
+    id: "sess-ag-1",
+    state: "waiting_external_approval",
+    pendingApprovals: [
+      {
+        id: "appr-1",
+        sessionId: "sess-ag-1",
+        executionId: "exec-1",
+        toolCallId: "tc-1",
+        toolName: "bash",
+        toolTitle: "rm -rf /tmp/test",
+        options: [
+          { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject_once", name: "Deny", kind: "reject_once" },
+        ],
+      },
+    ],
+  };
+
+  ui.syncLiveActivityCard(1000);
+  const allNodes = flatten(messages);
+  expect(allNodes.some((n) => n.textContent.includes("权限请求 · bash"))).toBe(true);
+  expect(allNodes.some((n) => n.textContent.includes("rm -rf /tmp/test"))).toBe(true);
+  const buttons = allNodes.filter((n) => n.tag === "button");
+  expect(buttons.map((b) => b.textContent)).toEqual(["Allow", "Deny"]);
+
+  const p1 = ui.decidePendingApproval("appr-1", "allow_once");
+  // Duplicate click while in flight is ignored
+  const p2 = ui.decidePendingApproval("appr-1", "reject_once");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toEqual({
+    path: "/api/sessions/antigravity/sess-ag-1/approvals/appr-1",
+    method: "POST",
+    body: { optionId: "allow_once" },
+  });
+
+  resolveDecision({ status: "decided", optionId: "allow_once" });
+  await Promise.all([p1, p2]);
+  expect(ui.state.selected.pendingApprovals).toEqual([]);
+});
+
+test("Antigravity active execution interrupt submits expectedExecutionId and expectedEpoch and idle session supports model + effort switch", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf("\ndocument.querySelectorAll(\"nav button\").forEach");
+  const meta = new ElementFixture("div");
+  const elements = new Map<string, any>([
+    ["composer-session-meta", meta],
+    ["composer-session-status", { textContent: "", hidden: false }],
+    ["send-button", { textContent: "", disabled: false, type: "submit", title: "", dataset: {} }],
+    ["prompt", { value: "", disabled: false, placeholder: "输入消息…" }],
+  ]);
+  const calls: Array<{ path: string; method: string; body?: any }> = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    api = async (path, method = "GET", body) => {
+      calls.push({ path, method, body });
+      if (path === "/api/sources/antigravity/models") {
+        return {
+          items: [
+            { id: "gemini-4-argon", name: "Gemini 4 Argon", supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" },
+            { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", supportedReasoningEfforts: [], defaultReasoningEffort: null },
+          ],
+        };
+      }
+      if (path.endsWith("/interrupt")) return { status: "interrupting" };
+      return { status: "updated", model: { id: body.modelId, displayName: body.modelId }, reasoningEffort: body.reasoningEffort };
+    };
+    syncLiveActivityCard = () => {};
+    loadHistory = async () => {};
+    notice = () => {};
+    ({ state, syncComposerControl, interruptSelectedTurn, ensureSessionModelCatalog, changeSessionModel })`, {
+    calls,
+    encodeURIComponent,
+    document: {
+      getElementById: (id: string) => elements.get(id) ?? null,
+      createElement: (tag: string) => Object.assign(new ElementFixture(tag), { value: "", disabled: false }),
+    },
+  }) as any;
+
+  ui.state.paused = false;
+  ui.state.caps.antigravity = { modelUpdateEnabled: true };
+  ui.state.selected = {
+    source: "antigravity",
+    id: "sess-ag-1",
+    state: "running",
+    sendEnabled: false,
+    creationClient: { kind: "sea_bridge", evidence: "explicit" },
+    executionControl: {
+      activeExecutionId: "exec-99",
+      activeEpoch: 3,
+      interrupt: { status: "available", scope: "exact_antigravity_execution" },
+    },
+  };
+
+  ui.syncComposerControl(1000);
+  expect(elements.get("send-button")).toMatchObject({
+    textContent: "⏹ 中断",
+    disabled: false,
+    dataset: { mode: "interrupt" },
+  });
+
+  await ui.interruptSelectedTurn();
+  expect(calls.at(-1)).toEqual({
+    path: "/api/sessions/antigravity/sess-ag-1/interrupt",
+    method: "POST",
+    body: { expectedExecutionId: "exec-99", expectedEpoch: 3 },
+  });
+
+  // Switch to idle and test model + effort switching
+  ui.state.selected = {
+    source: "antigravity",
+    id: "sess-ag-1",
+    state: "idle",
+    sendEnabled: true,
+    creationClient: { kind: "sea_bridge", evidence: "explicit" },
+    sessionMeta: {
+      model: { id: "gemini-4-argon", displayName: "Gemini 4 Argon" },
+      reasoningEffort: "medium",
+    },
+  };
+  await ui.ensureSessionModelCatalog("antigravity");
+  ui.syncComposerControl(1000);
+  expect(meta.children.map((c) => c.tag)).toEqual(["select", "select"]);
+
+  await ui.changeSessionModel("gemini-4-argon", meta.children[1], "high");
+  expect(calls.at(-1)).toEqual({
+    path: "/api/sessions/antigravity/sess-ag-1/model",
+    method: "POST",
+    body: { modelId: "gemini-4-argon", reasoningEffort: "high" },
+  });
+  expect(ui.state.selected.sessionMeta.reasoningEffort).toBe("high");
 });

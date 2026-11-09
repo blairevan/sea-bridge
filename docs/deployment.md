@@ -201,6 +201,25 @@ SEA_BRIDGE_DSH_NOTIFICATIONS_ENABLED=true
 
 write 和 notifications 都依赖 read-only 开关开启。只有 Codex 时可不设置这些开关。dsh 连接器需单独安装并启动宿主；可先运行 `bun run dsh-connector:check`，安装命令是 `bun run dsh-connector:install`。连接器安装不等于宿主服务已运行。
 
+可选 Antigravity 功能（P0–P4 Web + Telegram + 桌面端原会话按需互通）：
+
+```bash
+SEA_BRIDGE_ANTIGRAVITY_ENABLED=true
+SEA_BRIDGE_ANTIGRAVITY_DESKTOP_READ_ENABLED=true
+SEA_BRIDGE_ANTIGRAVITY_WRITE_ENABLED=true
+SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=false
+SEA_BRIDGE_ANTIGRAVITY_CLI_PATH="/Users/你的用户名/.antigravity/antigravity/bin/agy"
+SEA_BRIDGE_ANTIGRAVITY_HOME="$HOME/.gemini/antigravity"
+SEA_BRIDGE_ANTIGRAVITY_PROJECTS="sea-bridge=/opt/app/aitools/sea-bridge"
+SEA_BRIDGE_ANTIGRAVITY_IDLE_TTL_MS=900000
+SEA_BRIDGE_ANTIGRAVITY_APPROVAL_TIMEOUT_MS=300000
+```
+
+- `SEA_BRIDGE_ANTIGRAVITY_ENABLED=true` 时，Web 控制台与 Telegram 启用 `Antigravity` 来源：
+  - **Sea-Bridge 托管会话**：通过 `agy acp` 创建与续聊会话，支持新建前及空闲态分离选择**模型（Model）**与**思考等级（Effort）**、Web 与 Telegram 双端共享在线权限审批、精确停止，以及 Telegram `/agy_status`、`/agy_projects`、`/agy_model`、`/agy_new` 命令菜单与三方回复路由。
+  - **Antigravity 桌面端会话（默认只读 + 通知观察）**：当 `SEA_BRIDGE_ANTIGRAVITY_DESKTOP_READ_ENABLED=true` 时，只读查询 `~/.gemini/antigravity/conversation_summaries.db` 顶层会话索引（自动过滤子代理与 CLI 存根）及 `brain/<id>/.system_generated/logs/transcript.jsonl` 历史，在 Web 端展示并在 Telegram 端推送新完成轮次通知。
+  - **Antigravity 桌面端原会话写入互通（P4 可选开关）**：默认 `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=false`（桌面会话保持 `sendEnabled: false` 只读）；设为 `true` 时，对位于允许项目目录（`SEA_BRIDGE_ANTIGRAVITY_PROJECTS`）且桌面端当前空闲（非 `CASCADE_RUN_STATUS_RUNNING` 且 `not_fully_idle = 0`）的桌面原会话，支持在 Web 端和 Telegram 端直接按原会话 ID 续聊与切换模型（自动按会话来源切换 `--app-data-dir`、零导入副本、每轮结束后自动 `session/close` 并回收 worker 释放 SQLite WAL 写锁）。
+
 ## 5. 设置网页登录账号与密码
 
 ### 5.1 首次设置
@@ -463,3 +482,24 @@ tail -n 80 "$HOME/Library/Logs/SeaBridge/cloudflared.log"
 ### 10.3 本文编写时的验证边界
 
 已只读核对两个 LaunchAgent 均 running，当前应用启动指向 v0.14.1 发布目录；域名首页返回 200，未认证 session 返回 401，Tunnel ingress validate 通过。本文没有重置密码、重复创建 DNS/Tunnel 或重启现有服务；新机器模板没有在本机覆盖执行。
+
+## 11. 可选 Antigravity ACP 接入配置（P0–P4）
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SEA_BRIDGE_ANTIGRAVITY_ENABLED` | `false` | Antigravity 来源总开关 |
+| `SEA_BRIDGE_ANTIGRAVITY_WRITE_ENABLED` | `false` | 启用托管会话新建、发送、模型/思考等级修改、停止与审批 |
+| `SEA_BRIDGE_ANTIGRAVITY_CLI_PATH` | `/Users/zhuhaijun/.local/bin/agy` | `agy` CLI 绝对路径 |
+| `SEA_BRIDGE_ANTIGRAVITY_GEMINI_DIR` | `~/.gemini` | 传给 `agy acp --gemini-dir` 的根目录 |
+| `SEA_BRIDGE_ANTIGRAVITY_APP_DATA_DIR` | `antigravity-cli` | 传给 `agy acp --app-data-dir` 的托管会话隔离目录 |
+| `SEA_BRIDGE_ANTIGRAVITY_DESKTOP_READ_ENABLED` | `true`（总开关开启时） | 只读展示与观察 `Antigravity.app`（`~/.gemini/antigravity`）顶层会话列表与 `transcript.jsonl` 历史 |
+| `SEA_BRIDGE_ANTIGRAVITY_DESKTOP_APP_DATA_DIR` | `~/.gemini/antigravity` | `Antigravity` 桌面端数据目录 |
+| `SEA_BRIDGE_ANTIGRAVITY_PROJECTS_JSON` | `[]` | 允许的本地项目 JSON 数组（`[{"id":"...","name":"...","rootPath":"/abs/path"}]`） |
+| `SEA_BRIDGE_ANTIGRAVITY_APPROVAL_TIMEOUT_MS` | `300000` | Web / Telegram 双端共享权限审批超时时间（毫秒），超时自动取消 |
+| `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED` | `false` | 桌面端外部会话跨进程写入开关（P4；默认关闭保持只读，设为 `true` 时允许对允许项目目录内空闲的桌面原会话进行同 ID 续聊与模型切换） |
+
+Telegram 端命令（启用后自动同步）：
+- `/agy_status`：查看 Antigravity ACP 状态、托管会话数与通知观察器状态
+- `/agy_projects`：查看允许的本地项目列表
+- `/agy_model`：分离选择新建会话默认模型与思考等级（`low / medium / high`）
+- `/agy_new [序号/项目] [需求]`：通过菜单、`ForceReply` 或快捷命令新建托管会话

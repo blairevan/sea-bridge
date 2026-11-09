@@ -1,6 +1,7 @@
 import type { LiveActivityItem } from "../codex-transcript.ts";
 import type { CreationClient } from "../../desktop/codex-provenance.ts";
-import type { OperationState } from "../store.ts";
+import type { OperationState, WebOperationSource } from "../store.ts";
+import type { WebExecutionControl, WebPendingApproval } from "../../antigravity/projection.ts";
 
 /** Independent capability flags prevent a partial source appearing fully available. */
 export interface WebSourceCapabilities {
@@ -8,7 +9,7 @@ export interface WebSourceCapabilities {
   completeUserHistoryReadable: boolean; finalReplyReadable: boolean; createEnabled: boolean; sendEnabled: boolean;
   desktopOpenEnabled?: boolean;
   modelUpdateEnabled?: boolean;
-  approvalTransport: "telegram" | null;
+  approvalTransport: "telegram" | "web" | "web_and_telegram" | null;
 }
 /** Session metadata is field-wise evidence; absent values are never inferred from defaults. */
 export interface WebSessionMeta {
@@ -36,7 +37,7 @@ export interface SessionListOptions {
 }
 /** Source-owned identity plus evidence-based display metadata. */
 export interface WebSession {
-  source: "codex" | "dsh"; id: string; title: string; updatedAt: number; projectId: string | null;
+  source: WebOperationSource; id: string; title: string; updatedAt: number; projectId: string | null;
   creationClient?: CreationClient;
   sessionMeta?: WebSessionMeta;
   stateConfirmation?: StateConfirmation;
@@ -52,7 +53,14 @@ export interface WebTurnControl {
     | { status: "interrupting"; scope: "exact_codex_turn" }
     | { status: "unavailable"; reason: "turn_unknown" | "provider_unavailable" | "provider_unverified" };
 }
-export interface WebHistory { messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[]; queueUnavailable?: boolean; sessionState?: WebSession["state"]; stateConfirmation?: StateConfirmation; sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[]; turnControl?: WebTurnControl; }
+export interface WebHistory {
+  messages: WebMessage[]; cursor: string | null; completeUserHistory: boolean; queuedMessages?: WebMessage[];
+  queueUnavailable?: boolean; sessionState?: WebSession["state"]; stateConfirmation?: StateConfirmation;
+  sessionMeta?: WebSessionMeta; activeTurnStartedAt?: number; activeTurnItems?: LiveActivityItem[];
+  turnControl?: WebTurnControl;
+  executionControl?: WebExecutionControl;
+  pendingApprovals?: WebPendingApproval[];
+}
 /** Catalog items preserve machine IDs while display fields can be redacted. */
 export interface CatalogItem {
   id: string;
@@ -89,7 +97,9 @@ export interface WebSource {
   history(id: string, cursor: string | null, limit: number): Promise<WebHistory>;
   execution?(id: string, turnId: string | null, submittedAt?: number): Promise<ExecutionEvidence>;
   interrupt?(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }>;
-  updateModel?(id: string, modelId: string): Promise<{ status: "updated"; model: { id: string; displayName?: string } }>;
+  interruptExecution?(id: string, expectedExecutionId: string, expectedEpoch: number): Promise<{ status: "interrupting" }>;
+  updateModel?(id: string, modelId: string, reasoningEffort?: string | null): Promise<{ status: "updated"; model: { id: string; displayName?: string }; reasoningEffort?: string }>;
+  decideApproval?(sessionId: string, approvalId: string, optionId: string, decidedBy: string): Promise<{ status: "decided" | "already_decided" | "expired"; optionId?: string | null }>;
   create(input: CreateRequest): Promise<SourceResult>;
   send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
 }

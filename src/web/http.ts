@@ -13,7 +13,7 @@ export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
 /** Explicit handler dependencies make authentication/dispatch ordering independently testable. */
 export interface WebHttpDependencies {
   store: WebStore; auth: WebAuth; events: WebEvents; redaction: WebRedaction; pepper: Uint8Array;
-  sources: Partial<Record<"codex" | "dsh", WebSource>>;
+  sources: Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>;
   port: number; remoteOrigin: string | null; telegramStatus: () => TelegramStatus;
 }
 
@@ -134,10 +134,10 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       } });
       if (path === "/api/status" && method === "GET") return json(await status());
       const selected = url.searchParams.get("source");
-      if (selected && selected !== "codex" && selected !== "dsh") throw new HttpError(400, "invalid_source");
-      const catalog = path.match(/^\/api\/sources\/(codex|dsh)\/(projects|models)$/);
+      if (selected && selected !== "codex" && selected !== "dsh" && selected !== "antigravity") throw new HttpError(400, "invalid_source");
+      const catalog = path.match(/^\/api\/sources\/(codex|dsh|antigravity)\/(projects|models)$/);
       if (catalog && method === "GET") {
-        const source = deps.sources[catalog[1] as "codex" | "dsh"]; if (!source) throw new HttpError(503, "source_unavailable");
+        const source = deps.sources[catalog[1] as "codex" | "dsh" | "antigravity"]; if (!source) throw new HttpError(503, "source_unavailable");
         return json({ items: (catalog[2] === "projects" ? await source.projects() : await source.models()).slice(0, 2000) });
       }
       if (path === "/api/sessions" && method === "GET") {
@@ -175,19 +175,25 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         }
         return json({ status: "open_requested" });
       }
-      const modelUpdate = path.match(/^\/api\/sessions\/codex\/([^/]+)\/model$/);
+      const modelUpdate = path.match(/^\/api\/sessions\/(codex|antigravity)\/([^/]+)\/model$/);
       if (modelUpdate && method === "POST") {
-        const id = text(decodeURIComponent(modelUpdate[1] ?? ""), 200) ?? "";
+        const provider = modelUpdate[1] as "codex" | "antigravity";
+        const id = text(decodeURIComponent(modelUpdate[2] ?? ""), 200) ?? "";
         const body = await readAuthorizedJson(4096);
         const modelId = text(body.modelId, 200) ?? "";
         if (!modelId) throw new HttpError(400, "invalid_field");
-        const source = deps.sources.codex;
+        const rawEffort = body.reasoningEffort;
+        const reasoningEffort = rawEffort != null && rawEffort !== "" ? text(rawEffort, 80) : null;
+        if (reasoningEffort !== null && !/^[a-zA-Z0-9_-]{1,80}$/.test(reasoningEffort)) {
+          throw new HttpError(400, "invalid_reasoning_effort");
+        }
+        const source = deps.sources[provider];
         const audit = (outcome: string): void => {
-          deps.store.audit(device.id, "codex_thread_model_update", JSON.stringify({ threadId: id, outcome }), Date.now());
+          deps.store.audit(device.id, `${provider}_thread_model_update`, JSON.stringify({ threadId: id, outcome }), Date.now());
         };
         if (!source?.updateModel) { audit("model_update_unavailable"); throw new HttpError(503, "model_update_unavailable"); }
         try {
-          const result = await source.updateModel(id, modelId);
+          const result = await source.updateModel(id, modelId, reasoningEffort);
           audit(result.status);
           return json(result);
         } catch (error) {
@@ -200,15 +206,34 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
           throw new HttpError(status, stable);
         }
       }
-      const interrupt = path.match(/^\/api\/sessions\/codex\/([^/]+)\/interrupt$/);
+      const interrupt = path.match(/^\/api\/sessions\/(codex|antigravity)\/([^/]+)\/interrupt$/);
       if (interrupt && method === "POST") {
-        const id = text(decodeURIComponent(interrupt[1] ?? ""), 200) ?? "";
+        const provider = interrupt[1] as "codex" | "antigravity";
+        const id = text(decodeURIComponent(interrupt[2] ?? ""), 200) ?? "";
         const body = await readAuthorizedJson(1024);
-        const expectedTurnId = text(body.expectedTurnId, 200) ?? "";
-        const source = deps.sources.codex;
+        const source = deps.sources[provider];
         const audit = (outcome: string): void => {
-          deps.store.audit(device.id, "codex_turn_interrupt", JSON.stringify({ threadId: id, outcome }), Date.now());
+          deps.store.audit(device.id, `${provider}_turn_interrupt`, JSON.stringify({ threadId: id, outcome }), Date.now());
         };
+        if (provider === "antigravity") {
+          const expectedExecutionId = text(body.expectedExecutionId, 200) ?? "";
+          const expectedEpoch = typeof body.expectedEpoch === "number" && Number.isSafeInteger(body.expectedEpoch) && body.expectedEpoch > 0 ? body.expectedEpoch : 0;
+          if (!expectedExecutionId || !expectedEpoch) throw new HttpError(400, "invalid_field");
+          if (!source?.interruptExecution) { audit("interrupt_provider_unavailable"); throw new HttpError(503, "interrupt_provider_unavailable"); }
+          try {
+            const result = await source.interruptExecution(id, expectedExecutionId, expectedEpoch);
+            audit(result.status);
+            return json(result);
+          } catch (error) {
+            const code = error instanceof Error ? error.message : "interrupt_provider_unavailable";
+            const stable = ["session_missing", "interrupt_not_owned", "active_execution_changed", "interrupt_already_finished", "interrupt_provider_unavailable", "interrupt_provider_unverified"].includes(code)
+              ? code : "interrupt_provider_unavailable";
+            audit(stable);
+            const status = stable === "session_missing" ? 404 : stable === "interrupt_provider_unavailable" ? 503 : 409;
+            throw new HttpError(status, stable);
+          }
+        }
+        const expectedTurnId = text(body.expectedTurnId, 200) ?? "";
         if (!source?.interrupt) { audit("interrupt_provider_unavailable"); throw new HttpError(503, "interrupt_provider_unavailable"); }
         try {
           const result = await source.interrupt(id, expectedTurnId);
@@ -224,9 +249,33 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
           throw new HttpError(status, stable);
         }
       }
-      const history = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/history$/);
+      const approval = path.match(/^\/api\/sessions\/antigravity\/([^/]+)\/approvals\/([^/]+)$/);
+      if (approval && method === "POST") {
+        const sessionId = text(decodeURIComponent(approval[1] ?? ""), 200) ?? "";
+        const approvalId = text(decodeURIComponent(approval[2] ?? ""), 200) ?? "";
+        const body = await readAuthorizedJson(1024);
+        const optionId = text(body.optionId, 100) ?? "";
+        if (!sessionId || !approvalId || !optionId) throw new HttpError(400, "invalid_field");
+        const source = deps.sources.antigravity;
+        const audit = (outcome: string): void => {
+          deps.store.audit(device.id, "antigravity_approval_decision", JSON.stringify({ sessionId, approvalId, optionId, outcome }), Date.now());
+        };
+        if (!source?.decideApproval) { audit("approval_unavailable"); throw new HttpError(503, "approval_unavailable"); }
+        try {
+          const result = await source.decideApproval(sessionId, approvalId, optionId, `web:${device.id}`);
+          audit(result.status);
+          return json(result);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "approval_unavailable";
+          const stable = ["approval_not_found", "invalid_option", "approval_unavailable"].includes(code) ? code : "approval_unavailable";
+          audit(stable);
+          const status = stable === "approval_not_found" ? 404 : stable === "invalid_option" ? 400 : 503;
+          throw new HttpError(status, stable);
+        }
+      }
+      const history = path.match(/^\/api\/sessions\/(codex|dsh|antigravity)\/([^/]+)\/history$/);
       if (history && method === "GET") {
-        const source = deps.sources[history[1] as "codex" | "dsh"]; if (!source) throw new HttpError(503, "source_unavailable");
+        const source = deps.sources[history[1] as "codex" | "dsh" | "antigravity"]; if (!source) throw new HttpError(503, "source_unavailable");
         const id = text(decodeURIComponent(history[2] ?? ""), 200) ?? "";
         const cursor = url.searchParams.get("cursor"); if (cursor && cursor.length > 100) throw new HttpError(400, "invalid_cursor");
         const rawLimit = url.searchParams.get("limit") ?? "30";
@@ -259,11 +308,11 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         }
         return json({ ...operation, execution });
       }
-      const send = path.match(/^\/api\/sessions\/(codex|dsh)\/([^/]+)\/messages$/);
+      const send = path.match(/^\/api\/sessions\/(codex|dsh|antigravity)\/([^/]+)\/messages$/);
       if (method === "POST" && (path === "/api/sessions" || send)) {
         const body = await readAuthorizedJson(WEB_MAX_REQUEST_BYTES);
         const executionSource = send?.[1] ?? body.source;
-        if (executionSource !== "codex" && executionSource !== "dsh") throw new HttpError(400, "invalid_source");
+        if (executionSource !== "codex" && executionSource !== "dsh" && executionSource !== "antigravity") throw new HttpError(400, "invalid_source");
         const source = deps.sources[executionSource]; if (!source) throw new HttpError(503, "source_unavailable");
         const operationId = text(body.operationId, 36) ?? "";
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId)) throw new HttpError(400, "invalid_operation_id");

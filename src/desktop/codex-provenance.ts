@@ -1,7 +1,7 @@
 /** Normalized creation provenance; raw native client names never leave the desktop boundary. */
 export interface CreationClient {
   kind: "desktop" | "cli" | "sea_bridge" | "exec" | "unknown";
-  evidence: "originator" | "source" | "none";
+  evidence: "originator" | "source" | "explicit" | "none";
 }
 
 /** Validate before trimming so invalid evidence cannot trigger a source fallback. */

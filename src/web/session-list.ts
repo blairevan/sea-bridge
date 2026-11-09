@@ -11,7 +11,7 @@ interface ListSelection {
 }
 
 /** Refresh exact IDs after global ordering, never a source-relative approximation of the visible page. */
-async function refreshPage(sources: Partial<Record<"codex" | "dsh", WebSource>>, page: WebSession[]): Promise<{ items: WebSession[]; failed: boolean }> {
+async function refreshPage(sources: Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>, page: WebSession[]): Promise<{ items: WebSession[]; failed: boolean }> {
   const results = await Promise.all(Object.entries(sources).map(async ([name, source]) => {
     const ids = page.filter((item) => item.source === name).map((item) => item.id);
     if (!source || !ids.length) return { name, items: [] as WebSession[], failed: false };
@@ -25,14 +25,14 @@ async function refreshPage(sources: Partial<Record<"codex" | "dsh", WebSource>>,
 }
 
 /** Scan bounded batches before activity filtering; the cursor tracks scanned candidates, including nonmatches. */
-export async function listWebSessions(sources: Partial<Record<"codex" | "dsh", WebSource>>, selection: ListSelection) {
+export async function listWebSessions(sources: Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>, selection: ListSelection) {
   const results = await Promise.allSettled(Object.entries(sources)
-    .filter(([name]) => (!selection.source || name === selection.source) && (!selection.creationClient || name === "codex"))
+    .filter(([name]) => (!selection.source || name === selection.source) && (!selection.creationClient || name === "codex" || name === "antigravity"))
     .map(async ([, source]) => source?.sessions({ limit: 0 }) ?? []));
   const candidates = results.flatMap((result) => result.status === "fulfilled" ? result.value : [])
     .filter((item) => item.title.toLowerCase().includes(selection.query.toLowerCase())
       && (!selection.sessionId || item.id === selection.sessionId)
-      && (!selection.creationClient || (item.source === "codex" && (item.creationClient?.kind ?? "unknown") === selection.creationClient)))
+      && (!selection.creationClient || ((item.source === "codex" || item.source === "antigravity") && (item.creationClient?.kind ?? "unknown") === selection.creationClient)))
     .sort((a, b) => b.updatedAt - a.updatedAt);
   let partial = results.some((result) => result.status === "rejected");
   let cursor = selection.offset;

@@ -9,14 +9,15 @@ export interface WebDevice { id: string; name: string; pairedAt: number; lastAct
 export interface WebAccount { username: string; passwordHash: string; revision: number; }
 /** State vocabulary separates submission acceptance from source execution. */
 export type OperationState = "received" | "dispatching" | "queued" | "accepted" | "failed" | "delivery_unknown";
+export type WebOperationSource = "codex" | "dsh" | "antigravity";
 /** Immutable request identity supplied to the atomic operation claim. */
 export interface OperationClaim {
-  id: string; digest: string; kind: "create" | "send"; source: "codex" | "dsh";
+  id: string; digest: string; kind: "create" | "send"; source: WebOperationSource;
   deviceId: string; targetId: string | null; projectId: string | null; modelId: string | null; createdAt: number;
 }
 /** Safe operation projection; digest stays internal to the store. */
 export interface WebOperation {
-  id: string; kind: "create" | "send"; source: "codex" | "dsh"; deviceId: string;
+  id: string; kind: "create" | "send"; source: WebOperationSource; deviceId: string;
   targetId: string | null; projectId: string | null; modelId: string | null; state: OperationState;
   sessionId: string | null; turnId: string | null; errorCode: string | null; createdAt: number; updatedAt: number;
 }
@@ -115,7 +116,7 @@ export class WebStore {
   }
 
   /** Merge only prompts the source explicitly accepted; failed/ambiguous writes never become fake history. */
-  listAcceptedMessageSnapshots(source: "codex" | "dsh", sessionId: string, limit = 100): Array<{ id: string; role: "user"; text: string; createdAt: number }> {
+  listAcceptedMessageSnapshots(source: WebOperationSource, sessionId: string, limit = 100): Array<{ id: string; role: "user"; text: string; createdAt: number }> {
     const bounded = Math.max(1, Math.min(100, limit));
     return this.db.query(`
       SELECT * FROM (SELECT snapshots.operation_id AS id,'user' AS role,snapshots.text,snapshots.created_at AS createdAt
@@ -134,9 +135,15 @@ export class WebStore {
     return this.db.query("UPDATE web_operations SET state=?,updated_at=?,error_code=? WHERE id=? AND state=?").run(to, now, errorCode, id, from).changes > 0;
   }
 
-  /** Preserve a known created session before admitting the first prompt. */
+  /** Advance a queued async operation once background execution produces initial acceptance or terminal failure/unknown. */
+  transitionQueuedOperation(id: string, to: "accepted" | "failed" | "delivery_unknown", now: number, errorCode: string | null = null): boolean {
+    if (!["accepted", "failed", "delivery_unknown"].includes(to)) return false;
+    return this.db.query("UPDATE web_operations SET state=?,updated_at=?,error_code=? WHERE id=? AND state='queued'").run(to, now, errorCode, id).changes > 0;
+  }
+
+  /** Preserve a known created session before or during queued async prompt execution. */
   setOperationSession(id: string, sessionId: string, now: number, turnId: string | null = null): void {
-    this.db.query("UPDATE web_operations SET session_id=?,turn_id=COALESCE(?,turn_id),updated_at=? WHERE id=? AND state='dispatching'").run(sessionId, turnId, now, id);
+    this.db.query("UPDATE web_operations SET session_id=?,turn_id=COALESCE(?,turn_id),updated_at=? WHERE id=? AND state IN ('dispatching','queued')").run(sessionId, turnId, now, id);
   }
 
   /** Quarantine interrupted dispatches before HTTP begins accepting writes. */

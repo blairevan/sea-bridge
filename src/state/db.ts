@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { migrateAntigravityBridgeTables } from "../antigravity/store.ts";
 
 /** Add only fixed, code-owned columns; never accept schema identifiers from runtime input. */
 function ensureColumn(db: Database, table: "observed_sessions" | "desktop_codex_catalog", column: string, definition: string): void {
@@ -339,6 +340,7 @@ export class StateDb {
     ensureColumn(this.db, "desktop_codex_catalog", "reasoning_effort", "TEXT");
 
     migrateDshBridgeTables(this.db);
+    migrateAntigravityBridgeTables(this.db);
   }
 
   close(): void {

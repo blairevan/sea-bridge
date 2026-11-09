@@ -66,13 +66,48 @@ export function operationRecords(store: WebStore, input: {
       state: row.state === "acknowledged" ? "accepted" : row.state })));
   }
 
+  if ((!input.source || input.source === "antigravity") &&
+      store.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='antigravity_telegram_state'").get()) {
+    const rows = store.db.query(
+      `SELECT key, value_json AS valueJson, updated_at AS updatedAt FROM antigravity_telegram_state
+       WHERE (key LIKE 'create:%' OR key LIKE 'delivery:%') AND updated_at>=? AND updated_at<=?
+       ORDER BY updated_at DESC, key COLLATE BINARY ASC LIMIT ?`
+    ).all(input.from, input.to, count) as Array<{ key: string; valueJson: string; updatedAt: number }>;
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.valueJson) as {
+          updateId?: number; sessionId?: string | null; status?: string; errorCode?: string | null;
+        };
+        const isCreate = row.key.startsWith("create:");
+        const kind = isCreate ? "create" : "send";
+        const mappedState = parsed.status === "acknowledged" || parsed.status === "delivered"
+          ? "accepted"
+          : (parsed.status ?? "delivery_unknown");
+        if (input.session && parsed.sessionId !== input.session) continue;
+        if (input.state && mappedState !== input.state) continue;
+        records.push({
+          id: `telegram-antigravity-${kind}-${parsed.updateId ?? row.key}`,
+          source: "antigravity",
+          transport: "telegram",
+          kind,
+          state: mappedState,
+          sessionId: parsed.sessionId ?? null,
+          errorCode: parsed.errorCode ?? null,
+          createdAt: row.updatedAt,
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
   records.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return { items: records.slice(input.offset, input.offset + input.limit), cursor: records.length > input.offset + input.limit ? String(input.offset + input.limit) : null };
 }
 
 /** Resolve source-owned titles without making diagnostic records depend on source availability. */
-export async function withSessionTitles(page: { items: RecordItem[]; cursor: string | null }, sources: Partial<Record<"codex" | "dsh", Pick<WebSource, "sessions">>>): Promise<{ items: Array<RecordItem & { sessionTitle: string | null }>; cursor: string | null }> {
-  const names = [...new Set(page.items.filter((item) => item.sessionId).map((item) => item.source))].filter((name): name is "codex" | "dsh" => name === "codex" || name === "dsh");
+export async function withSessionTitles(page: { items: RecordItem[]; cursor: string | null }, sources: Partial<Record<"codex" | "dsh" | "antigravity", Pick<WebSource, "sessions">>>): Promise<{ items: Array<RecordItem & { sessionTitle: string | null }>; cursor: string | null }> {
+  const names = [...new Set(page.items.filter((item) => item.sessionId).map((item) => item.source))].filter((name): name is "codex" | "dsh" | "antigravity" => name === "codex" || name === "dsh" || name === "antigravity");
   const results = await Promise.allSettled(names.map(async (name) => ({ name, sessions: await sources[name]?.sessions() ?? [] })));
   const titles = new Map<string, string>();
   for (const result of results) {

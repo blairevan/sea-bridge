@@ -1,0 +1,59 @@
+{
+  "inboundRequest": {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+      "toolCall": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_4701422120073084829",
+        "name": "run_command",
+        "args": {
+          "CommandLine": "echo P0_PERM_TEST",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo permission test"
+        },
+        "status": "pending",
+        "kind": "execute",
+        "title": "echo P0_PERM_TEST",
+        "rawInput": {
+          "CommandLine": "echo P0_PERM_TEST",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo permission test"
+        }
+      },
+      "options": [
+        {
+          "optionId": "allow",
+          "name": "Allow",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "deny",
+          "name": "Deny",
+          "kind": "reject_once"
+        }
+      ]
+    }
+  },
+  "selectedResponse": {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "result": {
+      "outcome": {
+        "outcome": "selected",
+        "optionId": "allow"
+      }
+    }
+  },
+  "cancelledResponse": {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "result": {
+      "outcome": {
+        "outcome": "cancelled"
+      }
+    }
+  }
+}

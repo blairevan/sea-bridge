@@ -1,0 +1,84 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "session/new",
+    "params": {
+      "cwd": "/workspace/demo",
+      "mcpServers": []
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "sessionId": "9d3547fd-5f23-4178-b143-38a82ad31d85",
+      "models": {
+        "availableModels": [
+          { "modelId": "gemini-4-argon-low", "name": "Gemini 4 Argon (Low)" },
+          { "modelId": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)" },
+          { "modelId": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)" },
+          { "modelId": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)" },
+          { "modelId": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)" },
+          { "modelId": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)" },
+          { "modelId": "claude-opus-5-5-low", "name": "Claude Opus 5.5 (Low)" },
+          { "modelId": "claude-opus-5-5-medium", "name": "Claude Opus 5.5 (Medium)" },
+          { "modelId": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)" },
+          { "modelId": "claude-sonnet-5-5-low", "name": "Claude Sonnet 5.5 (Low)" },
+          { "modelId": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)" },
+          { "modelId": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)" },
+          { "modelId": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+        ],
+        "currentModelId": "gemini-4-argon-medium"
+      },
+      "modes": {
+        "currentModeId": "default",
+        "availableModes": [
+          { "id": "default", "name": "Default", "description": "Standard behavior, prompts for dangerous operations" },
+          { "id": "accept-edits", "name": "Accept Edits", "description": "Automatically accept file edit operations" },
+          { "id": "plan", "name": "Plan Mode", "description": "Read-only mode for planning and exploration" }
+        ]
+      },
+      "configOptions": [
+        {
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "type": "select",
+          "currentValue": "gemini-4-argon",
+          "options": [
+            { "value": "gemini-4-argon", "name": "Gemini 4 Argon" },
+            { "value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash" },
+            { "value": "claude-opus-5-5", "name": "Claude Opus 5.5" },
+            { "value": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5" },
+            { "value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+          ]
+        },
+        {
+          "id": "thought_level",
+          "name": "Thinking Level",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            { "value": "low", "name": "Low", "description": "Faster responses with less reasoning" },
+            { "value": "medium", "name": "Medium", "description": "Balanced speed and reasoning depth" },
+            { "value": "high", "name": "High", "description": "Deeper reasoning, may take longer" }
+          ]
+        },
+        {
+          "id": "mode",
+          "name": "Mode",
+          "category": "mode",
+          "type": "select",
+          "currentValue": "default",
+          "options": [
+            { "value": "default", "name": "Default", "description": "Standard behavior, prompts for dangerous operations" },
+            { "value": "accept-edits", "name": "Accept Edits", "description": "Automatically accept file edit operations" },
+            { "value": "plan", "name": "Plan Mode", "description": "Read-only mode for planning and exploration" }
+          ]
+        }
+      ]
+    }
+  }
+}

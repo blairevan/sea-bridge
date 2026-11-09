@@ -1,6 +1,6 @@
 # Sea-Bridge
 
-在手机浏览器或 Telegram 中，查看并继续 Mac 上的 Codex 会话，也可按需接入 dsh。
+在手机浏览器或 Telegram 中，查看并继续 Mac 上的 Codex 会话，也可按需接入 Antigravity（ACP 托管会话与桌面端只读会话）或 dsh。
 
 Sea-Bridge 是部署在自己 Mac 上的会话桥接服务。它提供中文 Web 控制台，把本机 Codex 会话、项目目录、模型目录与消息操作连接到手机；通过 Cloudflare Tunnel 使用自己的 HTTPS 域名远程访问。
 
@@ -16,6 +16,7 @@ Sea-Bridge 是部署在自己 Mac 上的会话桥接服务。它提供中文 Web
 - **查看执行与交付状态**：概览、操作记录、失败提示及连接恢复；“已入队”“来源已接受”与“执行完成”分别展示，避免误把提交当成完成。
 - **自动恢复 Codex 空闲队列**：Mac 服务端每秒检查，确认会话空闲且任务排队超过 30 秒时，自动请求 Desktop 打开该会话；设置页保留手动入口。
 - **Telegram 桥接**：会话反馈、消息回复及支持的审批流；Telegram 是入口和通知通道，Codex/dsh 是执行来源。
+- **可选 Antigravity 接入（P0–P4 Web + Telegram + 桌面端原会话按需互通）**：基于 `agy acp` 标准协议提供 Sea-Bridge 托管会话（新建前/空闲态分离选择模型与思考等级、多轮续聊、Web 与 Telegram 双端共享在线权限审批、精确停止），支持 Telegram `/agy_status`、`/agy_projects`、`/agy_model`、`/agy_new` 及三方（`codex / dsh / antigravity`）回复路由与通知，默认只读浏览及通知观察本机 `Antigravity` 桌面端（`Antigravity.app`，`~/.gemini/antigravity`）顶层会话列表与 `transcript.jsonl` 历史（零 `.db` 写入、零额外隐式会话），并可在显式开启 `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=true` 时对允许项目目录内处于空闲态的桌面端原会话进行同 ID 续聊写入（桌面运行中自动互斥保护、每轮结束自动调用 `session/close` 释放 WAL 锁；`Antigravity IDE` 暂不纳入）。
 - **可选 dsh 接入**：接入本机连接器后查看和操作 dsh 会话，具体能力取决于宿主和连接器状态。
 - **账号密码登录**：单管理员账号、本机设置和重置密码、设备登录管理；没有默认密码或公开注册。
 

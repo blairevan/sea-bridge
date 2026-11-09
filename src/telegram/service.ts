@@ -13,6 +13,7 @@ import type { DshReadOnlyBridge } from "../dsh/read-only-bridge.ts";
 import type { DshBridgeStore } from "../state/dsh-bridge-store.ts";
 import type { DshReplyRouter } from "../dsh/reply-router.ts";
 import type { DshNewSessionManager } from "../dsh/new-session-manager.ts";
+import type { AntigravityTelegramHandler } from "../antigravity/telegram-handler.ts";
 import { createDshCallback, renderDshModelMenu, renderDshProjectMenu } from "../dsh/menu-ui.ts";
 import { isAuthorized } from "../security/auth.ts";
 import { TelegramClient, type TelegramUpdate, type BotCommand } from "./client.ts";
@@ -77,6 +78,7 @@ export class TelegramService {
     private readonly dshReplyRouter?: DshReplyRouter,
     private readonly dshNewSessions?: DshNewSessionManager,
     private readonly dshObserverStatus?: DshObserverStatusSource,
+    private readonly antigravityHandler?: AntigravityTelegramHandler,
   ) {}
 
   /** Project existing receive-poll health without probing Telegram or exposing payloads. */
@@ -86,7 +88,7 @@ export class TelegramService {
 
   async run(): Promise<void> {
     this.stopped = false;
-    if ((this.newThreads || this.dshStore) && !this.cleanupTimer) {
+    if ((this.newThreads || this.dshStore || this.antigravityHandler) && !this.cleanupTimer) {
       this.cleanupTimer = setInterval(() => {
         try {
           this.newThreads?.cleanupExpired();
@@ -97,6 +99,11 @@ export class TelegramService {
           this.dshStore?.cleanupTransientState();
         } catch (error) {
           this.logger.warn("dsh_transient_cleanup_failed", { error: String(error) });
+        }
+        try {
+          this.antigravityHandler?.cleanupTransientState();
+        } catch (error) {
+          this.logger.warn("antigravity_transient_cleanup_failed", { error: String(error) });
         }
       }, 60_000);
     }
@@ -198,6 +205,9 @@ export class TelegramService {
       if (this.dshNewSessions) {
         commands.push({ command: "dsh_new", description: "在 dsh Web 项目下新建会话" });
       }
+    }
+    if (this.antigravityHandler) {
+      commands.push(...this.antigravityHandler.getBotCommands());
     }
 
     try {
@@ -302,6 +312,19 @@ export class TelegramService {
         action.action,
         action.payload,
       );
+      return;
+    }
+
+    if (
+      this.antigravityHandler &&
+      (await this.antigravityHandler.tryHandleCallback(
+        update.update_id,
+        chatId,
+        callback.id,
+        callback.message?.message_id,
+        data
+      ))
+    ) {
       return;
     }
 
@@ -538,6 +561,13 @@ export class TelegramService {
       return;
     }
 
+    if (
+      this.antigravityHandler &&
+      (await this.antigravityHandler.tryHandleCommand(update.update_id, message.chat.id, message.message_id, text))
+    ) {
+      return;
+    }
+
     if (text.startsWith("/")) {
       const available = [
         "/status",
@@ -545,25 +575,37 @@ export class TelegramService {
         ...(this.dshReadOnly
           ? ["/dsh_status", "/dsh_projects", "/dsh_model", ...(this.dshNewSessions ? ["/dsh_new"] : [])]
           : []),
+        ...(this.antigravityHandler ? this.antigravityHandler.getBotCommands().map((c) => `/${c.command}`) : []),
       ].join(", ");
       await this.client.sendMessage(message.chat.id, `Unsupported command. Available: ${available}`);
       return;
     }
 
-    if (this.dshNewSessions && message.reply_to_message) {
+    if ((this.dshNewSessions || this.antigravityHandler) && message.reply_to_message) {
       const chatId = String(message.chat.id);
       const promptMessageId = message.reply_to_message.message_id;
-      const dshStatus = this.dshNewSessions.getPendingPromptStatus(chatId, promptMessageId);
+      const dshStatus = this.dshNewSessions?.getPendingPromptStatus(chatId, promptMessageId) ?? null;
+      const agyStatus = this.antigravityHandler?.getPendingPromptStatus(chatId, promptMessageId) ?? null;
       const codexPending = this.newThreads?.getPendingPrompt(chatId, promptMessageId) ?? null;
-      if (dshStatus === "pending" && codexPending) {
+      const pendingCount = [Boolean(codexPending), dshStatus === "pending", agyStatus === "pending"].filter(Boolean).length;
+      if (pendingCount > 1) {
         this.logger.error("telegram_pending_provider_conflict", { chatId, promptMessageId });
         await this.client.sendMessage(
           message.chat.id,
-          "这个输入请求同时存在 Codex 与 dsh 状态，已阻止执行，请重新发起新会话。",
+          "这个输入请求同时存在多来源待输入状态，已阻止执行，请重新发起新会话。",
         );
         return;
       }
-      if (dshStatus === "pending") {
+      if (agyStatus !== null && this.antigravityHandler) {
+        await this.antigravityHandler.handlePendingPromptReply(
+          update.update_id,
+          message.chat.id,
+          promptMessageId,
+          text,
+        );
+        return;
+      }
+      if (dshStatus === "pending" && this.dshNewSessions) {
         const pending = this.dshNewSessions.consumePendingPrompt(chatId, promptMessageId);
         if (!pending) {
           await this.client.sendMessage(message.chat.id, "这个 dsh 新建会话请求已过期，请重新发送 /dsh_new。");
@@ -619,7 +661,7 @@ export class TelegramService {
 
     let result: Awaited<ReturnType<typeof routeThreadReply>>;
     const providerStore = this.dshStore ?? this.dshReadOnly;
-    if (providerStore) {
+    if (providerStore || this.antigravityHandler) {
       const routed = await routeProviderReply(
         update.update_id,
         message,
@@ -627,6 +669,8 @@ export class TelegramService {
         providerStore,
         this.queueClient,
         this.dshReplyRouter,
+        this.antigravityHandler?.tgStore,
+        this.antigravityHandler?.replyRouter,
       );
       if ("status" in routed) {
         if (routed.status === "provider_conflict") {
@@ -637,12 +681,22 @@ export class TelegramService {
           });
           await this.client.sendMessage(
             message.chat.id,
-            "这条通知同时存在 Codex 与 dsh 映射，已阻止投递，请检查 Sea-Bridge 状态。",
+            "这条通知同时存在 Codex 与 dsh 映射（或多来源冲突），已阻止投递，请检查 Sea-Bridge 状态。",
           );
         } else if (routed.status === "dsh_read_only") {
           await this.client.sendMessage(
             message.chat.id,
             "这是 dsh Web 只读通知。当前回复功能尚未启用，本条内容没有发送到 dsh。",
+          );
+        } else if (routed.status === "antigravity_desktop_read_only") {
+          await this.client.sendMessage(
+            message.chat.id,
+            "这是 Antigravity 桌面端只读通知。当前跨进程原会话写入尚未开启，本条内容没有发送到桌面会话。",
+          );
+        } else if (routed.status === "antigravity_read_only") {
+          await this.client.sendMessage(
+            message.chat.id,
+            "这是 Antigravity 只读通知。当前回复功能尚未启用，本条内容没有发送。",
           );
         } else {
           await this.client.sendMessage(message.chat.id, "这条消息不属于 Sea-Bridge 通知，无法确定会话。");
@@ -671,6 +725,30 @@ export class TelegramService {
           return;
         }
         await this.client.sendMessage(message.chat.id, "dsh Web 拒绝了本次投递，未自动重试。");
+        return;
+      }
+      if (routed.provider === "antigravity") {
+        const agyResult = routed.result;
+        if (agyResult.status === "duplicate") return;
+        if (agyResult.status === "delivered") {
+          await this.client.sendMessage(message.chat.id, "已投递到对应的 Antigravity 会话。");
+          return;
+        }
+        if (agyResult.status === "session_busy") {
+          await this.client.sendMessage(
+            message.chat.id,
+            "Antigravity 会话当前正在执行任务，本条内容未排队、未自动重试。",
+          );
+          return;
+        }
+        if (agyResult.status === "delivery_unknown") {
+          await this.client.sendMessage(
+            message.chat.id,
+            "Antigravity 投递状态不确定，请不要重复发送；请先在 Web 会话中确认是否已收到。",
+          );
+          return;
+        }
+        await this.client.sendMessage(message.chat.id, "Antigravity 拒绝了本次投递，未自动重试。");
         return;
       }
       result = routed.result;

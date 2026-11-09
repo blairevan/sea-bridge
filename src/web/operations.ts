@@ -1,11 +1,11 @@
 import { operationDigest } from "./crypto.ts";
-import type { WebStore, WebOperation } from "./store.ts";
+import type { WebStore, WebOperation, WebOperationSource } from "./store.ts";
 import type { WebRedaction } from "./redaction.ts";
 import type { WebSource } from "./sources/types.ts";
 
 /** Browser operation input is validated before being durably claimed. */
 export interface WebWriteRequest {
-  operationId: string; source: "codex" | "dsh"; kind: "create" | "send";
+  operationId: string; source: WebOperationSource; kind: "create" | "send";
   targetId: string | null; projectId: string | null; modelId: string | null;
   reasoningEffort?: string | null; prompt: string;
 }

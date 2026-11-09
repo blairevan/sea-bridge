@@ -5,6 +5,7 @@ import { startWebLifecycle } from "./web/server.ts";
 import { WebRuntime } from "./web/runtime.ts";
 import { CodexWebSource } from "./web/sources/codex.ts";
 import { DshWebSource } from "./web/sources/dsh.ts";
+import { createAntigravityRuntime } from "./antigravity/bootstrap.ts";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "./logger.ts";
@@ -228,6 +229,8 @@ async function main(): Promise<void> {
     { activeSessionTtlMs: config.activeSessionTtlMs },
   );
   const hookServer = new HookServer(config.hookSocketPath, hookProvider, logger);
+  const antigravityRuntime = createAntigravityRuntime(state.db);
+  const antigravityTelegram = antigravityRuntime.createTelegramComponents(telegramClient, config.allowedChatId);
   const telegram = new TelegramService(
     config,
     state,
@@ -244,6 +247,7 @@ async function main(): Promise<void> {
     dshReplyRouter,
     dshNewSessions,
     dshObserver ?? undefined,
+    antigravityTelegram?.handler,
   );
 
   const taskConversations = await startConfiguredTaskConversations({ db: state.db, dbPath: config.dbPath,
@@ -314,11 +318,15 @@ async function main(): Promise<void> {
       secrets.push(readFileSync(config.dshTokenPath, "utf8").trim());
     }
     webRuntime = new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
-      sourceFactory: (webStore) => ({
-        codex: codexSource,
-        ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled,
-          (id) => webStore.listAcceptedMessageSnapshots("dsh", id)) } : {}),
-      }),
+      sourceFactory: (webStore) => {
+        const antigravity = antigravityRuntime.createWebSource(webStore);
+        return {
+          codex: codexSource,
+          ...(dshHost ? { dsh: new DshWebSource(dshHost, config.dshReadOnlyEnabled, config.dshWriteEnabled,
+            (id) => webStore.listAcceptedMessageSnapshots("dsh", id)) } : {}),
+          ...(antigravity ? { antigravity } : {}),
+        };
+      },
     });
     return webRuntime;
   }, logger);
@@ -330,6 +338,7 @@ async function main(): Promise<void> {
     await queueRecovery?.stop();
     await taskConversations?.stop().catch(() => logger.warn('task_bridge_stop_failed', {}));
     await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
+    await antigravityRuntime.stop().catch(() => logger.warn("antigravity_stop_failed", {}));
     await telegram.stop();
     await dshObserver?.stop().catch((error) => logger.warn("dsh_observer_stop_failed", { error: String(error) }));
     await observer.stop();
@@ -350,6 +359,7 @@ async function main(): Promise<void> {
   queueDiagnostics.start();
   queueRecovery?.start();
   dshObserver?.start();
+  antigravityTelegram?.observer.start();
   logger.info("sea_bridge_started", {
     dbPath: config.dbPath,
     hookSocketPath: config.hookSocketPath,

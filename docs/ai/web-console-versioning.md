@@ -1,5 +1,14 @@
 # Sea-Bridge 版本规则
 
+## v1.3.0
+
+- 新增 Antigravity ACP 全链路接入（P0–P4）：
+  1. **ACP 基础层与模型/思考等级分离聚合（P0–P1）**：基于 `agy acp` NDJSON stdio 协议实现 `AcpTransport` / `AcpClient`；`AntigravityModelCatalog` 解析 `agy models` 输出、剥离进度转轮控制符并聚合为 5 个基础模型家族与各自支持的 `Effort` 思考等级（`low / medium / high`）。
+  2. **Web 托管会话与桌面端只读会话展示（P2）**：支持新建前及空闲态分离选择模型与思考等级、多轮续聊、Web 在线权限审批、精确停止（`session/cancel`）；只读读取 `~/.gemini/antigravity/conversation_summaries.db`（支持 `mode=ro` 失败时回退 `immutable=1`，过滤子代理与 CLI 存根）及 `transcript.jsonl` 展示桌面端会话。
+  3. **Telegram 全能力接入（P3）**：新增 `/agy_status`、`/agy_projects`、`/agy_model`、`/agy_new` 命令菜单与 `ForceReply` 新建会话；扩展 `codex / dsh / antigravity` 三方回复路由与冲突守卫；支持托管与桌面端会话终态通知观察器（启动 baseline 不补发历史）及 Web/Telegram 双端共享权限审批。
+  4. **桌面端与 CLI 原会话写入互通（P4）**：支持通过 `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=true` 对允许项目目录内空闲的 `Antigravity.app` 桌面端原会话进行同 ID 续聊与模型切换（按会话来源动态路由 `--app-data-dir`、桌面运行中 `session_busy` 互斥拦截、每轮结束自动 `session/close` 回收 worker 释放 SQLite WAL 写锁）。
+- 全量门禁 572 pass / 0 fail，所有 `src/antigravity/*.ts` 模块均 ≤ 400 行。
+
 ## v1.2.4
 
 - 修复 v1.2.3 将真实运行会话误判为未知或空闲的回归：同轮次最近两分钟内持续产生的工具、推理和助手执行记录优先于滞后的观察器状态；仅有旧 started、用户消息或设置变更不构成运行证明。

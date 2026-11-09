@@ -1,0 +1,81 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "session/load",
+    "params": {
+      "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+      "cwd": "/workspace/demo",
+      "mcpServers": []
+    }
+  },
+  "replayedUpdates": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Use the run_command tool to run `echo P0_PERM_TEST` and tell me the output."
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_4701422120073084829",
+          "name": "run_command",
+          "args": {
+            "CommandLine": "echo P0_PERM_TEST",
+            "WaitMsBeforeAsync": 5000,
+            "toolSummary": "Echo permission test"
+          },
+          "status": "completed",
+          "kind": "execute",
+          "title": "echo P0_PERM_TEST",
+          "rawOutput": {
+            "output": "Command output:\nP0_PERM_TEST\n"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "The output of the command is:\n\n```\nP0_PERM_TEST\n```"
+          }
+        }
+      }
+    }
+  ],
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "sessionId": "28d79903-64e2-48e5-b8bb-d1bb0d585e6f",
+      "models": {
+        "currentModelId": "gemini-3.8-flash-low",
+        "availableModels": []
+      },
+      "modes": {
+        "currentModeId": "default",
+        "availableModes": []
+      },
+      "configOptions": []
+    }
+  }
+}

@@ -1,10 +1,11 @@
 import type { WebSource } from "./sources/types.ts";
+import type { WebOperationSource } from "./store.ts";
 
 /** Read-only receive-poll evidence; no Telegram payload or identity is exposed. */
 export interface TelegramStatus { stopped: boolean; lastPollSuccessAt: number | null; pollFailed: boolean; }
 
 /** Coalesce source availability sampling; browsing status never starts a CLI version probe. */
-export function createStatusService(sources: Partial<Record<"codex" | "dsh", WebSource>>, telegram: () => TelegramStatus) {
+export function createStatusService(sources: Partial<Record<WebOperationSource, WebSource>>, telegram: () => TelegramStatus) {
   let cached: { sources: Record<string, unknown>; observedAt: number } | null = null;
   let until = 0;
   let pending: Promise<void> | null = null;

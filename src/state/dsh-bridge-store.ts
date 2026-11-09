@@ -506,15 +506,34 @@ export class DshBridgeStore {
     return result.changes === 1;
   }
 
-  /** Select the latest mapped Telegram message across both providers in this chat. */
+  /** Select the latest mapped Telegram message across all configured providers in this chat. */
   findLatestReplyMessageId(chatId: string): number | null {
-    const row = this.state.db.query(
-      `SELECT MAX(telegram_message_id) AS message_id FROM (
-        SELECT telegram_message_id FROM desktop_message_links WHERE telegram_chat_id=?
-        UNION ALL
-        SELECT telegram_message_id FROM dsh_message_links WHERE telegram_chat_id=?
-      )`,
-    ).get(chatId, chatId) as { message_id: number | null };
+    const hasAgy = Boolean(
+      this.state.db
+        .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='antigravity_message_links'")
+        .get()
+    );
+    const row = hasAgy
+      ? (this.state.db
+          .query(
+            `SELECT MAX(telegram_message_id) AS message_id FROM (
+              SELECT telegram_message_id FROM desktop_message_links WHERE telegram_chat_id=?
+              UNION ALL
+              SELECT telegram_message_id FROM dsh_message_links WHERE telegram_chat_id=?
+              UNION ALL
+              SELECT telegram_message_id FROM antigravity_message_links WHERE telegram_chat_id=?
+            )`
+          )
+          .get(chatId, chatId, chatId) as { message_id: number | null })
+      : (this.state.db
+          .query(
+            `SELECT MAX(telegram_message_id) AS message_id FROM (
+              SELECT telegram_message_id FROM desktop_message_links WHERE telegram_chat_id=?
+              UNION ALL
+              SELECT telegram_message_id FROM dsh_message_links WHERE telegram_chat_id=?
+            )`
+          )
+          .get(chatId, chatId) as { message_id: number | null });
     return row.message_id;
   }
 

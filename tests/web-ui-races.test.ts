@@ -483,3 +483,23 @@ test("recovery refreshes a selected session outside the active list filter", asy
   expect(controller.state.selected.sendEnabled).toBe(true);
   expect(ui.element("send-button").disabled).toBe(false);
 });
+
+test("Antigravity provenance filter matches both sea_bridge managed and desktop read-only sessions", async () => {
+  const ui = await fixture();
+  const result = ui.evaluate(`({
+    platform: sourceDisplayName("antigravity"),
+    managedLabel: sessionSourceLabel({ source: "antigravity", creationClient: { kind: "sea_bridge" } }),
+    desktopLabel: sessionSourceLabel({ source: "antigravity", creationClient: { kind: "desktop" } }),
+    matchManaged: matchesCreationClient({ source: "antigravity", creationClient: { kind: "sea_bridge" } }, "sea_bridge"),
+    matchDesktop: matchesCreationClient({ source: "antigravity", creationClient: { kind: "desktop" } }, "desktop"),
+    mismatch: matchesCreationClient({ source: "antigravity", creationClient: { kind: "desktop" } }, "sea_bridge")
+  })`);
+  expect(result).toEqual({
+    platform: "Antigravity",
+    managedLabel: "Antigravity · Sea-Bridge 托管",
+    desktopLabel: "Antigravity · 桌面端（只读）",
+    matchManaged: true,
+    matchDesktop: true,
+    mismatch: false,
+  });
+});

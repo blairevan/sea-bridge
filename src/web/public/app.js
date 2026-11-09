@@ -1,5 +1,5 @@
 "use strict";
-const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, interruptRequest: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
+const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, interruptRequest: null, approvalRequest: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -30,26 +30,35 @@ let liveActivityStale = null;
 let liveActivityDivider = null;
 let liveActivityStream = null;
 let liveActivityStreamSig = "";
+let liveActivityApprovals = null;
+let liveActivityApprovalsSig = "";
 let composerModelControl = null;
+let composerEffortControl = null;
 let sessionModelUpdate = null;
-let sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
+let lastSyncedCreationModelId = null;
+let sessionModelCatalog = { source: null, items: [], loadedAt: 0, failedAt: 0, loading: null, revision: 0 };
 let taskLinkedThread = typeof location !== "undefined" && typeof URLSearchParams !== "undefined"
   ? new URLSearchParams(location.search).get("sessionId") : null;
 if (taskLinkedThread && !/^[0-9a-f-]{36}$/i.test(taskLinkedThread)) taskLinkedThread = null;
 
 /** Keep platform labels independent of the original client. */
 function sourceDisplayName(source) {
-  return source === "codex" ? "Codex" : source === "dsh" ? "dsh" : "未知来源";
+  return source === "codex" ? "Codex" : source === "dsh" ? "dsh" : source === "antigravity" ? "Antigravity" : "未知来源";
 }
 /** Display normalized creation evidence; pending is browser-only for a newly created session. */
 function sessionSourceLabel(session) {
+  if (session.source === "antigravity") {
+    const kind = session.creationClient?.kind;
+    const label = session.creationPending ? "创建来源待同步" : kind === "desktop" ? (session.sendEnabled ? "桌面端" : "桌面端（只读）") : kind === "sea_bridge" ? "Sea-Bridge 托管" : "创建来源未知";
+    return `Antigravity · ${label}`;
+  }
   if (session.source !== "codex") return sourceDisplayName(session.source);
   const names = { desktop: "Desktop 创建", cli: "CLI 创建", sea_bridge: "Sea-Bridge 创建", exec: "Exec 创建", unknown: "创建来源未知" };
   return `Codex · ${session.creationPending ? "创建来源待同步" : (Object.hasOwn(names, session.creationClient?.kind ?? "unknown") ? names[session.creationClient?.kind ?? "unknown"] : names.unknown)}`;
 }
 /** Match creation filters identically for loaded and server-projected sessions. */
 function matchesCreationClient(session, kind) {
-  return !kind || session.source === "codex" && (session.creationClient?.kind ?? "unknown") === kind;
+  return !kind || ["codex", "antigravity"].includes(session.source) && (session.creationClient?.kind ?? "unknown") === kind;
 }
 /** Clear the Codex-only creation filter when browsing dsh. */
 function syncCreationFilter() {
@@ -285,15 +294,19 @@ function loadedTurnPreview(messages, userMessage) {
 
 /** Derive activity copy from server evidence; reconnect copy marks the state as stale. */
 function liveActivityPresentation(session, paused, now = Date.now()) {
-  if (!session || !["running", "waiting_external_approval"].includes(session.state)) return { visible: false, status: "", detail: "" };
-  if (session.state === "waiting_external_approval") return {
-    visible: true,
-    status: paused ? "连接重连中 · 最后已知等待 Telegram 审批" : "等待 Telegram 审批",
-    detail: "",
-  };
+  const hasPendingApprovals = Array.isArray(session?.pendingApprovals) && session.pendingApprovals.length > 0;
+  if (!session || (!["running", "waiting_external_approval"].includes(session.state) && !hasPendingApprovals)) return { visible: false, status: "", detail: "" };
+  if (session.state === "waiting_external_approval" || hasPendingApprovals) {
+    const channel = session.source === "antigravity" ? "Web" : "Telegram";
+    return {
+      visible: true,
+      status: paused ? `连接重连中 · 最后已知等待 ${channel} 审批` : `等待 ${channel} 审批`,
+      detail: "",
+    };
+  }
   const startedAt = Number(session.startedAt);
   const detail = Number.isFinite(startedAt) && startedAt > 0 ? `已运行 ${formatRunningDuration(now - startedAt)}` : "";
-  const interrupting = session.turnControl?.interrupt?.status === "interrupting";
+  const interrupting = session.turnControl?.interrupt?.status === "interrupting" || session.executionControl?.interrupt?.status === "interrupting";
   return { visible: true, status: paused ? `连接重连中 · 最后已知${interrupting ? "正在中断" : "执行中"}` : interrupting ? "正在中断" : "执行中", detail };
 }
 
@@ -657,8 +670,8 @@ function retainLoadedViews() {
 }
 /** Clear server-derived content only at authentication or display-policy invalidation boundaries. */
 function clearSensitive() {
-  resetProjectSearch(); creationProjects = { source: null, items: [] }; creationModels = { source: null, items: [] }; state.interruptRequest = null;
-  sessionModelCatalog = { items: [], loadedAt: 0, failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 }; composerModelControl = null; sessionModelUpdate = null;
+  resetProjectSearch(); creationProjects = { source: null, items: [] }; creationModels = { source: null, items: [] }; state.interruptRequest = null; state.approvalRequest = null; lastSyncedCreationModelId = null;
+  sessionModelCatalog = { source: null, items: [], loadedAt: 0, failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 }; composerModelControl = null; composerEffortControl = null; sessionModelUpdate = null;
   if (state.device?.id) clearOverviewCache();
   closeImagePreview();
   for (const id of ["floating-latest", "floating-earliest"]) if (el(id)) el(id).hidden = true;
@@ -670,7 +683,7 @@ function clearSensitive() {
   el("session-title").textContent = "会话"; el("session-meta").textContent = ""; if (el("execution-timer")) el("execution-timer").hidden = true;
   el("messages").replaceChildren(historyTools ?? el("history-tools"));
   liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-  liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = "";
+  liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityApprovals = null; liveActivityApprovalsSig = "";
   clearTurnNavigation();
   if (el("continue-session")) { el("continue-session").hidden = true; el("continue-session").replaceChildren(); }
   state.messages = []; state.sessions = []; state.sessionCache = []; state.overviewSessions = []; state.catalogContext = null; state.records = []; state.recordFilterKey = null; state.recordCursor = null; messageViews.clear();
@@ -715,7 +728,7 @@ async function requestApi(path, method = "GET", body) {
   }
   if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_writer_held: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_writer_held: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", active_execution_changed: "当前执行轮次已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道", approval_not_found: "该权限请求已处理或已过期", invalid_option: "无效的审批选项", approval_unavailable: "当前权限审批通道暂不可用", desktop_session_read_only: "Antigravity 桌面端会话为只读，不支持发送消息" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -1031,7 +1044,7 @@ function sourceStatusCard(name, source) {
           : source.state === "protocol_incompatible" ? "协议不兼容"
             : "暂不可用";
   heading.append(node("h3", sourceDisplayName(name)), node("span", sourceStateLabel, "status-badge"));
-  card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : "Host 会话与消息桥接", "muted"));
+  card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : name === "antigravity" ? "ACP 托管会话与桌面端只读浏览" : "Host 会话与消息桥接", "muted"));
   const capabilities = node("div", "", "capability-grid");
   for (const [key, label] of [["sessionsReadable", "会话读取"], ["historyReadable", "历史读取"], ["projectsReadable", "项目目录"], ["modelsReadable", "模型目录"], ["createEnabled", "新建会话"], ["sendEnabled", "发送消息"]]) {
     const available = source?.capabilities?.[key]; const row = node("button", "", "capability-row capability-action"); row.type = "button"; row.disabled = available !== true;
@@ -1040,14 +1053,14 @@ function sourceStatusCard(name, source) {
   }
   const open = node("button", "查看会话 →", "quiet source-link"); open.type = "button"; open.disabled = !source;
   open.onclick = () => run("overview-action", () => openOverviewSessions(name));
-  card.append(capabilities, open, node("p", source?.capabilities?.approvalTransport === "telegram" ? "审批通过 Telegram 处理" : "能力以接口结果为准", "source-footnote muted"));
+  card.append(capabilities, open, node("p", source?.capabilities?.approvalTransport === "telegram" ? "审批通过 Telegram 处理" : source?.capabilities?.approvalTransport === "web" ? "审批通过 Web 在线处理" : "能力以接口结果为准", "source-footnote muted"));
   return card;
 }
 /** Read only a device-scoped source/id pointer, never cached chat content. */
 function lastSessionPointer() {
   try {
     const value = JSON.parse(localStorage.getItem(`sea-last-session:${state.device?.id ?? ""}`) ?? "null");
-    return value && ["codex", "dsh"].includes(value.source) && typeof value.id === "string" && value.id.length <= 200 ? value : null;
+    return value && ["codex", "dsh", "antigravity"].includes(value.source) && typeof value.id === "string" && value.id.length <= 200 ? value : null;
   } catch { return null; }
 }
 
@@ -1114,7 +1127,7 @@ function renderOverview(status, sessions, continuation, cached = false) {
   el("overview-approval-count").textContent = String(sessions.items.filter((session) => session.state === "waiting_external_approval").length);
   el("overview-session-scope").textContent = sessions.partial ? "部分来源暂不可用，统计仅包含当前返回的会话" : "统计仅包含最近一页会话，不代表全部历史";
   const container = el("status-cards"); container.replaceChildren();
-  for (const name of ["codex", "dsh"]) container.append(sourceStatusCard(name, status.sources?.[name]));
+  for (const name of ["codex", "dsh", "antigravity"]) container.append(sourceStatusCard(name, status.sources?.[name]));
   const telegram = status.telegram ?? {};
   const card = node("article", "", "status-card telegram-card"); const heading = node("div", "", "source-heading");
   const receiveState = telegram.stopped ? "已停止" : telegram.pollFailed ? "接收异常" : telegram.lastPollSuccessAt ? "最近接收正常" : "尚无接收记录";
@@ -1220,6 +1233,8 @@ async function loadSessions(more) {
         ...(previous.activeTurnItems !== undefined ? { activeTurnItems: previous.activeTurnItems } : {}),
         ...(previous.sessionMeta != null ? { sessionMeta: previous.sessionMeta } : {}),
         turnControl: previous.turnControl ?? null,
+        ...(previous.executionControl !== undefined ? { executionControl: previous.executionControl } : {}),
+        ...(previous.pendingApprovals !== undefined ? { pendingApprovals: previous.pendingApprovals } : {}),
       };
     }
     el("session-title").textContent = state.selected.title; renderSessionStatus(); syncTurnRail();
@@ -1328,7 +1343,7 @@ function syncLiveActivityCard(now = Date.now()) {
   const presentation = liveActivityPresentation(state.selected, state.paused, now);
   if (!presentation.visible) {
     liveActivityCard?.remove?.(); liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; return;
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityApprovals = null; liveActivityApprovalsSig = ""; return;
   }
   if (!liveActivityCard) {
     liveActivityCard = node("section", "", "live-activity-card"); liveActivityCard.setAttribute?.("aria-label", "当前任务状态");
@@ -1338,8 +1353,9 @@ function syncLiveActivityCard(now = Date.now()) {
     liveActivityDetail = node("small", "", "live-activity-detail"); liveActivityDetail.setAttribute?.("aria-hidden", "true");
     liveActivityDivider = node("div", "", "live-activity-divider");
     liveActivityStream = node("div", "", "live-activity-stream");
+    liveActivityApprovals = node("div", "", "live-activity-approvals");
     liveActivityStale = node("small", "状态来自断线前最后一次已验证结果", "live-activity-stale");
-    liveActivityCard.append(heading, liveActivityDetail, liveActivityDivider, liveActivityStream, liveActivityStale); container.append(liveActivityCard);
+    liveActivityCard.append(heading, liveActivityDetail, liveActivityDivider, liveActivityStream, liveActivityApprovals, liveActivityStale); container.append(liveActivityCard);
   } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
     container.append(liveActivityCard);
   }
@@ -1348,7 +1364,8 @@ function syncLiveActivityCard(now = Date.now()) {
   if (liveActivityStale) liveActivityStale.hidden = !state.paused;
   const rawItems = Array.isArray(state.selected?.activeTurnItems) ? state.selected.activeTurnItems : [];
   const items = aggregateActivityItems(rawItems);
-  if (liveActivityDivider) liveActivityDivider.hidden = items.length === 0;
+  const approvals = Array.isArray(state.selected?.pendingApprovals) ? state.selected.pendingApprovals : [];
+  if (liveActivityDivider) liveActivityDivider.hidden = items.length === 0 && approvals.length === 0;
   if (liveActivityStream) {
     liveActivityStream.hidden = items.length === 0;
     const sig = JSON.stringify(items);
@@ -1371,6 +1388,66 @@ function syncLiveActivityCard(now = Date.now()) {
         scrollMessagesToLatest(container);
       }
     }
+  }
+  if (liveActivityApprovals) {
+    liveActivityApprovals.hidden = approvals.length === 0;
+    const approvalsSig = JSON.stringify([approvals, state.paused, state.approvalRequest]);
+    if (approvalsSig !== liveActivityApprovalsSig) {
+      liveActivityApprovalsSig = approvalsSig;
+      liveActivityApprovals.replaceChildren();
+      for (const approval of approvals) {
+        if (!approval || !approval.id) continue;
+        const box = node("div", "", "pending-approval-card");
+        box.append(node("strong", `权限请求 · ${approval.toolName || "tool"}`, "pending-approval-title"));
+        if (approval.toolTitle) box.append(node("code", approval.toolTitle, "pending-approval-detail"));
+        const actions = node("div", "", "pending-approval-actions");
+        const options = Array.isArray(approval.options) ? approval.options : [];
+        for (const opt of options) {
+          if (!opt || !opt.optionId) continue;
+          const btn = node("button", opt.name || opt.optionId, opt.kind === "reject_once" ? "quiet approval-option-btn reject" : "approval-option-btn allow");
+          btn.type = "button";
+          if (btn.dataset) { btn.dataset.approvalId = approval.id; btn.dataset.optionId = opt.optionId; }
+          btn.disabled = Boolean(state.paused || state.approvalRequest?.approvalId === approval.id);
+          btn.onclick = () => run(`approval-${approval.id}`, () => decidePendingApproval(approval.id, opt.optionId));
+          actions.append(btn);
+        }
+        box.append(actions);
+        liveActivityApprovals.append(box);
+      }
+      if (state.followLatest && approvals.length > 0) {
+        scrollMessagesToLatest(container);
+      }
+    }
+  }
+}
+
+/** Submit a single online permission decision for an Antigravity managed session. */
+async function decidePendingApproval(approvalId, optionId) {
+  const session = state.selected;
+  if (!session || session.source !== "antigravity" || !approvalId || !optionId || state.paused || state.approvalRequest) return;
+  const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
+  state.approvalRequest = { sessionId: session.id, approvalId, optionId };
+  syncLiveActivityCard();
+  try {
+    await api(`/api/sessions/antigravity/${encodeURIComponent(session.id)}/approvals/${encodeURIComponent(approvalId)}`, "POST", { optionId });
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
+    if (state.selected?.id === session.id && state.selected?.source === "antigravity" && Array.isArray(state.selected.pendingApprovals)) {
+      state.selected = {
+        ...state.selected,
+        pendingApprovals: state.selected.pendingApprovals.filter((item) => item.id !== approvalId),
+      };
+    }
+    notice("已提交权限审批决策", { kind: "success" });
+  } catch (error) {
+    if (["auth_changed", "auth_required"].includes(error?.code)) return;
+    if (isTransportError(error)) enterDisconnected();
+    else notice(error?.message || "权限审批提交失败", { sticky: true, kind: "error" });
+  } finally {
+    if (state.approvalRequest?.approvalId === approvalId) state.approvalRequest = null;
+    if (authEpoch === state.authEpoch && viewEpoch === state.viewEpoch && state.selected?.id === session.id && state.selected.source === session.source && !state.paused) {
+      try { await loadHistory(false); } catch (error) { if (isTransportError(error)) enterDisconnected(); }
+    }
+    syncLiveActivityCard(); syncComposerControl();
   }
 }
 
@@ -1499,7 +1576,17 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
-    state.selected = { ...state.selected, state: result.sessionState, stateConfirmation: result.stateConfirmation ?? null, startedAt: result.activeTurnStartedAt, activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [], sessionMeta: result.sessionMeta ?? null, turnControl: result.turnControl ?? null };
+    state.selected = {
+      ...state.selected,
+      state: result.sessionState,
+      stateConfirmation: result.stateConfirmation ?? null,
+      startedAt: result.activeTurnStartedAt,
+      activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [],
+      sessionMeta: result.sessionMeta ?? null,
+      turnControl: result.turnControl ?? null,
+      ...(result.executionControl !== undefined ? { executionControl: result.executionControl } : {}),
+      ...(Array.isArray(result.pendingApprovals) ? { pendingApprovals: result.pendingApprovals } : {}),
+    };
     renderSessionStatus();
   }
   const previousMessages = state.messages;
@@ -1543,7 +1630,7 @@ async function loadHistory(older) {
     for (const key of messageViews.keys()) if (!visibleKeys.has(key)) messageViews.delete(key);
     container.replaceChildren(historyTools ?? el("history-tools"), ...items);
     liveActivityCard = null; liveActivityStatus = null; liveActivityDetail = null; liveActivityStale = null;
-    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = "";
+    liveActivityDivider = null; liveActivityStream = null; liveActivityStreamSig = ""; liveActivityApprovals = null; liveActivityApprovalsSig = "";
     syncTurnRail();
   }
   if (!state.messages.length) container.append(node("p", "暂无可读取消息", "muted"));
@@ -1755,7 +1842,9 @@ function syncReasoningEffortControl() {
   const effortSelect = el("create-reasoning-effort");
   if (!effortSelect) return;
   const previousValue = effortSelect.value;
-  const selectedModelId = el("create-model")?.value;
+  const selectedModelId = el("create-model")?.value || "";
+  const modelChanged = selectedModelId !== lastSyncedCreationModelId;
+  lastSyncedCreationModelId = selectedModelId;
   const model = creationModels.items.find((item) => item.id === selectedModelId);
   const supported = model?.supportedReasoningEfforts;
   effortSelect.replaceChildren(node("option", "使用模型默认设置"));
@@ -1777,7 +1866,11 @@ function syncReasoningEffortControl() {
     effortSelect.append(option);
   }
   effortSelect.disabled = Boolean(state.paused);
-  if (available.some((item) => item.id === previousValue)) {
+  if (!modelChanged && available.some((item) => item.id === previousValue)) {
+    effortSelect.value = previousValue;
+  } else if (model?.defaultReasoningEffort && available.some((item) => item.id === model.defaultReasoningEffort)) {
+    effortSelect.value = model.defaultReasoningEffort;
+  } else if (available.some((item) => item.id === previousValue)) {
     effortSelect.value = previousValue;
   } else {
     effortSelect.value = "";
@@ -1804,7 +1897,7 @@ async function loadCatalogs() {
   if (models.items.some((model) => model.id === modelSelection)) el("create-model").value = modelSelection;
   syncReasoningEffortControl();
   const allowed = state.caps[source]?.createEnabled;
-  el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
+  el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : source === "antigravity" ? "新会话的权限请求将通过 Web 在线审批。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
 /** Keep Composer metadata factual and field-wise; missing values are omitted rather than defaulted. */
 function composerMetadataLabels(meta) {
@@ -1816,7 +1909,7 @@ function composerMetadataLabels(meta) {
     const effort = String(meta.reasoningEffort).trim();
     const normalizedEffort = effort.toLowerCase();
     const reasoningLabels = { minimal: "最小", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最大" };
-    if (effort && normalizedEffort !== "none") labels.push({ text: reasoningLabels[normalizedEffort] || effort, className: "composer-meta-badge" });
+    if (effort && normalizedEffort !== "none") labels.push({ text: reasoningLabels[normalizedEffort] || effort, className: "composer-meta-badge", kind: "effort" });
   }
   const sandboxLabels = { danger_full_access: "Full Access", workspace_write: "Workspace", read_only: "Read Only" };
   const sandbox = sandboxLabels[meta.executionPolicy?.sandbox];
@@ -1834,15 +1927,19 @@ function sessionModelOptions(current) {
 }
 
 /** Load the model catalog in-place; repeated composer refreshes reuse one bounded cache. */
-async function ensureSessionModelCatalog() {
+async function ensureSessionModelCatalog(source = state.selected?.source || "codex") {
+  if (sessionModelCatalog.source && sessionModelCatalog.source !== source) {
+    sessionModelCatalog = { source, items: [], loadedAt: 0, failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 };
+  }
   if (sessionModelCatalog.loadedAt && Date.now() - sessionModelCatalog.loadedAt < 60_000) return sessionModelCatalog.items;
   if (sessionModelCatalog.failedAt && Date.now() - sessionModelCatalog.failedAt < 30_000) return sessionModelCatalog.items;
   if (sessionModelCatalog.loading) return sessionModelCatalog.loading;
   const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
-  const loading = api("/api/sources/codex/models").then((catalog) => {
-    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return [];
+  sessionModelCatalog.source = source;
+  const loading = api(`/api/sources/${source}/models`).then((catalog) => {
+    if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch || sessionModelCatalog.source !== source) return [];
     const items = (Array.isArray(catalog.items) ? catalog.items : []).filter((item) => typeof item?.id === "string" && item.id && typeof item?.name === "string");
-    sessionModelCatalog = { items, loadedAt: Date.now(), failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 };
+    sessionModelCatalog = { source, items, loadedAt: Date.now(), failedAt: 0, loading: null, revision: sessionModelCatalog.revision + 1 };
     syncComposerMetadata();
     return items;
   }).catch((error) => {
@@ -1868,17 +1965,38 @@ function modelControlDisabledReason(session, catalogReady, updating) {
 
 function syncComposerMetadata(session = state.selected) {
   const target = el("composer-session-meta"); if (!target) return;
-  const labels = session?.source === "codex" ? composerMetadataLabels(session.sessionMeta) : [];
-  const currentModel = session?.source === "codex" ? session.sessionMeta?.model : null;
-  const hasModelControl = Boolean(currentModel?.id && state.caps.codex?.modelUpdateEnabled);
-  if (hasModelControl && session?.state === "idle" && !state.paused && !sessionModelCatalog.loading && (!sessionModelCatalog.loadedAt || Date.now() - sessionModelCatalog.loadedAt >= 60_000)) {
-    void ensureSessionModelCatalog().catch(() => undefined);
+  const source = session?.source;
+  const isManaged = source === "codex" || (source === "antigravity" && session?.creationClient?.kind !== "desktop");
+  const labels = (source === "codex" || source === "antigravity") ? composerMetadataLabels(session.sessionMeta) : [];
+  const currentModel = isManaged ? session.sessionMeta?.model : null;
+  const hasModelControl = Boolean(currentModel?.id && state.caps[source]?.modelUpdateEnabled && isManaged);
+  if (hasModelControl && session?.state === "idle" && !state.paused && !sessionModelCatalog.loading && (sessionModelCatalog.source !== source || !sessionModelCatalog.loadedAt || Date.now() - sessionModelCatalog.loadedAt >= 60_000)) {
+    void ensureSessionModelCatalog(source).catch(() => undefined);
   }
+  const catalogModel = source === "antigravity" ? sessionModelCatalog.items.find((item) => item.id === currentModel?.id) : null;
+  const supportedEfforts = source === "antigravity"
+    ? (Array.isArray(catalogModel?.supportedReasoningEfforts) ? catalogModel.supportedReasoningEfforts : (session?.sessionMeta?.reasoningEffort ? ["low", "medium", "high"] : []))
+    : [];
+  const hasEffortControl = Boolean(source === "antigravity" && hasModelControl && supportedEfforts.length > 0);
   if (typeof target.replaceChildren === "function") {
-    const signature = JSON.stringify([session?.source, session?.id, currentModel?.id, currentModel?.displayName, labels.map((item) => [item.text, item.className, item.kind]), hasModelControl, sessionModelCatalog.revision]);
+    const signature = JSON.stringify([session?.source, session?.id, currentModel?.id, currentModel?.displayName, session?.sessionMeta?.reasoningEffort, labels.map((item) => [item.text, item.className, item.kind]), hasModelControl, hasEffortControl, sessionModelCatalog.revision]);
     if (target.dataset?.signature !== signature) {
-      composerModelControl = null;
+      composerModelControl = null; composerEffortControl = null;
       target.replaceChildren(...labels.map((item) => {
+        if (item.kind === "effort" && hasEffortControl) {
+          const effortSelect = node("select", "", `${item.className} composer-model-select composer-effort-select`);
+          effortSelect.setAttribute("aria-label", "当前会话思考等级");
+          for (const eff of DESKTOP_REASONING_EFFORTS.filter((e) => supportedEfforts.includes(e.id))) {
+            const option = node("option", eff.label); option.value = eff.id; effortSelect.append(option);
+          }
+          effortSelect.value = session?.sessionMeta?.reasoningEffort || catalogModel?.defaultReasoningEffort || supportedEfforts[0] || "";
+          effortSelect.onchange = () => {
+            const nextEffort = String(effortSelect.value || "");
+            run(`session-effort-${session.id}`, () => changeSessionModel(currentModel.id, effortSelect, nextEffort));
+          };
+          composerEffortControl = effortSelect;
+          return effortSelect;
+        }
         if (item.kind !== "model" || !hasModelControl) return node("span", item.text, item.className);
         const select = node("select", "", `${item.className} composer-model-select`);
         select.setAttribute("aria-label", "当前会话模型");
@@ -1895,7 +2013,7 @@ function syncComposerMetadata(session = state.selected) {
     }
   } else target.textContent = labels.map((item) => item.text).join(" · ");
   if (composerModelControl && hasModelControl) {
-    const catalogReady = sessionModelCatalog.loadedAt > 0 && sessionModelCatalog.items.length > 0;
+    const catalogReady = sessionModelCatalog.loadedAt > 0 && sessionModelCatalog.items.length > 0 && (!sessionModelCatalog.source || sessionModelCatalog.source === source);
     const updating = sessionModelUpdate?.sessionId === session?.id;
     const disabledReason = modelControlDisabledReason(session, catalogReady, updating);
     composerModelControl.disabled = Boolean(disabledReason);
@@ -1903,23 +2021,46 @@ function syncComposerMetadata(session = state.selected) {
     composerModelControl.setAttribute("aria-label", disabledReason ? `当前会话模型，${disabledReason}` : "当前会话模型");
     composerModelControl.setAttribute("aria-disabled", disabledReason ? "true" : "false");
     composerModelControl.value = currentModel.id;
+    if (composerEffortControl) {
+      composerEffortControl.disabled = Boolean(disabledReason);
+      composerEffortControl.title = disabledReason || "切换当前会话思考等级";
+      composerEffortControl.setAttribute("aria-disabled", disabledReason ? "true" : "false");
+      if (session?.sessionMeta?.reasoningEffort) composerEffortControl.value = session.sessionMeta.reasoningEffort;
+    }
   }
   target.hidden = labels.length === 0;
 }
 
-/** Apply an inline model selection to exactly the currently selected idle thread. */
-async function changeSessionModel(modelId, select = composerModelControl) {
-  const session = state.selected; const currentModel = session?.sessionMeta?.model;
-  if (!session || session.source !== "codex" || session.state !== "idle" || state.paused || !state.caps.codex?.modelUpdateEnabled) throw clientError("model_update_unavailable", "当前会话暂不能切换模型");
-  if (!modelId || !sessionModelCatalog.items.some((item) => item.id === modelId)) throw clientError("model_unavailable", "所选模型当前不可用");
-  if (modelId === currentModel?.id) return;
+/** Apply an inline model or reasoning effort selection to exactly the currently selected idle thread. */
+async function changeSessionModel(modelId, select = composerModelControl, reasoningEffortOverride = undefined) {
+  const session = state.selected; const source = session?.source; const currentModel = session?.sessionMeta?.model;
+  if (!session || !["codex", "antigravity"].includes(source) || session.state !== "idle" || state.paused || !state.caps[source]?.modelUpdateEnabled) throw clientError("model_update_unavailable", "当前会话暂不能切换模型");
+  const catalogEntry = sessionModelCatalog.items.find((item) => item.id === modelId);
+  if (!modelId || !catalogEntry) throw clientError("model_unavailable", "所选模型当前不可用");
+  let nextEffort = undefined;
+  if (source === "antigravity") {
+    const supported = Array.isArray(catalogEntry.supportedReasoningEfforts) ? catalogEntry.supportedReasoningEfforts : [];
+    if (supported.length > 0) {
+      const candidate = reasoningEffortOverride ?? session.sessionMeta?.reasoningEffort ?? catalogEntry.defaultReasoningEffort ?? supported[0];
+      nextEffort = supported.includes(candidate) ? candidate : (catalogEntry.defaultReasoningEffort || supported[0]);
+    } else {
+      nextEffort = null;
+    }
+    if (modelId === currentModel?.id && (nextEffort ?? null) === (session.sessionMeta?.reasoningEffort ?? null)) return;
+  } else if (modelId === currentModel?.id) return;
   const sessionId = session.id; const viewEpoch = state.viewEpoch;
   sessionModelUpdate = { sessionId, modelId }; syncComposerMetadata(session);
   try {
-    const result = await api(`/api/sessions/codex/${encodeURIComponent(sessionId)}/model`, "POST", { modelId });
-    if (viewEpoch !== state.viewEpoch || state.selected?.source !== "codex" || state.selected?.id !== sessionId) return;
-    state.selected = { ...state.selected, sessionMeta: { ...(state.selected.sessionMeta ?? {}), model: result.model } };
-    notice(`模型已切换为 ${result.model.displayName || result.model.id}`, { kind: "success" });
+    const payload = source === "antigravity" && nextEffort ? { modelId, reasoningEffort: nextEffort } : { modelId };
+    const result = await api(`/api/sessions/${source}/${encodeURIComponent(sessionId)}/model`, "POST", payload);
+    if (viewEpoch !== state.viewEpoch || state.selected?.source !== source || state.selected?.id !== sessionId) return;
+    const nextMeta = { ...(state.selected.sessionMeta ?? {}), model: result.model };
+    if (source === "antigravity") {
+      if (result.reasoningEffort) nextMeta.reasoningEffort = result.reasoningEffort;
+      else delete nextMeta.reasoningEffort;
+    }
+    state.selected = { ...state.selected, sessionMeta: nextMeta };
+    notice(`模型已切换为 ${result.model.displayName || result.model.id}${result.reasoningEffort ? ` (${result.reasoningEffort})` : ""}`, { kind: "success" });
   } catch (error) {
     let message = error?.message || "请求失败，请稍后重试";
     if (error?.code === "model_update_writer_held") {
@@ -1931,16 +2072,30 @@ async function changeSessionModel(modelId, select = composerModelControl) {
           : "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型";
     }
     if (isTransportError(error)) enterDisconnected(`模型切换失败：${message}。已保留当前模型，恢复连接后可重试。`);
-    else if (viewEpoch === state.viewEpoch && state.selected?.source === "codex" && state.selected?.id === sessionId) notice(`模型切换失败：${message}`, { sticky: true, kind: "error" });
+    else if (viewEpoch === state.viewEpoch && state.selected?.source === source && state.selected?.id === sessionId) notice(`模型切换失败：${message}`, { sticky: true, kind: "error" });
   } finally {
     if (sessionModelUpdate?.sessionId === sessionId) sessionModelUpdate = null;
-    if (state.selected?.source === "codex" && state.selected?.id === sessionId) syncComposerControl();
+    if (state.selected?.source === source && state.selected?.id === sessionId) syncComposerControl();
     else if (select && currentModel?.id) select.value = currentModel.id;
   }
 }
 
+/** Return the exact Antigravity execution target when an active execution can be safely interrupted. */
+function exactAntigravityInterruptTarget(session = state.selected) {
+  if (session?.source !== "antigravity") return null;
+  const execControl = session?.executionControl;
+  const available = execControl?.interrupt?.status === "available" || execControl?.supported === true;
+  const executionId = execControl?.activeExecutionId || execControl?.executionId;
+  const epoch = execControl?.activeEpoch ?? execControl?.epoch;
+  if (!available || typeof executionId !== "string" || !executionId || !Number.isSafeInteger(epoch) || epoch <= 0) return null;
+  return { executionId, epoch };
+}
+
 /** Return the exact turn bound to an actionable exact-turn interrupt, or null for every other running state. */
 function exactInterruptTarget(session = state.selected) {
+  if (session?.source === "antigravity") {
+    return exactAntigravityInterruptTarget(session)?.executionId ?? null;
+  }
   const control = session?.turnControl;
   return session?.source === "codex" && control?.interrupt?.status === "available" && typeof control.activeTurnId === "string" && control.activeTurnId
     ? control.activeTurnId : null;
@@ -1949,21 +2104,36 @@ function exactInterruptTarget(session = state.selected) {
 /** Mirror Codex's single primary control: a draft means send; an empty active composer means stop. */
 function syncComposerControl(now = Date.now()) {
   const session = state.selected; const status = el("composer-session-status");
+  const isReadOnlyDesktop = session?.source === "antigravity" && session?.creationClient?.kind === "desktop";
   syncComposerMetadata(session);
   if (status) {
-    const activity = liveActivityPresentation(session, state.paused, now);
-    const hideIdle = Boolean(session && session.state === "idle" && !activity.visible);
-    status.hidden = hideIdle;
-    status.textContent = hideIdle ? ""
-      : !session ? "选择会话后可继续"
-        : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
-          : sessionStateLabel(session);
+    if (isReadOnlyDesktop) {
+      status.hidden = false;
+      status.textContent = "Antigravity 桌面端会话（只读） · 暂不支持从 Web 发送消息";
+    } else {
+      const activity = liveActivityPresentation(session, state.paused, now);
+      const hideIdle = Boolean(session && session.state === "idle" && !activity.visible);
+      status.hidden = hideIdle;
+      status.textContent = hideIdle ? ""
+        : !session ? "选择会话后可继续"
+          : activity.visible ? `${activity.status}${activity.detail ? " · " + activity.detail : ""}`
+            : sessionStateLabel(session);
+    }
   }
   const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
+  if (prompt) {
+    if (isReadOnlyDesktop) {
+      prompt.disabled = true;
+      prompt.placeholder = "Antigravity 桌面端会话仅支持只读浏览，暂不支持从 Web 续聊";
+    } else if (prompt.disabled) {
+      prompt.disabled = false;
+      prompt.placeholder = "输入消息…";
+    }
+  }
   const hasDraft = Boolean(String(prompt?.value ?? "").trim());
   const interruptTarget = exactInterruptTarget(session);
   const requestMatches = Boolean(session && state.interruptRequest?.sessionId === session.id && state.interruptRequest?.source === session.source);
-  const serverInterrupting = session?.source === "codex" && session.turnControl?.interrupt?.status === "interrupting";
+  const serverInterrupting = (session?.source === "codex" && session.turnControl?.interrupt?.status === "interrupting") || (session?.source === "antigravity" && session.executionControl?.interrupt?.status === "interrupting");
   if (requestMatches || serverInterrupting) {
     send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "正在中断…"; send.disabled = true; send.title = ""; return;
   }
@@ -1971,7 +2141,7 @@ function syncComposerControl(now = Date.now()) {
     send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送"; send.title = "";
     send.disabled = state.paused || !session?.sendEnabled || Boolean(state.pending); return;
   }
-  const active = session?.source === "codex" && ["running", "waiting_external_approval"].includes(session.state);
+  const active = ["codex", "antigravity"].includes(session?.source) && ["running", "waiting_external_approval"].includes(session.state);
   if (active) {
     send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "⏹ 中断";
     send.disabled = state.paused || Boolean(state.pending) || !interruptTarget;
@@ -1996,21 +2166,29 @@ function submitComposerForm(event) {
 async function interruptSelectedTurn() {
   const session = state.selected; const expectedTurnId = exactInterruptTarget(session);
   if (!session || !expectedTurnId || state.paused || state.interruptRequest) return;
-  const requestIdentity = { sessionId: session.id, source: session.source, turnId: expectedTurnId };
+  const agTarget = session.source === "antigravity" ? exactAntigravityInterruptTarget(session) : null;
+  const requestIdentity = { sessionId: session.id, source: session.source, turnId: expectedTurnId, ...(agTarget ? { epoch: agTarget.epoch } : {}) };
   const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   state.interruptRequest = requestIdentity;
-  if (state.selected?.id === session.id && state.selected.source === session.source && state.selected.turnControl?.activeTurnId === expectedTurnId) {
-    state.selected = { ...state.selected, turnControl: { ...state.selected.turnControl, interrupt: { status: "interrupting", scope: "exact_codex_turn" } } };
+  if (state.selected?.id === session.id && state.selected.source === session.source) {
+    if (session.source === "antigravity" && state.selected.executionControl?.activeExecutionId === expectedTurnId) {
+      state.selected = { ...state.selected, executionControl: { ...state.selected.executionControl, interrupt: { status: "interrupting", scope: "exact_antigravity_execution" } } };
+    } else if (state.selected.turnControl?.activeTurnId === expectedTurnId) {
+      state.selected = { ...state.selected, turnControl: { ...state.selected.turnControl, interrupt: { status: "interrupting", scope: "exact_codex_turn" } } };
+    }
   }
   syncLiveActivityCard(); syncComposerControl();
   try {
-    const result = await api(`/api/sessions/codex/${encodeURIComponent(session.id)}/interrupt`, "POST", { expectedTurnId });
+    const body = session.source === "antigravity" && agTarget
+      ? { expectedExecutionId: agTarget.executionId, expectedEpoch: agTarget.epoch }
+      : { expectedTurnId };
+    const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/interrupt`, "POST", body);
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     if (result.status !== "interrupting") throw clientError("interrupt_provider_unavailable", "当前中断通道暂不可用");
-    notice("已请求中断，正在等待 Codex 确认终态", { kind: "info", durationMs: 10_000 });
+    notice(`已请求中断，正在等待 ${sourceDisplayName(session.source)} 确认终态`, { kind: "info", durationMs: 10_000 });
   } catch (error) {
     if (["auth_changed", "auth_required"].includes(error?.code)) return;
-    const race = ["active_turn_changed", "interrupt_not_owned", "interrupt_already_finished", "interrupt_provider_unverified"].includes(error?.code);
+    const race = ["active_turn_changed", "active_execution_changed", "interrupt_not_owned", "interrupt_already_finished", "interrupt_provider_unverified"].includes(error?.code);
     if (!race && isTransportError(error)) enterDisconnected();
     else notice(error?.message || "中断请求失败", { sticky: !race, kind: race ? "warning" : "error" });
   } finally {
@@ -2032,7 +2210,7 @@ function setComposerStatus(text) {
 function showOperation(operation, announce = true) {
   const knownSession = operation.kind === "create" && operation.sessionId ? ` · 已创建会话 ${operation.sessionId}` : "";
   let status = labels[operation.state] ?? operation.state;
-  if (operation.execution?.state === "waiting_external_approval") status = "等待 Telegram 审批";
+  if (operation.execution?.state === "waiting_external_approval") status = operation.source === "antigravity" ? "等待 Web 审批" : "等待 Telegram 审批";
   if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行" : "会话正在执行";
   if (operation.execution?.state === "session_ended") status = operation.execution.exact ? "本轮已结束" : "会话在投递后有任务结束，本次投递关联未确认";
   if (operation.state === "delivery_unknown" && operation.execution?.state === "running") status += " · 投递回执待确认";
