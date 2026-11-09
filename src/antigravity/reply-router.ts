@@ -6,7 +6,6 @@ import type { AntigravityTelegramStore } from "./telegram-store.ts";
 export type AntigravityReplyResult =
   | { status: "duplicate"; sessionId: string }
   | { status: "delivered"; sessionId: string }
-  | { status: "desktop_app_open"; sessionId: string }
   | { status: "session_busy"; sessionId: string }
   | { status: "desktop_read_only"; sessionId: string }
   | { status: "failed"; sessionId: string; errorCode: string }
@@ -43,8 +42,7 @@ export class AntigravityReplyRouter {
     updateId: number,
     chatId: string,
     replyMessageId: number,
-    text: string,
-    options?: { bypassDesktopOpenCheck?: boolean }
+    text: string
   ): Promise<AntigravityReplyResult> {
     const link = this.deps.tgStore.findMessageLink(chatId, replyMessageId);
     if (!link) {
@@ -57,25 +55,6 @@ export class AntigravityReplyRouter {
     const normalized = text.trim();
     if (!normalized) {
       return { status: "failed", sessionId: link.sessionId, errorCode: "empty_prompt" };
-    }
-
-    if (
-      !options?.bypassDesktopOpenCheck &&
-      link.sessionOrigin === "desktop" &&
-      this.deps.desktopAppController &&
-      !this.deps.tgStore.getDelivery(updateId)
-    ) {
-      const openInApp = await this.deps.desktopAppController.isSessionOpenInDesktopApp(link.sessionId);
-      if (openInApp) {
-        await this.deps.desktopAppController.sendConfirmationPrompt({
-          updateId,
-          chatId,
-          replyToMessageId: replyMessageId,
-          sessionId: link.sessionId,
-          text: normalized,
-        });
-        return { status: "desktop_app_open", sessionId: link.sessionId };
-      }
     }
 
     const hash = deliveryHash(link.sessionId, normalized);
@@ -125,6 +104,9 @@ export class AntigravityReplyRouter {
       const result = await this.deps.sessionManager.send(link.sessionId, requestId(updateId), normalized);
       if (result.state === "queued" || result.state === "accepted") {
         this.deps.tgStore.finishDelivery(updateId, "delivered", null, this.now());
+        if (link.sessionOrigin === "desktop") {
+          this.deps.desktopAppController?.markRefreshAfterTurn(link.sessionId, chatId);
+        }
         return { status: "delivered", sessionId: link.sessionId };
       }
       if (result.state === "failed") {

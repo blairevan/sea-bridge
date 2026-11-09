@@ -43,11 +43,10 @@ function createFakeTelegram() {
 }
 
 describe("AntigravityDesktopAppController", () => {
-  test("prompts when desktop session is open in Antigravity.app, quits before send, and reopens on turn settle", async () => {
+  test("delivers immediately while keeping Antigravity.app open, then auto-restarts on turn settle when idle", async () => {
     const tmpDir = mkdtempSync(path.join(os.tmpdir(), "sea-bridge-agy-desktop-ctrl-"));
     try {
       const stateDb = new StateDb(path.join(tmpDir, "state.db"));
-      const store = new AntigravityStore(stateDb.db);
       const tgStore = new AntigravityTelegramStore(stateDb.db);
       const tg = createFakeTelegram();
 
@@ -60,6 +59,9 @@ describe("AntigravityDesktopAppController", () => {
 
       const controller = new AntigravityDesktopAppController({
         desktopAppDataDir: tmpDir,
+        desktopReader: {
+          listSessions: () => [],
+        },
         tgStore,
         telegram: tg.client,
         sleepFn: async () => {},
@@ -111,6 +113,96 @@ describe("AntigravityDesktopAppController", () => {
         },
       });
 
+      // Step 1: Reply delivers immediately WITHOUT closing Antigravity.app during execution
+      const res = await replyRouter.deliver(8001, "1001", 77, "长任务执行测试");
+      expect(res).toEqual({ status: "delivered", sessionId });
+      expect(sentPrompts).toEqual(["长任务执行测试"]);
+      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(false);
+      expect(desktopAppOpen).toBe(true);
+
+      // Step 2: Turn finishes -> automatically performs fast quit + open restart
+      await controller.onDesktopTurnSettled(sessionId);
+      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(true);
+      expect(executedCommands.some((c) => c.cmd === "open")).toBe(true);
+      expect(desktopAppOpen).toBe(true);
+
+      stateDb.close();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("defers restart and sends inline button when another desktop session is actively running", async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "sea-bridge-agy-desktop-defer-"));
+    try {
+      const stateDb = new StateDb(path.join(tmpDir, "state.db"));
+      const store = new AntigravityStore(stateDb.db);
+      const tgStore = new AntigravityTelegramStore(stateDb.db);
+      const tg = createFakeTelegram();
+
+      const sessionId = "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404";
+      mkdirSync(path.join(tmpDir, "presence"), { recursive: true });
+      writeFileSync(path.join(tmpDir, "presence", `${sessionId}.lock`), "");
+
+      let desktopAppOpen = true;
+      const executedCommands: Array<{ cmd: string; args: string[] }> = [];
+
+      const controller = new AntigravityDesktopAppController({
+        desktopAppDataDir: tmpDir,
+        desktopReader: {
+          listSessions: () => [
+            {
+              source: "antigravity" as never,
+              id: "11111111-2222-4333-8444-555555555555",
+              title: "Other active task",
+              updatedAt: Date.now(),
+              projectId: "proj-1",
+              creationClient: { kind: "desktop", evidence: "explicit" },
+              state: "running",
+              sendEnabled: false,
+            },
+          ],
+        },
+        tgStore,
+        telegram: tg.client,
+        sleepFn: async () => {},
+        runCommand: async (cmd, args) => {
+          executedCommands.push({ cmd, args });
+          if (cmd === "lsof") {
+            return desktopAppOpen
+              ? { exitCode: 0, stdout: "5921\n", stderr: "" }
+              : { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (cmd === "ps") {
+            return {
+              exitCode: 0,
+              stdout: "/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone\n",
+              stderr: "",
+            };
+          }
+          if (cmd === "osascript") {
+            desktopAppOpen = false;
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (cmd === "open") {
+            desktopAppOpen = true;
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      });
+
+      const replyRouter = new AntigravityReplyRouter({
+        tgStore,
+        externalSessionsEnabled: true,
+        desktopAppController: controller,
+        sessionManager: {
+          async send() {
+            return { state: "queued", sessionId, turnId: "turn-2" };
+          },
+        },
+      });
+
       const handler = new AntigravityTelegramHandler({
         config: {
           enabled: true,
@@ -142,25 +234,20 @@ describe("AntigravityDesktopAppController", () => {
         telegram: tg.client,
       });
 
-      // Step 1: Reply while Antigravity.app holds the lock -> prompts instead of sending immediately
-      const firstAttempt = await replyRouter.deliver(8001, "1001", 77, "你好桌面端");
-      expect(firstAttempt).toEqual({ status: "desktop_app_open", sessionId });
-      expect(sentPrompts).toEqual([]);
-      expect(tg.sent.length).toBe(1);
-      expect(tg.sent[0]!.text).toContain("已在 Antigravity 桌面端打开");
-      const restartBtn = tg.sent[0]!.buttons?.[0]?.[0];
-      expect(restartBtn?.text).toContain("关闭桌面端");
-
-      // Step 2: Click the "restart" inline button -> quits Antigravity.app, delivers prompt
-      await handler.tryHandleCallback(8002, 1001, "cb-1", 500, restartBtn!.callback_data);
-      expect(sentPrompts).toEqual(["你好桌面端"]);
-      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(true);
-      expect(executedCommands.some((c) => c.cmd === "open")).toBe(false);
-
-      // Step 3: Turn finishes and settles -> automatically reopens Antigravity.app
+      controller.markRefreshAfterTurn(sessionId, "1001");
       await controller.onDesktopTurnSettled(sessionId);
+
+      // Should NOT have quit Antigravity.app while another session is running
+      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(false);
+      expect(tg.sent.length).toBe(1);
+      expect(tg.sent[0]!.text).toContain("有其他会话正在执行任务");
+      const refreshBtn = tg.sent[0]!.buttons?.[0]?.[0];
+      expect(refreshBtn?.text).toContain("立即重启桌面端同步显示");
+
+      // Clicking the button triggers restart on demand
+      await handler.tryHandleCallback(9002, 1001, "cb-refresh", 500, refreshBtn!.callback_data);
+      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(true);
       expect(executedCommands.some((c) => c.cmd === "open")).toBe(true);
-      expect(desktopAppOpen).toBe(true);
 
       stateDb.close();
     } finally {

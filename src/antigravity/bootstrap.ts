@@ -131,6 +131,7 @@ export function createAntigravityRuntime(
       if (!config.enabled) return undefined;
       const desktopAppController = new AntigravityDesktopAppController({
         desktopAppDataDir: config.desktopAppDataDir,
+        desktopReader,
         tgStore,
         telegram,
       });

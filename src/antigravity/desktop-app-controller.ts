@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { AntigravityDesktopReader } from "./desktop-reader.ts";
 import { createAntigravityCallback } from "./menu-ui.ts";
 import { isValidDesktopConversationId } from "./policy.ts";
-import type { AntigravityReplyRouter } from "./reply-router.ts";
 import type { TelegramHandlerClient } from "./telegram-handler.ts";
 import type { AntigravityTelegramStore } from "./telegram-store.ts";
 
@@ -50,20 +50,21 @@ export async function defaultCommandRunner(cmd: string, args: string[], timeoutM
 }
 
 /**
- * Coordinates `Antigravity.app` lifecycle around Telegram replies to Desktop sessions:
- * 1. Checks whether `Antigravity.app`'s `language_server` holds `<sessionId>.lock` / `<sessionId>.db` in memory.
- * 2. Prompts the user in Telegram with inline buttons (`restart` / `direct` / `cancel`).
- * 3. Gracefully quits `Antigravity.app` before running `agy acp` and reopens `Antigravity.app` once the turn settles.
+ * Coordinates post-turn `Antigravity.app` refresh for Desktop sessions:
+ * - Keeps `Antigravity.app` open while background `agy acp` turns execute (so users can work on other sessions).
+ * - Once the background turn finishes and releases `<sessionId>.lock`, checks if `Antigravity.app` holds `<sessionId>` in memory:
+ *   - If no other desktop session is running, performs a fast 1–2s restart (`quit` -> `open`) to reload `<sessionId>.db`.
+ *   - If another desktop session is actively running, sends a `[🔄 立即重启桌面端同步显示]` button in Telegram instead of interrupting.
  */
 export class AntigravityDesktopAppController {
-  private readonly pendingReopenBySession = new Map<string, { chatId: string | number }>();
-  private readonly consumedDecisionGroups = new Set<string>();
+  private readonly pendingRefreshBySession = new Map<string, { chatId: string | number }>();
   private readonly runCommand: CommandRunner;
   private readonly sleepFn: (ms: number) => Promise<void>;
 
   constructor(
     private readonly deps: {
       desktopAppDataDir: string;
+      desktopReader?: Pick<AntigravityDesktopReader, "listSessions"> | undefined;
       tgStore: AntigravityTelegramStore;
       telegram: TelegramHandlerClient;
       appBundlePath?: string | undefined;
@@ -102,6 +103,18 @@ export class AntigravityDesktopAppController {
       .some((line) => line.includes("Antigravity.app") || (line.includes("language_server") && !line.includes("acp")));
   }
 
+  /** Return `true` if another Desktop conversation (`!== excludeSessionId`) is currently running in `Antigravity.app`. */
+  hasOtherRunningDesktopSession(excludeSessionId: string): boolean {
+    if (!this.deps.desktopReader) return false;
+    try {
+      return this.deps.desktopReader
+        .listSessions(100)
+        .some((s) => s.id !== excludeSessionId && s.state === "running");
+    } catch {
+      return false;
+    }
+  }
+
   /** Gracefully quit `Antigravity.app` and wait until its `language_server` releases the session lock. */
   async quitDesktopApp(sessionId?: string): Promise<boolean> {
     await this.runCommand("osascript", ["-e", 'tell application "Antigravity" to quit'], 5000);
@@ -133,105 +146,79 @@ export class AntigravityDesktopAppController {
     return res.exitCode === 0;
   }
 
-  /** Schedule `Antigravity.app` to reopen once the desktop session turn finishes and closes its ACP worker. */
-  scheduleReopenAfterTurn(sessionId: string, chatId: string | number): void {
-    this.pendingReopenBySession.set(sessionId, { chatId });
+  /** Perform a fast 1–2s restart of `Antigravity.app` (`quit` -> `open`) so it reloads `<sessionId>.db` from disk. */
+  async restartDesktopApp(sessionId?: string): Promise<boolean> {
+    const quitOk = await this.quitDesktopApp(sessionId);
+    if (!quitOk) return false;
+    await this.sleepFn(150);
+    return await this.reopenDesktopApp();
   }
 
-  /** Cancel a scheduled reopen for a session. */
-  cancelScheduledReopen(sessionId: string): void {
-    this.pendingReopenBySession.delete(sessionId);
+  /** Mark a Desktop session to be refreshed in `Antigravity.app` once its background `agy acp` turn finishes. */
+  markRefreshAfterTurn(sessionId: string, chatId: string | number): void {
+    this.pendingRefreshBySession.set(sessionId, { chatId });
   }
 
-  /** Invoked when a desktop session turn finishes and its `agy acp` worker has closed. */
+  /** Cancel a scheduled post-turn refresh for a session. */
+  cancelScheduledRefresh(sessionId: string): void {
+    this.pendingRefreshBySession.delete(sessionId);
+  }
+
+  /**
+   * Invoked when a Desktop session turn finishes and its `agy acp` worker has closed:
+   * - If `Antigravity.app` does not have `<sessionId>` open in memory, no action needed.
+   * - If another Desktop session is currently running, sends a manual refresh button in Telegram to avoid interrupting it.
+   * - Otherwise, performs an automatic 1–2s restart of `Antigravity.app` so the completed turn appears immediately.
+   */
   async onDesktopTurnSettled(sessionId: string): Promise<void> {
-    const pending = this.pendingReopenBySession.get(sessionId);
+    const pending = this.pendingRefreshBySession.get(sessionId);
     if (!pending) return;
-    this.pendingReopenBySession.delete(sessionId);
-    await this.sleepFn(250);
-    await this.reopenDesktopApp();
+    this.pendingRefreshBySession.delete(sessionId);
+
+    await this.sleepFn(200);
+    const openInApp = await this.isSessionOpenInDesktopApp(sessionId);
+    if (!openInApp) return;
+
+    if (this.hasOtherRunningDesktopSession(sessionId)) {
+      await this.sendDeferredRestartPrompt(String(pending.chatId), sessionId, "检测到 Antigravity 桌面端当前有其他会话正在执行任务，未自动重启。");
+      return;
+    }
+
+    const restarted = await this.restartDesktopApp(sessionId);
+    if (!restarted) {
+      await this.sendDeferredRestartPrompt(String(pending.chatId), sessionId, "未能自动重启 Antigravity 桌面端以刷新该会话显示。");
+    }
   }
 
-  /** Send a Telegram inline-button prompt asking whether to close `Antigravity.app` before sending. */
-  async sendConfirmationPrompt(input: {
-    updateId: number;
-    chatId: string;
-    replyToMessageId: number;
-    sessionId: string;
-    text: string;
-  }): Promise<void> {
-    const now = Date.now();
-    const ttlMs = 15 * 60_000;
-    const groupKey = `${input.chatId}:${input.updateId}`;
-    const basePayload = {
-      groupKey,
-      updateId: input.updateId,
-      replyToMessageId: input.replyToMessageId,
-      sessionId: input.sessionId,
-      text: input.text,
-    };
-    const restartCb = createAntigravityCallback(
+  /** Send an inline button allowing the user to trigger a 1–2s `Antigravity.app` restart on demand. */
+  async sendDeferredRestartPrompt(chatId: string, sessionId: string, reasonText: string): Promise<void> {
+    const cb = createAntigravityCallback(
       this.deps.tgStore,
-      input.chatId,
+      chatId,
       "desktop.reply.decide",
-      { ...basePayload, decision: "restart" },
-      now,
-      ttlMs
+      { decision: "refresh_now", sessionId },
+      Date.now(),
+      24 * 60 * 60_000
     );
-    const directCb = createAntigravityCallback(
-      this.deps.tgStore,
-      input.chatId,
-      "desktop.reply.decide",
-      { ...basePayload, decision: "direct" },
-      now,
-      ttlMs
-    );
-    const cancelCb = createAntigravityCallback(
-      this.deps.tgStore,
-      input.chatId,
-      "desktop.reply.decide",
-      { ...basePayload, decision: "cancel" },
-      now,
-      ttlMs
-    );
-
-    const shortId = `${input.sessionId.slice(0, 7)}…${input.sessionId.slice(-4)}`;
+    const shortId = `${sessionId.slice(0, 7)}…${sessionId.slice(-4)}`;
     await this.deps.telegram.sendMessage(
-      input.chatId,
-      [
-        `⚠️ 会话 ${shortId} 当前已在 Antigravity 桌面端打开`,
-        "若需在桌面端窗口同步显示本次回复，请先关闭桌面端，待本轮回复完成后将自动重新启动 Antigravity。",
-      ].join("\n"),
-      [
-        [{ text: "🔄 关闭桌面端 → 发送 → 自动重启 (推荐)", callback_data: restartCb }],
-        [{ text: "📨 不关桌面端直接发送 (仅写盘)", callback_data: directCb }],
-        [{ text: "❌ 取消", callback_data: cancelCb }],
-      ]
+      chatId,
+      `${reasonText}\n会话 ${shortId} 的回复已写入磁盘，点击下方按钮可立即重启桌面端同步显示：`,
+      [[{ text: "🔄 立即重启桌面端同步显示", callback_data: cb }]]
     );
   }
 
-  /** Handle the user's button selection (`restart`, `direct`, or `cancel`). */
+  /** Handle the user clicking `[🔄 立即重启桌面端同步显示]`. */
   async handleCallback(
     chatId: number,
     sourceMessageId: number | undefined,
     payload: Record<string, unknown>,
-    replyRouter: AntigravityReplyRouter
+    _replyRouter?: unknown
   ): Promise<void> {
-    const groupKey = typeof payload.groupKey === "string" ? payload.groupKey : "";
-    if (groupKey) {
-      if (this.consumedDecisionGroups.has(groupKey)) return;
-      this.consumedDecisionGroups.add(groupKey);
-    }
     if (sourceMessageId !== undefined) {
       await this.deps.telegram.editMessageReplyMarkup(chatId, sourceMessageId, []).catch(() => undefined);
     }
-
-    const decision = typeof payload.decision === "string" ? payload.decision : "cancel";
-    const updateId = Number(payload.updateId);
-    const replyToMessageId = Number(payload.replyToMessageId);
     const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
-    const text = typeof payload.text === "string" ? payload.text : "";
-
     const notify = async (msg: string) => {
       if (sourceMessageId !== undefined) {
         await this.deps.telegram.editMessageText(chatId, sourceMessageId, msg, []).catch(async () => {
@@ -242,47 +229,12 @@ export class AntigravityDesktopAppController {
       }
     };
 
-    if (decision === "cancel" || !sessionId || !text || !Number.isSafeInteger(updateId)) {
-      await notify("已取消本次 Antigravity 桌面会话投递。");
-      return;
-    }
-
-    if (decision === "direct") {
-      const res = await replyRouter.deliver(updateId, String(chatId), replyToMessageId, text, {
-        bypassDesktopOpenCheck: true,
-      });
-      await notify(
-        res.status === "delivered"
-          ? "已投递到对应的 Antigravity 会话（未关闭桌面端，仅写入磁盘）。"
-          : res.status === "session_busy"
-            ? "Antigravity 会话当前正在执行任务，本条内容未排队、未自动重试。"
-            : "Antigravity 拒绝了本次投递，未自动重试。"
-      );
-      return;
-    }
-
-    await notify("⏳ 正在关闭 Antigravity 桌面端并投递消息，待本轮回复完成后将自动重新启动 Antigravity…");
-    const quitOk = await this.quitDesktopApp(sessionId);
-    if (!quitOk) {
-      await notify("⚠️ 未能自动关闭 Antigravity 桌面端（可能存在未保存确认弹窗），本次消息未发送。");
-      return;
-    }
-
-    this.scheduleReopenAfterTurn(sessionId, chatId);
-    const res = await replyRouter.deliver(updateId, String(chatId), replyToMessageId, text, {
-      bypassDesktopOpenCheck: true,
-    });
-    if (res.status === "delivered") {
-      await notify("✅ 已关闭 Antigravity 桌面端并投递消息；待本轮回复完成后将自动重新启动 Antigravity。");
-      return;
-    }
-
-    this.cancelScheduledReopen(sessionId);
-    await this.reopenDesktopApp();
+    await notify("⏳ 正在重启 Antigravity 桌面端以加载最新对话…");
+    const ok = await this.restartDesktopApp(sessionId || undefined);
     await notify(
-      res.status === "session_busy"
-        ? "Antigravity 会话当前正在执行任务，本条内容未发送；已重新启动 Antigravity 桌面端。"
-        : "Antigravity 投递未成功；已重新启动 Antigravity 桌面端。"
+      ok
+        ? "✅ 已重启 Antigravity 桌面端，最新对话已同步显示。"
+        : "⚠️ 未能自动重启 Antigravity 桌面端（可能存在未保存确认弹窗），请手动按 Cmd+Q 重启桌面端。"
     );
   }
 }
