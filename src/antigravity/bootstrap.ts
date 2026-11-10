@@ -83,12 +83,17 @@ export function createAntigravityRuntime(
     desktopAppDataDir: config.desktopAppDataDir,
     getAllowedProjects,
   });
-  if (config.allowedProjects.length === 0 && config.desktopReadEnabled && store.listProjects().length === 0) {
+  if (config.allowedProjects.length === 0 && config.desktopReadEnabled) {
     const now = Date.now();
     for (const proj of desktopReader.discoverWorkspaceProjects()) {
       store.upsertProject({ id: proj.id, name: proj.name, rootPath: proj.rootPath, policyVersion: "auto-v1", updatedAt: now });
     }
   }
+  activeDesktopAppController = new AntigravityDesktopAppController({
+    desktopAppDataDir: config.desktopAppDataDir,
+    desktopReader,
+    tgStore,
+  });
   const sessionManager = new AntigravitySessionManager({
     store,
     webStore: webStoreProxy,
@@ -134,6 +139,7 @@ export function createAntigravityRuntime(
         desktopReader,
         tgStore,
         telegram,
+        defaultChatId: chatId,
       });
       activeDesktopAppController = desktopAppController;
       const newSessions = new AntigravityNewSessionManager({

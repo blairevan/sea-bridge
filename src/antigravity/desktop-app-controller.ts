@@ -66,8 +66,9 @@ export class AntigravityDesktopAppController {
     private readonly deps: {
       desktopAppDataDir: string;
       desktopReader?: Pick<AntigravityDesktopReader, "listSessions"> | undefined;
-      tgStore: AntigravityTelegramStore;
-      telegram: TelegramHandlerClient;
+      tgStore?: AntigravityTelegramStore | undefined;
+      telegram?: TelegramHandlerClient | undefined;
+      defaultChatId?: string | number | undefined;
       appBundlePath?: string | undefined;
       runCommand?: CommandRunner | undefined;
       sleepFn?: ((ms: number) => Promise<void>) | undefined;
@@ -207,26 +208,42 @@ export class AntigravityDesktopAppController {
    */
   async onDesktopTurnSettled(sessionId: string): Promise<void> {
     const pending = this.pendingRefreshBySession.get(sessionId);
-    if (!pending) return;
     this.pendingRefreshBySession.delete(sessionId);
+    const notifyChatId =
+      pending?.chatId !== undefined
+        ? String(pending.chatId)
+        : this.deps.defaultChatId !== undefined
+          ? String(this.deps.defaultChatId)
+          : null;
 
     await this.sleepFn(200);
     const openInApp = await this.isSessionOpenInDesktopApp(sessionId);
     if (!openInApp) return;
 
     if (this.hasOtherRunningDesktopSession(sessionId)) {
-      await this.sendDeferredRestartPrompt(String(pending.chatId), sessionId, "检测到 Antigravity 桌面端当前有其他会话正在执行任务，未自动重启。");
+      if (notifyChatId) {
+        await this.sendDeferredRestartPrompt(
+          notifyChatId,
+          sessionId,
+          "检测到 Antigravity 桌面端当前有其他会话正在执行任务，未自动重启。"
+        );
+      }
       return;
     }
 
     const restarted = await this.restartDesktopApp(sessionId);
-    if (!restarted) {
-      await this.sendDeferredRestartPrompt(String(pending.chatId), sessionId, "未能自动重启 Antigravity 桌面端以刷新该会话显示。");
+    if (!restarted && notifyChatId) {
+      await this.sendDeferredRestartPrompt(
+        notifyChatId,
+        sessionId,
+        "未能自动重启 Antigravity 桌面端以刷新该会话显示。"
+      );
     }
   }
 
   /** Send an inline button allowing the user to trigger a 1–2s `Antigravity.app` restart on demand. */
   async sendDeferredRestartPrompt(chatId: string, sessionId: string, reasonText: string): Promise<void> {
+    if (!this.deps.tgStore || !this.deps.telegram) return;
     const cb = createAntigravityCallback(
       this.deps.tgStore,
       chatId,
@@ -250,17 +267,19 @@ export class AntigravityDesktopAppController {
     payload: Record<string, unknown>,
     _replyRouter?: unknown
   ): Promise<void> {
+    if (!this.deps.telegram) return;
     if (sourceMessageId !== undefined) {
       await this.deps.telegram.editMessageReplyMarkup(chatId, sourceMessageId, []).catch(() => undefined);
     }
     const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+    const telegram = this.deps.telegram;
     const notify = async (msg: string) => {
       if (sourceMessageId !== undefined) {
-        await this.deps.telegram.editMessageText(chatId, sourceMessageId, msg, []).catch(async () => {
-          await this.deps.telegram.sendMessage(chatId, msg);
+        await telegram.editMessageText(chatId, sourceMessageId, msg, []).catch(async () => {
+          await telegram.sendMessage(chatId, msg);
         });
       } else {
-        await this.deps.telegram.sendMessage(chatId, msg);
+        await telegram.sendMessage(chatId, msg);
       }
     };
 

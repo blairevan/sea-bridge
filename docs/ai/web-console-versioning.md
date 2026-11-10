@@ -1,5 +1,11 @@
 # Sea-Bridge 版本规则
 
+## v1.3.2
+
+- 对齐 Web 端与 Telegram 端的 Antigravity 桌面端会话交互（P4）：
+  1. **Web 输入框与状态栏对齐**：当 `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=true` 且桌面端会话属于允许项目时，解除 Web 端 Composer 的硬编码只读锁定（移除 `Antigravity 桌面端会话（只读） · 暂不支持从 Web 发送消息` 与输入框禁用状态），支持从 Web 直接续聊桌面端会话并切换模型/思考等级；仅对未开启 P4 或未匹配允许项目的桌面端会话保留只读提示。
+  2. **运行态与轮次结束后桌面端刷新对齐**：运行中的可写桌面端会话保持 `Antigravity · 桌面端` 标识与执行态展示；从 Web 发起的桌面端会话轮次结束后，同样触发 `AntigravityDesktopAppController` 自动重启/刷新 `Antigravity.app`（或其它桌面会话运行中推送 Telegram 手动刷新按钮）。
+
 ## v1.3.0
 
 - 新增 Antigravity ACP 全链路接入（P0–P4）：

@@ -285,4 +285,67 @@ describe("AntigravityDesktopAppController", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  test("refreshes Antigravity.app when a desktop session turn settles from Web without explicit markRefreshAfterTurn", async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "sea-bridge-agy-desktop-web-"));
+    try {
+      const stateDb = new StateDb(path.join(tmpDir, "state.db"));
+      const tgStore = new AntigravityTelegramStore(stateDb.db);
+      const tg = createFakeTelegram();
+
+      const sessionId = "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404";
+      const nativeProjectId = "43e4063c-f55e-4006-90df-7f7aea9ee9ad";
+      mkdirSync(path.join(tmpDir, "presence"), { recursive: true });
+      writeFileSync(path.join(tmpDir, "presence", `${sessionId}.lock`), "");
+
+      const summariesDb = new Database(path.join(tmpDir, "conversation_summaries.db"));
+      summariesDb.exec("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT);");
+      summariesDb
+        .prepare("INSERT INTO conversation_summaries (conversation_id, project_id) VALUES (?, ?)")
+        .run(sessionId, nativeProjectId);
+      summariesDb.close();
+
+      let desktopAppOpen = true;
+      const executedCommands: Array<{ cmd: string; args: string[] }> = [];
+
+      const controller = new AntigravityDesktopAppController({
+        desktopAppDataDir: tmpDir,
+        desktopReader: { listSessions: () => [] },
+        tgStore,
+        telegram: tg.client,
+        defaultChatId: "1001",
+        sleepFn: async () => {},
+        runCommand: async (cmd, args) => {
+          executedCommands.push({ cmd, args });
+          if (cmd === "lsof") {
+            return desktopAppOpen ? { exitCode: 1, stdout: "5921\n", stderr: "" } : { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (cmd === "pgrep") {
+            return desktopAppOpen ? { exitCode: 0, stdout: "5894\n", stderr: "" } : { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (cmd === "ps") {
+            return { exitCode: 0, stdout: "/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone\n", stderr: "" };
+          }
+          if (cmd === "osascript") {
+            desktopAppOpen = false;
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (cmd === "open") {
+            desktopAppOpen = true;
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      });
+
+      await controller.onDesktopTurnSettled(sessionId);
+      expect(executedCommands.some((c) => c.cmd === "osascript")).toBe(true);
+      const openCmd = executedCommands.find((c) => c.cmd === "open");
+      expect(openCmd?.args).toContain(`antigravity://open?project=${nativeProjectId}`);
+
+      stateDb.close();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

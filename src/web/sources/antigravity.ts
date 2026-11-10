@@ -164,8 +164,12 @@ export class AntigravityWebSource implements WebSource {
         managed.sessionOrigin === "desktop" && this.deps.config.desktopReadEnabled
           ? this.deps.desktopReader.readHistory(id, limit)
           : null;
+      const effectiveSession =
+        desktopHistory?.sessionState === "running" && managed.status === "idle"
+          ? { ...managed, status: "running" as const }
+          : managed;
       return projectManagedWebHistory({
-        session: managed,
+        session: effectiveSession,
         records,
         pendingApprovals,
         executionControl,

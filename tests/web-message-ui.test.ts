@@ -1647,6 +1647,43 @@ test("Antigravity desktop read-only sessions disable composer input and show rea
   ui.syncComposerControl(1000);
   expect(elements.get("prompt").disabled).toBe(false);
   expect(elements.get("prompt").placeholder).toBe("输入消息…");
+
+  // P4-writable Antigravity desktop session unlocks composer input and hides read-only status (aligned with Telegram)
+  ui.state.caps = { antigravity: { sendEnabled: true } };
+  const writableDesktopSession = {
+    source: "antigravity",
+    id: "dcb877b7-5ce5-4c80-b5f9-a1d3b198a404",
+    projectId: "aitools",
+    state: "idle",
+    sendEnabled: true,
+    creationClient: { kind: "desktop", evidence: "explicit" },
+  };
+  expect(ui.sessionSourceLabel(writableDesktopSession)).toBe("Antigravity · 桌面端");
+  ui.state.selected = writableDesktopSession;
+  ui.syncComposerControl(1000);
+  expect(elements.get("prompt").disabled).toBe(false);
+  expect(elements.get("prompt").placeholder).toBe("输入消息…");
+  expect(elements.get("composer-session-status").hidden).toBe(true);
+  expect(elements.get("composer-session-status").textContent).toBe("");
+
+  elements.get("prompt").value = "从 Web 续聊桌面端会话";
+  ui.syncComposerControl(1000);
+  expect(elements.get("send-button").disabled).toBe(false);
+  expect(elements.get("send-button").dataset.mode).toBe("send");
+
+  // While a P4-writable desktop session is running, it stays labeled "桌面端" and shows running status instead of read-only
+  elements.get("prompt").value = "";
+  const runningDesktopSession = {
+    ...writableDesktopSession,
+    state: "running",
+    sendEnabled: false,
+  };
+  expect(ui.sessionSourceLabel(runningDesktopSession)).toBe("Antigravity · 桌面端");
+  ui.state.selected = runningDesktopSession;
+  ui.syncComposerControl(1000);
+  expect(elements.get("prompt").disabled).toBe(false);
+  expect(elements.get("composer-session-status").textContent).not.toContain("只读");
+  expect(elements.get("send-button").dataset.mode).toBe("interrupt");
 });
 
 test("Antigravity pending approval cards render options, submit decision once, and prevent duplicate clicks", async () => {

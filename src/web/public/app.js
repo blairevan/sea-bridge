@@ -45,11 +45,18 @@ if (taskLinkedThread && !/^[0-9a-f-]{36}$/i.test(taskLinkedThread)) taskLinkedTh
 function sourceDisplayName(source) {
   return source === "codex" ? "Codex" : source === "dsh" ? "dsh" : source === "antigravity" ? "Antigravity" : "未知来源";
 }
+/** Determine whether an Antigravity desktop session is strictly read-only rather than P4-writable or temporarily busy. */
+function isReadOnlyDesktopSession(session = state.selected) {
+  if (session?.source !== "antigravity" || session?.creationClient?.kind !== "desktop") return false;
+  if (session.sendEnabled) return false;
+  if (["running", "waiting_external_approval"].includes(session.state) && session.projectId && state.caps?.antigravity?.sendEnabled !== false) return false;
+  return true;
+}
 /** Display normalized creation evidence; pending is browser-only for a newly created session. */
 function sessionSourceLabel(session) {
   if (session.source === "antigravity") {
     const kind = session.creationClient?.kind;
-    const label = session.creationPending ? "创建来源待同步" : kind === "desktop" ? (session.sendEnabled ? "桌面端" : "桌面端（只读）") : kind === "sea_bridge" ? "Sea-Bridge 托管" : "创建来源未知";
+    const label = session.creationPending ? "创建来源待同步" : kind === "desktop" ? (!isReadOnlyDesktopSession(session) ? "桌面端" : "桌面端（只读）") : kind === "sea_bridge" ? "Sea-Bridge 托管" : "创建来源未知";
     return `Antigravity · ${label}`;
   }
   if (session.source !== "codex") return sourceDisplayName(session.source);
@@ -1130,7 +1137,7 @@ function sourceStatusCard(name, source) {
           : source.state === "protocol_incompatible" ? "协议不兼容"
             : "暂不可用";
   heading.append(node("h3", sourceDisplayName(name)), node("span", sourceStateLabel, "status-badge"));
-  card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : name === "antigravity" ? "ACP 托管会话与桌面端只读浏览" : "Host 会话与消息桥接", "muted"));
+  card.append(heading, node("p", name === "codex" ? "桌面会话与任务投递" : name === "antigravity" ? (source?.details?.externalWrite === "enabled" ? "ACP 托管与桌面端会话互通" : "ACP 托管会话与桌面端只读浏览") : "Host 会话与消息桥接", "muted"));
   const capabilities = node("div", "", "capability-grid");
   for (const [key, label] of [["sessionsReadable", "会话读取"], ["historyReadable", "历史读取"], ["projectsReadable", "项目目录"], ["modelsReadable", "模型目录"], ["createEnabled", "新建会话"], ["sendEnabled", "发送消息"]]) {
     const available = source?.capabilities?.[key]; const row = node("button", "", "capability-row capability-action"); row.type = "button"; row.disabled = available !== true;
@@ -1662,9 +1669,15 @@ async function loadHistory(older) {
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
   if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
+    const canRestoreAntigravitySend = state.selected.source === "antigravity"
+      && ["running", "waiting_external_approval"].includes(state.selected.state)
+      && result.sessionState === "idle"
+      && Boolean(state.caps?.antigravity?.sendEnabled)
+      && (state.selected.creationClient?.kind !== "desktop" || Boolean(state.selected.projectId));
     state.selected = {
       ...state.selected,
       state: result.sessionState,
+      ...(canRestoreAntigravitySend ? { sendEnabled: true } : {}),
       stateConfirmation: result.stateConfirmation ?? null,
       startedAt: result.activeTurnStartedAt,
       activeTurnItems: Array.isArray(result.activeTurnItems) ? result.activeTurnItems : [],
@@ -2052,7 +2065,7 @@ function modelControlDisabledReason(session, catalogReady, updating) {
 function syncComposerMetadata(session = state.selected) {
   const target = el("composer-session-meta"); if (!target) return;
   const source = session?.source;
-  const isManaged = source === "codex" || (source === "antigravity" && session?.creationClient?.kind !== "desktop");
+  const isManaged = source === "codex" || (source === "antigravity" && !isReadOnlyDesktopSession(session));
   const labels = (source === "codex" || source === "antigravity") ? composerMetadataLabels(session.sessionMeta) : [];
   const currentModel = isManaged ? session.sessionMeta?.model : null;
   const hasModelControl = Boolean(currentModel?.id && state.caps[source]?.modelUpdateEnabled && isManaged);
@@ -2190,7 +2203,7 @@ function exactInterruptTarget(session = state.selected) {
 /** Mirror Codex's single primary control: a draft means send; an empty active composer means stop. */
 function syncComposerControl(now = Date.now()) {
   const session = state.selected; const status = el("composer-session-status");
-  const isReadOnlyDesktop = session?.source === "antigravity" && session?.creationClient?.kind === "desktop";
+  const isReadOnlyDesktop = isReadOnlyDesktopSession(session);
   syncComposerMetadata(session);
   if (status) {
     if (isReadOnlyDesktop) {
@@ -2215,7 +2228,7 @@ function syncComposerControl(now = Date.now()) {
     if (isReadOnlyDesktop) {
       prompt.disabled = true;
       prompt.placeholder = "Antigravity 桌面端会话仅支持只读浏览，暂不支持从 Web 续聊";
-    } else if (prompt.disabled) {
+    } else if (prompt.disabled || prompt.placeholder !== "输入消息…") {
       prompt.disabled = false;
       prompt.placeholder = "输入消息…";
     }
