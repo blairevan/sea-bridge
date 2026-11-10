@@ -54,31 +54,24 @@ export class AntigravitySessionManager {
       if (!isValidAntigravitySessionId(sessionId)) { client.close(); return { state: "failed", sessionId: null, errorCode: "invalid_session_id" }; }
       boundSessionId = sessionId;
 
-      const effectiveModelId =
-        setupRes.configOptions?.find((c) => c.id === "model")?.currentValue ?? setupRes.models?.currentModelId ?? resolvedModel?.baseModelId ?? null;
-      const effectiveEffort =
-        setupRes.configOptions?.find((c) => c.id === "thought_level")?.currentValue ?? resolvedModel?.reasoningEffort ?? null;
+      const effectiveModelId = setupRes.configOptions?.find((c) => c.id === "model")?.currentValue ?? setupRes.models?.currentModelId ?? resolvedModel?.baseModelId ?? null;
+      const effectiveEffort = setupRes.configOptions?.find((c) => c.id === "thought_level")?.currentValue ?? resolvedModel?.reasoningEffort ?? null;
       const effectiveMode = setupRes.configOptions?.find((c) => c.id === "mode")?.currentValue ?? "default";
       const now = Date.now();
       const sessionRecord: AntigravitySessionRecord = {
-        sessionId, nativeSessionId: sessionId, sessionOrigin: "sea_bridge",
-        projectId: project.id, cwd: project.rootPath, title: input.prompt.trim().slice(0, 80) || sessionId,
-        modelId: effectiveModelId, reasoningEffort: effectiveEffort, modeId: effectiveMode,
-        status: "running", completeHistory: true, snapshotGeneration: 1,
+        sessionId, nativeSessionId: sessionId, sessionOrigin: "sea_bridge", projectId: project.id, cwd: project.rootPath,
+        title: input.prompt.trim().slice(0, 80) || sessionId, modelId: effectiveModelId, reasoningEffort: effectiveEffort,
+        modeId: effectiveMode, status: "running", completeHistory: true, snapshotGeneration: 1,
         lastExecutionId: null, lastExecutionEpoch: 0, createdAt: now, updatedAt: now,
       };
       this.deps.store.upsertSession(sessionRecord);
       input.onSessionKnown(sessionId);
       if (resolvedModel) {
         const applied = await this.applyModelConfig(client, sessionId, resolvedModel.baseModelId, resolvedModel.reasoningEffort);
-        sessionRecord.modelId = applied.modelId;
-        sessionRecord.reasoningEffort = applied.reasoningEffort;
-        sessionRecord.updatedAt = Date.now();
+        Object.assign(sessionRecord, { modelId: applied.modelId, reasoningEffort: applied.reasoningEffort, updatedAt: Date.now() });
         this.deps.store.upsertSession(sessionRecord);
       }
-      const actor: SessionActor = {
-        sessionId, cwd: project.rootPath, client, generation, retireWorkerAfterTurn: false, activeTurn: null, replaying: null,
-      };
+      const actor: SessionActor = { sessionId, cwd: project.rootPath, client, generation, retireWorkerAfterTurn: false, activeTurn: null, replaying: null };
       this.actors.set(sessionId, actor);
       return { state: "queued", sessionId, turnId: this.startAsyncPromptTurn(actor, sessionRecord, input.operationId, input.prompt) };
     } catch {
@@ -147,7 +140,7 @@ export class AntigravitySessionManager {
     const resolved = await this.deps.modelCatalog.resolveSelection(modelId, reasoningEffort);
     if (!resolved) throw new Error("invalid_model");
     if (actor?.client && !actor.client.identity().closed) await this.applyModelConfig(actor.client, sessionId, resolved.baseModelId, resolved.reasoningEffort);
-    this.deps.store.upsertSession({ ...session, modelId: resolved.baseModelId, reasoningEffort: resolved.reasoningEffort, updatedAt: Date.now() });
+    this.deps.store.upsertSession({ ...session, status: session.status === "unknown" ? "idle" : session.status, modelId: resolved.baseModelId, reasoningEffort: resolved.reasoningEffort, updatedAt: Date.now() });
     this.deps.onSessionEvent?.(sessionId);
     return { status: "updated", model: { id: resolved.baseModelId, displayName: resolved.displayName }, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) };
   }
@@ -199,13 +192,21 @@ export class AntigravitySessionManager {
     };
   }
 
-  /** Gracefully close all owned worker processes on shutdown. */
-  shutdown(): void {
+  /** Return whether the session currently has an in-flight turn or replay in memory. */
+  hasActiveTurn(sessionId: string): boolean {
+    const actor = this.actors.get(sessionId); return Boolean(actor?.activeTurn || actor?.replaying);
+  }
+
+  /** Wait up to `gracePeriodMs` for in-flight turns to settle, then close all owned worker processes. */
+  async shutdown(gracePeriodMs = 0): Promise<void> {
+    const deadline = Date.now() + Math.max(0, gracePeriodMs);
+    while (Date.now() < deadline && Array.from(this.actors.values()).some((a) => a.activeTurn || a.replaying)) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const now = Date.now();
     for (const [sessionId, actor] of this.actors.entries()) {
       this.deps.approvalBridge.cancelPendingForSession(sessionId, "service_shutdown", now);
-      actor.client?.close();
-      actor.client = null;
+      actor.client?.close(); actor.client = null;
     }
     this.actors.clear();
   }
@@ -336,7 +337,16 @@ export class AntigravitySessionManager {
     } else {
       if (!turn.accepted) this.deps.webStore?.transitionQueuedOperation(turn.operationId, "delivery_unknown", now, "worker_disconnected");
       if (exec) this.deps.store.upsertExecution({ ...exec, status: "unknown", errorCode: errorMessage, updatedAt: now });
-      if (sess) this.deps.store.upsertSession({ ...sess, status: "unknown", lastError: errorMessage, updatedAt: now });
+      if (sess) {
+        if (!turn.assistantText.trim()) {
+          this.deps.store.upsertMessage({
+            id: `${turn.executionId}-error`, sessionId: actor.sessionId, snapshotGeneration: sess.snapshotGeneration, seq: turn.seqCounter++,
+            role: "system", kind: "error", text: `本轮执行连接已中断（${errorMessage}），请检查操作结果或继续发送消息。`,
+            toolCallId: null, toolName: null, toolStatus: null, replayed: false, createdAt: now,
+          });
+        }
+        this.deps.store.upsertSession({ ...sess, status: "unknown", lastError: errorMessage, updatedAt: now });
+      }
     }
     actor.client?.close(); actor.client = null;
     if (sess?.sessionOrigin === "desktop") this.deps.onDesktopTurnSettled?.(actor.sessionId);

@@ -94,6 +94,11 @@ lsof -nP -iTCP:7310 -sTCP:LISTEN
 ### 3.1 已加载的服务重启
 
 ```bash
+# 从 Sea-Bridge 托管会话（Web / Telegram / ACP）内触发自重启时，必须使用脱离进程组的延迟重启脚本，
+# 避免同步 SIGTERM 强杀当前正在输出最终回复的子进程（导致 Worked for Xm 无文字回复 / acp_transport_closed）：
+bun run restart:detached
+
+# 仅在外部独立终端手动操作时，可执行同步重启：
 launchctl kickstart -k "gui/$(id -u)/com.aitools.sea-bridge"
 launchctl kickstart -k "gui/$(id -u)/com.example.sea-bridge-cloudflared"
 ```
