@@ -1,8 +1,14 @@
 "use strict";
-const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, interruptRequest: null, approvalRequest: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
+const state = { authEpoch: 0, viewEpoch: 0, streamSeq: 0, recoverySeq: 0, version: 0, settings: null, device: null, page: "overview", detailOpen: false, detailHistoryPushed: false, sessions: [], sessionCache: [], overviewSessions: [], catalogContext: null, selected: null, sessionCursor: null, historyCursor: null, recordCursor: null, records: [], recordFilterKey: null, recordChoice: null, recordSuggestions: [], recordSuggestSeq: 0, recordSuggestTimer: null, recordActiveIndex: -1, messages: [], caps: {}, stream: null, streamTimer: null, reconnectTimer: null, retryAttempt: 0, recovering: false, connectionDetail: "", lastConnectedAt: null, paused: true, busy: new Set(), pending: null, executionWatch: null, awaitingReply: null, interruptRequest: null, approvalRequest: null, followLatest: false, noticeState: { timer: null, seq: 0, durationMs: 6000, sticky: false, expanded: false, kind: "info", connection: false } };
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 20000;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+const SWIPE_BACK_MIN_X = 60;
+const SWIPE_BACK_MAX_Y = 48;
+const PULL_REFRESH_MIN_Y = 68;
+const PULL_REFRESH_MAX_X = 48;
+const GESTURE_MAX_DURATION_MS = 1000;
+let mobileGesture = null;
 const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", idle: "空闲", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
 
 
@@ -1029,13 +1035,47 @@ async function showPage(page, options = {}) {
   const push = options?.push ?? true;
   const updateUrl = options?.updateUrl ?? true;
   const target = VALID_PAGES.includes(page) ? page : "overview";
+  const sessionsEl = el("sessions");
+  const isDetailOpen = target === "sessions" && (options?.detailOpen !== undefined
+    ? Boolean(options.detailOpen)
+    : Boolean(sessionsEl?.classList?.contains?.("detail-open")));
+  if (target === "sessions" && options?.detailOpen !== undefined && sessionsEl?.classList) {
+    if (isDetailOpen) {
+      sessionsEl.classList.remove?.("browse-only");
+      sessionsEl.classList.add?.("detail-open");
+    } else {
+      sessionsEl.classList.remove?.("detail-open");
+    }
+  }
+  const previousDetailOpen = Boolean(state.detailOpen);
   state.page = target;
+  state.detailOpen = isDetailOpen;
   saveLastPage(target);
   if (updateUrl && typeof history !== "undefined" && typeof location !== "undefined") {
     const targetPath = "/" + target;
+    const historyState = target === "sessions" ? { page: target, detailOpen: isDetailOpen } : { page: target };
     if (location.pathname !== targetPath) {
-      if (push) history.pushState({ page: target }, "", targetPath);
-      else history.replaceState({ page: target }, "", targetPath);
+      if (push) {
+        if (target === "sessions" && isDetailOpen) {
+          history.pushState({ page: "sessions", detailOpen: false }, "", targetPath);
+          history.pushState(historyState, "", targetPath);
+          state.detailHistoryPushed = true;
+        } else {
+          history.pushState(historyState, "", targetPath);
+          state.detailHistoryPushed = false;
+        }
+      } else {
+        history.replaceState(historyState, "", targetPath);
+        state.detailHistoryPushed = false;
+      }
+    } else if (target === "sessions" && isDetailOpen !== previousDetailOpen) {
+      if (push && isDetailOpen) {
+        history.pushState(historyState, "", targetPath);
+        state.detailHistoryPushed = true;
+      } else {
+        history.replaceState(historyState, "", targetPath);
+        state.detailHistoryPushed = false;
+      }
     }
   }
   for (const name of VALID_PAGES) {
@@ -1044,6 +1084,34 @@ async function showPage(page, options = {}) {
   }
   document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.page === target));
   await refresh();
+}
+/** Exit the mobile conversation detail view back to the session list and synchronize browser history. */
+function closeSessionDetail(options = {}) {
+  const sessionsEl = el("sessions");
+  const wasOpen = Boolean(state.detailOpen || sessionsEl?.classList?.contains?.("detail-open"));
+  sessionsEl?.classList?.remove?.("detail-open");
+  state.detailOpen = false;
+  if (!wasOpen) return false;
+  if (options?.fromPopstate) {
+    state.detailHistoryPushed = false;
+    return true;
+  }
+  if (state.detailHistoryPushed && typeof history !== "undefined") {
+    state.detailHistoryPushed = false;
+    if (typeof history.back === "function") {
+      history.back();
+    } else if (typeof history.replaceState === "function") {
+      history.replaceState({ page: "sessions", detailOpen: false }, "", "/sessions");
+    }
+  }
+  return true;
+}
+/** Restore the active page and mobile session detail state on browser back or forward navigation. */
+function handlePopState(event) {
+  const target = event?.state?.page || pageFromPathname(typeof location !== "undefined" ? location.pathname : "/") || readDefaultPagePreference();
+  const detailOpen = target === "sessions" ? Boolean(event?.state?.detailOpen) : false;
+  state.detailHistoryPushed = detailOpen;
+  return run("page", () => showPage(target, { push: false, updateUrl: false, detailOpen }));
 }
 /** Refresh the active page only after authenticated settings validation. */
 async function refresh() {
@@ -1059,6 +1127,7 @@ async function refresh() {
         taskLinkedThread = null; state.selected = session; state.messages = []; state.historyCursor = null; state.followLatest = true;
         state.sessionCache = mergeSessionCache(state.sessionCache, [session]);
         el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open");
+        state.detailOpen = true;
       }
     }
     if (state.selected && !el("sessions").classList?.contains?.("browse-only")) await loadHistory(false);
@@ -2485,14 +2554,198 @@ async function confirmLogout() {
   showLogin();
 }
 
-document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
-historyTools = el("history-tools");
-el("notice-toggle").onclick = toggleNoticeExpanded;
 /** Share a single explicit recovery action between the shell and the create dialog. */
 function retryConnection() {
   if (state.recovering) return;
   cancelReconnectTimer(); scheduleReconnect(true);
 }
+
+/** Check whether a target node belongs to a container using DOM contains or parent chain traversal. */
+function isNodeInside(target, container) {
+  if (!target || !container) return false;
+  if (target === container) return true;
+  if (typeof container.contains === "function") return container.contains(target);
+  let current = target.parentElement ?? target.parentNode ?? null;
+  while (current) {
+    if (current === container) return true;
+    current = current.parentElement ?? current.parentNode ?? null;
+  }
+  return false;
+}
+
+/** Detect form controls or horizontally scrollable blocks that must not trigger swipe-back. */
+function isHorizontalScrollOrInputTarget(target) {
+  if (!target) return false;
+  if (typeof target.closest === "function") {
+    return Boolean(target.closest("textarea, input, select, .code-block, .table-scroll, .session-status-line"));
+  }
+  const tag = String(target.tagName || target.tag || "").toLowerCase();
+  if (["textarea", "input", "select", "pre"].includes(tag)) return true;
+  const cls = String(target.className || "");
+  return /\b(?:code-block|table-scroll|session-status-line)\b/.test(cls);
+}
+
+/** Detect form inputs or the composer area that must not trigger pull-to-refresh. */
+function isFormInputOrComposerTarget(target) {
+  if (!target) return false;
+  if (typeof target.closest === "function") {
+    return Boolean(target.closest("textarea, input, select, .composer, #send-form"));
+  }
+  const tag = String(target.tagName || target.tag || "").toLowerCase();
+  if (["textarea", "input", "select"].includes(tag)) return true;
+  if (isNodeInside(target, el("send-form"))) return true;
+  const cls = String(target.className || "");
+  return /\bcomposer\b/.test(cls);
+}
+
+/** Check whether any modal dialog is currently open. */
+function isAnyDialogOpen() {
+  for (const id of ["image-dialog", "turn-dialog", "catalog-dialog", "create-dialog"]) {
+    if (el(id)?.open) return true;
+  }
+  return false;
+}
+
+/** Resolve the active vertical scroll container for pull-to-refresh on the current view. */
+function resolvePullRefreshScroller(target, detailOpen) {
+  if (state.page === "sessions") {
+    if (detailOpen) {
+      const toolbar = el("session-detail")?.querySelector?.(".session-toolbar");
+      if (toolbar && isNodeInside(target, toolbar)) return { scrollTop: 0 };
+      return el("messages");
+    }
+    return el("sessions")?.querySelector?.(".session-list") ?? el("session-items");
+  }
+  return (typeof document !== "undefined" ? document.querySelector?.(".content") : null) ?? el(state.page);
+}
+
+/** Refresh the active console view or trigger reconnection on a completed pull-to-refresh gesture. */
+async function triggerPullRefresh() {
+  if (state.paused) {
+    retryConnection();
+    return true;
+  }
+  notice("正在刷新…", { durationMs: 2000 });
+  await run("refresh", refresh);
+  if (!state.paused && !state.noticeState.connection && el("notice-text")?.textContent === "正在刷新…") {
+    notice("已刷新", { kind: "success", durationMs: 1800 });
+  }
+  return true;
+}
+
+/** Record initial touch coordinates for mobile swipe-back and pull-to-refresh gestures. */
+function onMobileTouchStart(event, now = Date.now()) {
+  const width = typeof window !== "undefined" && Number.isFinite(window.innerWidth) ? window.innerWidth : 1024;
+  if (width > 760 || el("console")?.hidden || isAnyDialogOpen()) {
+    mobileGesture = null;
+    return;
+  }
+  const touches = event?.touches;
+  if (!touches || touches.length !== 1) {
+    mobileGesture = null;
+    return;
+  }
+  const touch = touches[0];
+  if (!touch || !Number.isFinite(touch.clientX) || !Number.isFinite(touch.clientY)) {
+    mobileGesture = null;
+    return;
+  }
+  const detailOpen = state.page === "sessions" && Boolean(state.detailOpen || el("sessions")?.classList?.contains?.("detail-open"));
+  const inSessionDetail = detailOpen && isNodeInside(event.target, el("session-detail"));
+  const canSwipeBack = inSessionDetail && !isHorizontalScrollOrInputTarget(event.target);
+  const scroller = resolvePullRefreshScroller(event.target, detailOpen);
+  const canPullRefresh = Boolean(scroller && (scroller.scrollTop ?? 0) <= 0) && !isFormInputOrComposerTarget(event.target);
+  if (!canSwipeBack && !canPullRefresh) {
+    mobileGesture = null;
+    return;
+  }
+  mobileGesture = {
+    startX: touch.clientX,
+    startY: touch.clientY,
+    currentX: touch.clientX,
+    currentY: touch.clientY,
+    startTime: now,
+    canSwipeBack,
+    canPullRefresh,
+    scroller,
+    moved: false,
+  };
+}
+
+/** Update touch movement and cancel gestures that deviate from their required axis. */
+function onMobileTouchMove(event) {
+  if (!mobileGesture) return;
+  const touches = event?.touches;
+  if (!touches || touches.length !== 1) {
+    mobileGesture = null;
+    return;
+  }
+  const touch = touches[0];
+  if (!touch || !Number.isFinite(touch.clientX) || !Number.isFinite(touch.clientY)) return;
+  mobileGesture.currentX = touch.clientX;
+  mobileGesture.currentY = touch.clientY;
+  mobileGesture.moved = true;
+  const dx = mobileGesture.currentX - mobileGesture.startX;
+  const dy = mobileGesture.currentY - mobileGesture.startY;
+  if (dx < -12 || (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12)) {
+    mobileGesture.canSwipeBack = false;
+  }
+  if (dy < -12 || (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 12) || (mobileGesture.scroller?.scrollTop ?? 0) > 0) {
+    mobileGesture.canPullRefresh = false;
+  }
+  if (!mobileGesture.canSwipeBack && !mobileGesture.canPullRefresh) {
+    mobileGesture = null;
+  }
+}
+
+/** Complete a mobile touch gesture, dispatching swipe-back or pull-to-refresh when thresholds are met. */
+function onMobileTouchEnd(event, now = Date.now()) {
+  if (!mobileGesture) return null;
+  const gesture = mobileGesture;
+  mobileGesture = null;
+  if (event?.changedTouches?.length === 1) {
+    const endTouch = event.changedTouches[0];
+    if (endTouch && Number.isFinite(endTouch.clientX) && Number.isFinite(endTouch.clientY)) {
+      gesture.currentX = endTouch.clientX;
+      gesture.currentY = endTouch.clientY;
+      if (gesture.currentX !== gesture.startX || gesture.currentY !== gesture.startY) gesture.moved = true;
+    }
+  }
+  if (!gesture.moved) return null;
+  const dx = gesture.currentX - gesture.startX;
+  const dy = gesture.currentY - gesture.startY;
+  const elapsed = now - gesture.startTime;
+  if (elapsed > GESTURE_MAX_DURATION_MS) return null;
+  if (
+    gesture.canSwipeBack &&
+    dx >= SWIPE_BACK_MIN_X &&
+    Math.abs(dy) <= SWIPE_BACK_MAX_Y &&
+    dx >= Math.abs(dy) * 1.5
+  ) {
+    closeSessionDetail();
+    return "swipe-back";
+  }
+  if (
+    gesture.canPullRefresh &&
+    (gesture.scroller?.scrollTop ?? 0) <= 0 &&
+    dy >= PULL_REFRESH_MIN_Y &&
+    Math.abs(dx) <= PULL_REFRESH_MAX_X &&
+    dy >= Math.abs(dx) * 1.5
+  ) {
+    void triggerPullRefresh();
+    return "pull-refresh";
+  }
+  return null;
+}
+
+/** Discard any in-progress mobile gesture when the touch sequence is canceled. */
+function onMobileTouchCancel() {
+  mobileGesture = null;
+}
+
+document.querySelectorAll("nav button").forEach((button) => { button.onclick = () => run("page", () => showPage(button.dataset.page)); });
+historyTools = el("history-tools");
+el("notice-toggle").onclick = toggleNoticeExpanded;
 el("notice-retry").onclick = retryConnection;
 el("create-retry").onclick = retryConnection;
 el("notice-close").onclick = clearNotice;
@@ -2558,7 +2811,7 @@ let searchTimer;
 el("session-search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(reloadSessionFilters, 300); };
 el("more-sessions").onclick = () => run("sessions", () => loadSessions(true));
 el("more-history").onclick = () => run("history", () => loadHistory(true));
-el("back-to-list").onclick = () => el("sessions").classList.remove("detail-open");
+el("back-to-list").onclick = () => closeSessionDetail();
 el("new-session").onclick = () => run("catalog", async () => { el("create-dialog").showModal(); await loadCatalogs(); });
 el("close-create").onclick = () => el("create-dialog").close();
 el("create-source").onchange = () => { resetProjectSearch(); el("create-project").replaceChildren(); run("catalog-" + el("create-source").value, loadCatalogs); };
@@ -2603,9 +2856,12 @@ window.addEventListener("pageshow", () => {
 window.addEventListener("online", () => { if (state.paused) { cancelReconnectTimer(); scheduleReconnect(true); } });
 window.addEventListener("offline", () => enterDisconnected());
 window.addEventListener("popstate", (event) => {
-  const target = event.state?.page || pageFromPathname(location.pathname) || readDefaultPagePreference();
-  run("page", () => showPage(target, { push: false, updateUrl: false }));
+  void handlePopState(event);
 });
+el("console").addEventListener("touchstart", (event) => onMobileTouchStart(event), { passive: true });
+el("console").addEventListener("touchmove", (event) => onMobileTouchMove(event), { passive: true });
+el("console").addEventListener("touchend", (event) => onMobileTouchEnd(event), { passive: true });
+el("console").addEventListener("touchcancel", () => onMobileTouchCancel(), { passive: true });
 setInterval(() => run("poll", refresh), 3000);
 el("auth-loading-retry").onclick = () => run("auth-check", checkInitialLogin);
 const initialRoute = resolveInitialPage();
