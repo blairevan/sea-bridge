@@ -95,9 +95,18 @@ export class AntigravityWebSource implements WebSource {
       const extInfo = isDesktopOrigin && this.deps.config.desktopReadEnabled
         ? this.deps.desktopReader.inspectExternalSession(rec.sessionId)
         : null;
-      const effectiveRec = extInfo?.externallyRunning && rec.status === "idle"
-        ? { ...rec, status: "running" as const }
-        : rec;
+      const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(rec.sessionId);
+      let effectiveRec = rec;
+      if (extInfo?.externallyRunning && (rec.status === "idle" || rec.status === "unknown")) {
+        effectiveRec = { ...rec, status: "running" as const };
+      } else if (
+        rec.status === "unknown" &&
+        !hasActiveTurn &&
+        (!isDesktopOrigin || (extInfo?.found && !extInfo.externallyRunning))
+      ) {
+        effectiveRec = { ...rec, status: "idle" as const };
+        this.deps.store.upsertSession(effectiveRec);
+      }
       const canWrite = isDesktopOrigin
         ? Boolean(this.deps.config.writeEnabled && this.deps.config.externalSessionsEnabled && rec.projectId !== null)
         : this.deps.config.writeEnabled;
@@ -164,10 +173,18 @@ export class AntigravityWebSource implements WebSource {
         managed.sessionOrigin === "desktop" && this.deps.config.desktopReadEnabled
           ? this.deps.desktopReader.readHistory(id, limit)
           : null;
-      const effectiveSession =
-        desktopHistory?.sessionState === "running" && managed.status === "idle"
-          ? { ...managed, status: "running" as const }
-          : managed;
+      const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(id);
+      let effectiveSession = managed;
+      if (desktopHistory?.sessionState === "running" && (managed.status === "idle" || managed.status === "unknown")) {
+        effectiveSession = { ...managed, status: "running" as const };
+      } else if (
+        managed.status === "unknown" &&
+        !hasActiveTurn &&
+        (managed.sessionOrigin !== "desktop" || desktopHistory?.sessionState === "idle")
+      ) {
+        effectiveSession = { ...managed, status: "idle" as const };
+        this.deps.store.upsertSession(effectiveSession);
+      }
       return projectManagedWebHistory({
         session: effectiveSession,
         records,

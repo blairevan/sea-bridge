@@ -1,5 +1,12 @@
 # Sea-Bridge 版本规则
 
+## v1.3.3
+
+- 新增 Antigravity 轮次中断防护、停机优雅等待与 `unknown` 状态自动自愈：
+  1. **脱离进程组的延迟自重启脚本（`scripts/restart-sea-bridge.sh`）**：提供 `bun run restart:detached`，默认以 `nohup` 脱离进程组延迟 4 秒重启 `com.aitools.sea-bridge`，防止在托管会话内执行重启时同步触发 `SIGTERM` 强杀正在输出最终回复的 `agy acp` 子进程。
+  2. **停机优雅等待窗口与中断兜底提示**：`AntigravitySessionManager.shutdown(gracePeriodMs)` 支持等待正在收尾的活跃轮次自然落盘；当轮次因 `acp_transport_closed` 等异常中断且尚未生成文本回复时，自动写入系统错误消息避免出现无文字响应的空白轮次。
+  3. **`unknown` 状态自动自愈**：当会话在无活跃 worker 且桌面端已处于空闲态时，`AntigravityWebSource` 自动将残留的 `unknown` 状态恢复为 `idle`。
+
 ## v1.3.2
 
 - 对齐 Web 端与 Telegram 端的 Antigravity 桌面端会话交互（P4）：

@@ -183,7 +183,7 @@ export function createAntigravityRuntime(
     async stop(): Promise<void> {
       await activeObserver?.stop();
       activeObserver = null;
-      sessionManager.shutdown();
+      await sessionManager.shutdown(4000);
     },
   };
 }

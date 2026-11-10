@@ -1,6 +1,6 @@
 {
   "name": "sea-bridge",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "typecheck": "bunx tsc --noEmit",
     "build": "bun run scripts/build.ts",
     "dsh-connector:check": "./scripts/install-dsh-connector.sh check",
-    "dsh-connector:install": "./scripts/install-dsh-connector.sh install"
+    "dsh-connector:install": "./scripts/install-dsh-connector.sh install",
+    "restart:detached": "./scripts/restart-sea-bridge.sh"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

@@ -338,6 +338,25 @@ describe("P4 Antigravity Desktop & CLI External Session Write Interoperability",
         provider: "antigravity",
         result: { status: "delivered", sessionId: deskIdleId },
       });
+
+      // Wait for second async turn to settle
+      for (let i = 0; i < 40; i++) {
+        if (!mgrEnabled.hasActiveTurn(deskIdleId)) break;
+        await Bun.sleep(10);
+      }
+
+      // If an adopted desktop session was marked status="unknown" (e.g. acp_transport_closed),
+      // sessions() and history() auto-heal it back to "idle" once no turn is active and desktop is idle
+      const currentRec = store.getSession(deskIdleId)!;
+      store.upsertSession({ ...currentRec, status: "unknown", lastError: "acp_transport_closed" });
+      const healedSessions = await webSourceEnabled.sessions();
+      expect(healedSessions.find((s) => s.id === deskIdleId)?.state).toBe("idle");
+      expect(store.getSession(deskIdleId)?.status).toBe("idle");
+
+      store.upsertSession({ ...currentRec, status: "unknown", lastError: "acp_transport_closed" });
+      const healedHistory = await webSourceEnabled.history(deskIdleId, null, 50);
+      expect(healedHistory.sessionState).toBe("idle");
+      expect(store.getSession(deskIdleId)?.status).toBe("idle");
     } finally {
       state.close();
       rmSync(tempRoot, { recursive: true, force: true });

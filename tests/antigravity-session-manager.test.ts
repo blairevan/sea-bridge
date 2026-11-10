@@ -274,4 +274,104 @@ describe("AntigravitySessionManager", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("waits for active turns during graceful shutdown and records a system error message when a turn fails without assistant text", async () => {
+    const db = new Database(":memory:");
+    try {
+      migrateAntigravityBridgeTables(db);
+      const store = new AntigravityStore(db);
+      const approvalBridge = new AntigravityApprovalBridge(store);
+      const capabilityGate = new AntigravityCapabilityGate({ enabled: true, writeEnabled: true, desktopReadEnabled: true });
+      const modelCatalog = new AntigravityModelCatalog({
+        cliPath: "/Users/zhuhaijun/.local/bin/agy",
+        runner: async () => modelsFixture,
+      });
+
+      let resolvePrompt!: (value: { stopReason: string }) => void;
+      let rejectPrompt!: (reason?: unknown) => void;
+      let currentCallbacks!: AcpClientCallbacks;
+      let currentGeneration = 0;
+
+      const manager = new AntigravitySessionManager({
+        store,
+        approvalBridge,
+        capabilityGate,
+        modelCatalog,
+        cliPath: "/bin/echo",
+        getAllowedProjects: () => [{ id: "proj-1", name: "SeaBridge", rootPath: "/opt/app/aitools/sea-bridge" }],
+        clientFactory: (generation, _cwd, callbacks) => {
+          currentGeneration = generation;
+          currentCallbacks = callbacks;
+          return {
+            start() {},
+            identity: () => ({ pid: 4000 + generation, startedAt: Date.now(), generation, closed: false }),
+            initialize: async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, close: {} } },
+            }),
+            sessionNew: async () => ({ sessionId: "9d3547fd-5f23-4178-b143-38a82ad31d85" }),
+            sessionResume: async (sessionId: string) => ({ sessionId }),
+            prompt: () => ({
+              rpcRequestId: "1",
+              promise: new Promise((resolve, reject) => {
+                resolvePrompt = resolve;
+                rejectPrompt = reject;
+              }),
+            }),
+            close: () => {
+              rejectPrompt?.(new Error("acp_transport_closed"));
+            },
+          } as unknown as AcpClient;
+        },
+      });
+
+      const sessionId = "9d3547fd-5f23-4178-b143-38a82ad31d85";
+      const createRes = await manager.create({
+        operationId: "op-grace-1",
+        projectId: "proj-1",
+        modelId: null,
+        prompt: "Deploy and reply",
+        onSessionKnown: () => {},
+      });
+      expect(createRes.state).toBe("queued");
+      expect(manager.hasActiveTurn(sessionId)).toBe(true);
+
+      // Finish turn 80ms after shutdown starts; graceful shutdown (500ms) waits for completion instead of aborting
+      setTimeout(() => {
+        currentCallbacks.onSessionUpdate?.(
+          {
+            sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Completed before shutdown deadline" } },
+          },
+          currentGeneration
+        );
+        resolvePrompt({ stopReason: "end_turn" });
+      }, 80);
+
+      await manager.shutdown(500);
+      expect(manager.hasActiveTurn(sessionId)).toBe(false);
+      expect(store.getExecution(createRes.turnId!)?.status).toBe("completed");
+      expect(store.getSession(sessionId)?.status).toBe("idle");
+
+      // Next turn fails mid-tool with acp_transport_closed and no assistant text -> records system error message
+      const sendRes = await manager.send(sessionId, "op-fail-1", "Run tool only");
+      expect(sendRes.state).toBe("queued");
+      currentCallbacks.onSessionUpdate?.(
+        {
+          sessionId,
+          update: { sessionUpdate: "tool_call", toolCallId: "tc-deploy", name: "run_command", title: "Deploy service", status: "in_progress" },
+        },
+        currentGeneration
+      );
+      rejectPrompt(new Error("acp_transport_closed"));
+      await new Promise((r) => setTimeout(r, 15));
+
+      expect(store.getSession(sessionId)?.status).toBe("unknown");
+      const messages = store.listMessages(sessionId);
+      const sysErr = messages.find((m) => m.role === "system" && m.kind === "error");
+      expect(sysErr?.text).toContain("acp_transport_closed");
+    } finally {
+      db.close();
+    }
+  });
 });
