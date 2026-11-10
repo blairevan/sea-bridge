@@ -530,8 +530,94 @@ function renderActionPills(container, text) {
   container.append(row); return container;
 }
 
-/** Render assistant final text and attach only non-executing visible shortcuts. */
+/** Render an interactive Codex Desktop-style question card with option selection and direct send. */
+function renderQuestionCard(message) {
+  const questions = Array.isArray(message.questions) ? message.questions : [];
+  const card = node("section", "", "question-card");
+  card.setAttribute?.("aria-label", "问题确认卡片");
+  const header = node("div", "", "question-card-header");
+  header.append(node("span", "?", "question-card-badge"), node("strong", "问题", "question-card-heading"));
+  card.append(header);
+
+  const selectedAnswers = questions.map((q) => (Array.isArray(q?.options) && q.options.length > 0 ? String(q.options[0]) : ""));
+  let sendBtn = null;
+  const syncSendState = () => {
+    const answer = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+    if (!sendBtn) return;
+    if (sendBtn.dataset) sendBtn.dataset.hasSelection = answer ? "true" : "";
+    sendBtn.disabled = Boolean(state.paused || !state.selected?.sendEnabled || state.pending || !answer);
+  };
+
+  questions.forEach((q, qIndex) => {
+    if (!q || typeof q.title !== "string") return;
+    const group = node("div", "", "question-card-group");
+    const titleNode = renderMarkdown(q.title);
+    titleNode.className = "markdown question-card-title";
+    group.append(titleNode);
+
+    const options = Array.isArray(q.options) ? q.options.filter((opt) => typeof opt === "string" && opt.trim()) : [];
+    if (options.length > 0) {
+      const list = node("div", "", "question-option-list");
+      list.setAttribute?.("role", "radiogroup");
+      const optionButtons = [];
+      const selectOption = (optIndex) => {
+        selectedAnswers[qIndex] = options[optIndex] ?? "";
+        optionButtons.forEach((btn, idx) => {
+          const active = idx === optIndex;
+          btn.className = active ? "question-option-btn selected" : "question-option-btn";
+          btn.setAttribute?.("aria-checked", String(active));
+        });
+        syncSendState();
+      };
+      options.forEach((opt, optIndex) => {
+        const btn = node("button", "", optIndex === 0 ? "question-option-btn selected" : "question-option-btn");
+        btn.type = "button";
+        btn.setAttribute?.("role", "radio");
+        btn.setAttribute?.("aria-checked", String(optIndex === 0));
+        btn.append(
+          node("span", String(optIndex + 1), "question-option-index"),
+          node("span", opt, "question-option-label"),
+        );
+        btn.onclick = () => selectOption(optIndex);
+        optionButtons.push(btn);
+        list.append(btn);
+      });
+      group.append(list);
+    }
+    card.append(group);
+  });
+
+  const footer = node("div", "", "question-card-footer");
+  const customBtn = node("button", "✎ 或自行撰写回复", "question-custom-btn quiet");
+  customBtn.type = "button";
+  customBtn.onclick = () => {
+    const prompt = el("prompt"); if (!prompt) return;
+    if (!String(prompt.value || "").trim()) {
+      const current = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+      if (current) prompt.value = current;
+    }
+    prompt.focus?.(); resizeComposer(); syncComposerControl();
+  };
+  const actions = node("div", "", "question-card-actions");
+  sendBtn = node("button", "发送", "question-send-btn");
+  sendBtn.type = "button";
+  syncSendState();
+  sendBtn.onclick = () => {
+    const answer = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+    if (!answer) return;
+    run("write", () => submitWrite(false, answer));
+  };
+  actions.append(sendBtn);
+  footer.append(customBtn, actions);
+  card.append(footer);
+  return card;
+}
+
+/** Render assistant final text, interactive question cards, and non-executing visible shortcuts. */
 function renderAssistantMessage(message) {
+  if (Array.isArray(message.questions) && message.questions.length > 0) {
+    return renderQuestionCard(message);
+  }
   const visible = messageDisplayText(message);
   return renderActionPills(renderMarkdown(visible), visible);
 }
@@ -1603,13 +1689,13 @@ async function loadHistory(older) {
   const nearBottom = container.scrollHeight - container.clientHeight - scroll < 100;
   const follow = !older && (!hadMessages || state.followLatest || nearBottom);
   const unchanged = hadMessages && previousMessages.length === state.messages.length && previousMessages.every((message, index) => {
-    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt && message.deliveryState === next.deliveryState && message.queueStatusText === next.queueStatusText;
+    const next = state.messages[index]; return message.id === next.id && message.text === next.text && message.role === next.role && message.createdAt === next.createdAt && message.deliveryState === next.deliveryState && message.queueStatusText === next.queueStatusText && JSON.stringify(message.questions) === JSON.stringify(next.questions);
   });
   if (!unchanged) {
     const visibleKeys = new Set(); const items = [];
     for (const message of state.messages) {
       const key = JSON.stringify([session.source, session.id, message.id]); visibleKeys.add(key);
-      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState, message.queueStatusText, message.durationMs]);
+      const signature = JSON.stringify([message.role, message.text, message.createdAt, message.deliveryState, message.queueStatusText, message.durationMs, message.questions]);
       let view = messageViews.get(key);
       if (!view || view.signature !== signature) {
         const item = node("div", "", "message " + message.role);
@@ -2120,7 +2206,11 @@ function syncComposerControl(now = Date.now()) {
             : sessionStateLabel(session);
     }
   }
-  const send = el("send-button"); const prompt = el("prompt"); if (!send) return;
+  const send = el("send-button"); const prompt = el("prompt");
+  for (const btn of el("messages")?.querySelectorAll?.(".question-send-btn") ?? []) {
+    btn.disabled = Boolean(state.paused || !session?.sendEnabled || state.pending || !btn.dataset?.hasSelection);
+  }
+  if (!send) return;
   if (prompt) {
     if (isReadOnlyDesktop) {
       prompt.disabled = true;
@@ -2236,15 +2326,17 @@ async function refreshExecutionStatus() {
   showOperation(operation, false);
 }
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
-async function submitWrite(create) {
+async function submitWrite(create, promptOverride = undefined) {
   const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   const session = state.selected; if (!create && !session) return;
   if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
+  const promptText = typeof promptOverride === "string" ? promptOverride : (create ? el("create-prompt").value : el("prompt").value);
+  if (!create && !String(promptText || "").trim()) return;
   const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
   const reasoningEffort = create ? (el("create-reasoning-effort")?.value || null) : null;
-  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), prompt: el("create-prompt").value } : { operationId, prompt: el("prompt").value };
+  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), prompt: promptText } : { operationId, prompt: promptText };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
-  if (!create) setComposerStatus("发送中…");
+  if (!create) { setComposerStatus("发送中…"); syncComposerControl(); }
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;

@@ -218,6 +218,56 @@ function isProtocolUnsupported(error: unknown): boolean {
 }
 
 /** Long-lived, query-only Codex app-server client. */
+/** Structured interactive question prompt emitted by Codex during a turn. */
+export interface CodexQuestionPrompt {
+  title: string;
+  options: string[];
+}
+
+export const CODEX_QUESTION_BLOCK_MARKER = "❓ 问题：";
+
+/** Normalize structured question prompts from Codex turn items. */
+function normalizeCodexQuestions(raw: unknown): CodexQuestionPrompt[] {
+  if (!Array.isArray(raw)) return [];
+  const result: CodexQuestionPrompt[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const title = boundedString(item.title, 100_000)?.trim()
+      ?? boundedString(item.question, 100_000)?.trim()
+      ?? "";
+    if (!title) continue;
+    const options = Array.isArray(item.options)
+      ? item.options.flatMap((opt: unknown) => {
+          if (typeof opt === "string") {
+            const text = boundedString(opt, 10_000)?.trim();
+            return text ? [text] : [];
+          }
+          if (opt && typeof opt === "object") {
+            const label = boundedString((opt as Record<string, unknown>).label, 10_000)?.trim();
+            return label ? [label] : [];
+          }
+          return [];
+        })
+      : [];
+    result.push({ title, options });
+  }
+  return result;
+}
+
+/** Format structured question prompts into a canonical Telegram-friendly block. */
+export function formatCodexQuestionsBlock(questions: readonly CodexQuestionPrompt[]): string | null {
+  if (questions.length === 0) return null;
+  const sections = questions.map((q) => {
+    const lines = [q.title];
+    q.options.forEach((opt, index) => {
+      lines.push(`${index + 1}. ${opt}`);
+    });
+    return lines.join("\n");
+  });
+  return `${CODEX_QUESTION_BLOCK_MARKER}\n${sections.join("\n\n")}`;
+}
+
 export class CodexReadService {
   private readonly requestTimeoutMs: number;
   private readonly spawner: ProcessSpawner;
@@ -418,6 +468,7 @@ export class CodexReadService {
     let finalAnswer: string | null = null;
     let legacyCandidate: string | null = null;
     let sawPhasedAgentMessage = false;
+    const questionPrompts: CodexQuestionPrompt[] = [];
     for (const entry of entries) {
       const item = entry && typeof entry === "object" && "item" in entry
         ? (entry as { item?: unknown }).item
@@ -428,6 +479,11 @@ export class CodexReadService {
       const hasPhase = Object.prototype.hasOwnProperty.call(record, "phase");
       const phase = record.phase;
       if (hasPhase) sawPhasedAgentMessage = true;
+      const questions = normalizeCodexQuestions(record.questions);
+      if (questions.length > 0) {
+        questionPrompts.push(...questions);
+        continue;
+      }
       const text = boundedString(record.text, 1_000_000)?.trim();
       if (!text) continue;
       if (phase === "final_answer") {
@@ -442,7 +498,10 @@ export class CodexReadService {
       // whole agent-message stream is phase-less; mixed modern/legacy data fails closed.
       legacyCandidate = text;
     }
-    return finalAnswer ?? (sawPhasedAgentMessage ? null : legacyCandidate);
+    const baseAnswer = finalAnswer ?? (sawPhasedAgentMessage ? null : legacyCandidate);
+    const questionsBlock = formatCodexQuestionsBlock(questionPrompts);
+    if (baseAnswer && questionsBlock) return `${baseAnswer}\n\n${questionsBlock}`;
+    return questionsBlock ?? baseAnswer;
   }
 
   async listProjects(): Promise<ProjectItem[]> {

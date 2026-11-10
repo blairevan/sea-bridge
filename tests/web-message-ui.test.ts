@@ -1808,3 +1808,66 @@ test("Antigravity active execution interrupt submits expectedExecutionId and exp
   });
   expect(ui.state.selected.sessionMeta.reasoningEffort).toBe("high");
 });
+
+test("interactive question card renders numbered options, supports option switching, and submits the selected answer", async () => {
+  const script = await Bun.file("src/web/public/app.js").text();
+  const end = script.indexOf('\ndocument.querySelectorAll("nav button").forEach');
+  const nodes = new Map<string, ElementFixture>();
+  const get = (id: string) => {
+    if (!nodes.has(id)) nodes.set(id, new ElementFixture("div"));
+    return nodes.get(id)!;
+  };
+  const promptEl = get("prompt") as ElementFixture & { value?: string; focus?: () => void };
+  promptEl.value = "未发送草稿";
+  const submittedPrompts: string[] = [];
+  const ui = runInNewContext(script.slice(0, end) + `
+    resizeComposer = () => {};
+    syncComposerControl = () => {};
+    submitWrite = async (_create, promptOverride) => { submittedPrompts.push(promptOverride); };
+    ({ state, renderAssistantMessage })`, {
+    submittedPrompts,
+    document: {
+      getElementById: get,
+      createElement: (tag: string) => new ElementFixture(tag),
+      createTextNode: (text: string) => { const value = new ElementFixture("#text"); value.textContent = text; return value; },
+    },
+  }) as {
+    state: { paused: boolean; selected: { id: string; source: string; sendEnabled: boolean }; pending: unknown };
+    renderAssistantMessage: (message: { role: string; text: string; questions?: Array<{ title: string; options?: string[] }> }) => ElementFixture;
+  };
+  ui.state.paused = false;
+  ui.state.selected = { id: "thread-1", source: "codex", sendEnabled: true };
+  ui.state.pending = null;
+
+  const card = ui.renderAssistantMessage({
+    role: "assistant",
+    text: "是否授权本次 Git 交付？",
+    questions: [
+      {
+        title: "是否授权本次 Git 交付？",
+        options: [
+          "授权提交、推送、创建并合并 PR（推荐）",
+          "仅授权两仓库本地提交",
+          "暂缓 Git 交付，保留现有成果",
+        ],
+      },
+    ],
+  });
+  expect(card.className).toBe("question-card");
+  const allNodes = flatten(card);
+  const optionButtons = allNodes.filter((item) => item.className.split(/\s+/).includes("question-option-btn"));
+  expect(optionButtons).toHaveLength(3);
+  expect(optionButtons[0]?.className).toContain("selected");
+  expect(optionButtons[1]?.className).not.toContain("selected");
+
+  // Select option 2 and click send
+  optionButtons[1]?.onclick?.();
+  expect(optionButtons[0]?.className).not.toContain("selected");
+  expect(optionButtons[1]?.className).toContain("selected");
+
+  const sendBtn = allNodes.find((item) => item.className.split(/\s+/).includes("question-send-btn"));
+  if (!sendBtn?.onclick) throw new Error("question send button missing");
+  sendBtn.onclick();
+  expect(submittedPrompts).toEqual(["仅授权两仓库本地提交"]);
+  expect(promptEl.value).toBe("未发送草稿");
+});

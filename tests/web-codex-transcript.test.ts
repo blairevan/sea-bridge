@@ -290,3 +290,86 @@ test("readCodexActivity extracts live commentary and tool items for active turns
     });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("readCodexTranscript extracts interactive question cards and unwraps desktop question reply envelopes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "web-question-card-"));
+  try {
+    const file = join(root, "fixture.jsonl");
+    const lines = [
+      JSON.stringify({
+        timestamp: "2026-11-09T09:50:11.630Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          thread_id: "thread-q",
+          turn_id: "turn-q",
+          item: {
+            type: "AgentMessage",
+            id: "call_q1",
+            content: [{ type: "Text", text: "是否授权本次 Git 交付？\n- 授权提交、推送、创建并合并 PR（推荐）\n- 仅授权两仓库本地提交\n- 暂缓 Git 交付，保留现有成果" }],
+            phase: "final_answer",
+            delivery: "async",
+            questions: [
+              {
+                title: "是否授权本次 Git 交付？",
+                options: [
+                  "授权提交、推送、创建并合并 PR（推荐）",
+                  "仅授权两仓库本地提交",
+                  "暂缓 Git 交付，保留现有成果",
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-11-09T09:50:22.495Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "**Summary**\n\n本地 API 已保留运行。" }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-11-09T09:51:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<send_user_message_question_reply>\n[{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"call_q1\\\",0]\",\"question\":\"是否授权本次 Git 交付？\",\"answer\":\"授权提交、推送、创建并合并 PR（推荐）\"}]\n</send_user_message_question_reply>",
+            },
+          ],
+        },
+      }),
+    ].join("\n") + "\n";
+    writeFileSync(file, lines);
+    const transcript = await readCodexTranscript(file, [root], null, 10);
+    expect(transcript.messages).toHaveLength(3);
+    expect(transcript.messages[0]).toMatchObject({
+      role: "assistant",
+      questions: [
+        {
+          title: "是否授权本次 Git 交付？",
+          options: [
+            "授权提交、推送、创建并合并 PR（推荐）",
+            "仅授权两仓库本地提交",
+            "暂缓 Git 交付，保留现有成果",
+          ],
+        },
+      ],
+    });
+    expect(transcript.messages[1]).toMatchObject({
+      role: "assistant",
+      text: "**Summary**\n\n本地 API 已保留运行。",
+    });
+    expect(transcript.messages[2]).toMatchObject({
+      role: "user",
+      text: "授权提交、推送、创建并合并 PR（推荐）",
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

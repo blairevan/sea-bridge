@@ -2,7 +2,7 @@ import { parseTurnTiming, replyDurations, type TurnTimingRecord } from "./turn-d
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import { relative, isAbsolute } from "node:path";
-import type { WebHistory, WebMessage } from "./sources/types.ts";
+import type { WebHistory, WebMessage, WebQuestionPrompt } from "./sources/types.ts";
 
 const READ_WINDOW_BYTES = 4 * 1024 * 1024;
 const MAX_MESSAGE_RECORD_BYTES = 10 * 1024 * 1024;
@@ -131,7 +131,61 @@ function userMessageText(text: string): string {
     }
     break;
   }
-  return consumed ? text.slice(skipWhitespace(text, cursor)) : text;
+  const remaining = consumed ? text.slice(skipWhitespace(text, cursor)) : text;
+  return unwrapQuestionReplyEnvelope(remaining);
+}
+
+/** Unwrap Codex Desktop's structured question reply envelope into readable user answer text. */
+function unwrapQuestionReplyEnvelope(text: string): string {
+  const end = consumeRuntimeBlock(text, 0, "send_user_message_question_reply");
+  if (end === null) return text;
+  const start = skipWhitespace(text, 0);
+  const jsonText = text.slice(start + "<send_user_message_question_reply>".length, end - "</send_user_message_question_reply>".length).trim();
+  const trailing = text.slice(skipWhitespace(text, end));
+  try {
+    const parsed: unknown = JSON.parse(jsonText);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const answers = parsed.flatMap((entry: unknown) => {
+        if (!entry || typeof entry !== "object") return [];
+        const record = entry as Record<string, unknown>;
+        return typeof record.answer === "string" && record.answer.trim() ? [record.answer.trim()] : [];
+      });
+      if (answers.length > 0) {
+        return trailing ? `${answers.join("\n")}\n\n${trailing}` : answers.join("\n");
+      }
+    }
+  } catch {
+    // Fall back to the original text if the envelope payload is not valid JSON.
+  }
+  return text;
+}
+
+/** Normalize structured interactive question prompts from Codex rollout items. */
+function normalizeQuestionPrompts(raw: unknown): WebQuestionPrompt[] {
+  if (!Array.isArray(raw)) return [];
+  const result: WebQuestionPrompt[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const title = typeof item.title === "string" && item.title.trim()
+      ? item.title.trim()
+      : typeof item.question === "string" && item.question.trim()
+        ? item.question.trim()
+        : "";
+    if (!title) continue;
+    const options = Array.isArray(item.options)
+      ? item.options.flatMap((opt: unknown) => {
+          if (typeof opt === "string" && opt.trim()) return [opt.trim()];
+          if (opt && typeof opt === "object" && typeof (opt as Record<string, unknown>).label === "string") {
+            const label = ((opt as Record<string, unknown>).label as string).trim();
+            return label ? [label] : [];
+          }
+          return [];
+        })
+      : [];
+    result.push(options.length > 0 ? { title, options } : { title });
+  }
+  return result;
 }
 
 /** Project one terminal turn error without exposing structured error details or arbitrary payload fields. */
@@ -145,7 +199,7 @@ function terminalErrorMessage(payload: Record<string, unknown>): string | null {
   return text ? text.slice(0, 4000) : null;
 }
 
-/** Parse only user/final assistant text plus the canonical terminal turn error. */
+/** Parse only user/final assistant text, interactive question cards, plus the canonical terminal turn error. */
 function visibleMessage(line: string, offset: number, includeImages = false): WebMessage | null {
   let record: unknown;
   try { record = JSON.parse(line); } catch { return null; }
@@ -153,8 +207,38 @@ function visibleMessage(line: string, offset: number, includeImages = false): We
   const row = record as Record<string, unknown>;
   const parsedTime = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
   if (row.type === "event_msg" && row.payload && typeof row.payload === "object") {
-    const text = terminalErrorMessage(row.payload as Record<string, unknown>);
-    return text ? { id: `rollout-${offset}`, role: "error", text, createdAt: Number.isFinite(parsedTime) ? parsedTime : null } : null;
+    const eventPayload = row.payload as Record<string, unknown>;
+    const errorText = terminalErrorMessage(eventPayload);
+    if (errorText) {
+      return { id: `rollout-${offset}`, role: "error", text: errorText, createdAt: Number.isFinite(parsedTime) ? parsedTime : null };
+    }
+    if (eventPayload.type === "item_completed" && eventPayload.item && typeof eventPayload.item === "object") {
+      const item = eventPayload.item as Record<string, unknown>;
+      if (item.type === "AgentMessage") {
+        const questions = normalizeQuestionPrompts(item.questions);
+        if (questions.length > 0) {
+          const contentText = Array.isArray(item.content)
+            ? item.content.flatMap((part: unknown) => {
+                if (!part || typeof part !== "object") return [];
+                const p = part as Record<string, unknown>;
+                return (p.type === "Text" || p.type === "output_text") && typeof p.text === "string" ? [p.text] : [];
+              }).join("").trim()
+            : "";
+          const fallbackText = questions
+            .map((q) => [q.title, ...(q.options ?? []).map((opt, idx) => `${idx + 1}. ${opt}`)].join("\n"))
+            .join("\n\n");
+          const text = contentText || fallbackText;
+          return {
+            id: `rollout-${offset}`,
+            role: "assistant",
+            text,
+            createdAt: Number.isFinite(parsedTime) ? parsedTime : null,
+            questions,
+          };
+        }
+      }
+    }
+    return null;
   }
   if (row.type !== "response_item" || !row.payload || typeof row.payload !== "object") return null;
   const payload = row.payload as Record<string, unknown>;

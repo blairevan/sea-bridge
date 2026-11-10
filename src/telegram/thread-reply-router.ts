@@ -17,6 +17,31 @@ function textHash(threadId: string, text: string): string {
   return createHash("sha256").update(JSON.stringify({ threadId, text })).digest("hex");
 }
 
+/** Deliver a direct callback reply (such as a question option selection) to a Codex thread idempotently. */
+export async function deliverDirectThreadReply(
+  updateId: number,
+  replyToMessageId: number,
+  threadId: string,
+  text: string,
+  store: DesktopMessageStore,
+  queueClient: QueueClient,
+): Promise<Exclude<ThreadReplyRouteResult, { status: "missing_reply" } | { status: "unmapped_reply" }>> {
+  const trimmed = text.trim();
+  if (!trimmed) return { status: "failed", threadId };
+  if (store.beginDelivery(updateId, replyToMessageId, threadId, textHash(threadId, trimmed)) === "duplicate") {
+    return { status: "duplicate" };
+  }
+  if (!store.markDispatching(updateId)) return { status: "duplicate" };
+
+  const result = await queueClient.queue(threadId, `[Telegram reply]\n${trimmed}`, { source: "telegram", updateId });
+  store.finishDelivery(updateId, result.status, result.exitCode, result.errorCode ?? null);
+  return result.status === "delivered"
+    ? { status: "delivered", threadId }
+    : result.status === "delivery_unknown"
+      ? { status: "delivery_unknown", threadId }
+      : { status: "failed", threadId };
+}
+
 export async function routeThreadReply(
   updateId: number,
   message: TelegramMessage,
@@ -32,19 +57,7 @@ export async function routeThreadReply(
     return reply ? { status: "unmapped_reply" } : { status: "missing_reply" };
   }
 
-  const text = message.text?.trim();
-  if (!text) return { status: "failed", threadId: link.threadId };
+  const text = message.text?.trim() ?? "";
   const targetMessageId = reply?.message_id ?? link.messageId;
-  if (store.beginDelivery(updateId, targetMessageId, link.threadId, textHash(link.threadId, text)) === "duplicate") {
-    return { status: "duplicate" };
-  }
-  if (!store.markDispatching(updateId)) return { status: "duplicate" };
-
-  const result = await queueClient.queue(link.threadId, `[Telegram reply]\n${text}`, { source: "telegram", updateId });
-  store.finishDelivery(updateId, result.status, result.exitCode, result.errorCode ?? null);
-  return result.status === "delivered"
-    ? { status: "delivered", threadId: link.threadId }
-    : result.status === "delivery_unknown"
-      ? { status: "delivery_unknown", threadId: link.threadId }
-      : { status: "failed", threadId: link.threadId };
+  return deliverDirectThreadReply(updateId, targetMessageId, link.threadId, text, store, queueClient);
 }

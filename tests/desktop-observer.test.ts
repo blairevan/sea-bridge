@@ -3,7 +3,8 @@ import { EventEmitter } from "node:events";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { CodexReadService } from "../src/desktop/codex-read-service.ts";
 import { CodexCatalogStore } from "../src/desktop/codex-catalog-store.ts";
-import { DesktopObserver } from "../src/desktop/desktop-observer.ts";
+import { DesktopObserver, extractQuestionOptions, notificationButtons } from "../src/desktop/desktop-observer.ts";
+import { deliverDirectThreadReply } from "../src/telegram/thread-reply-router.ts";
 import { StateDb } from "../src/state/db.ts";
 import { DesktopMessageStore } from "../src/state/desktop-message-store.ts";
 import { CodexObserverStore } from "../src/state/codex-observer-store.ts";
@@ -671,5 +672,56 @@ describe("DesktopObserver app-server history", () => {
     expect(messages.listPendingNotifications(Date.now() + 1_000)).toHaveLength(0);
     expect(messages.findLink("42", 9)?.threadId).toBe("thread");
     await read.close(); state.close();
+  });
+
+  test("renders inline option buttons for question notifications and routes option callbacks idempotently", async () => {
+    const f = fixture();
+    await f.observer.pollOnce();
+    f.advance(2_000);
+    f.complete([
+      "Summary: 本地联调完成。",
+      "",
+      "❓ 问题：",
+      "是否授权本次 Git 交付？",
+      "1. 授权提交、推送、创建并合并 PR（推荐）",
+      "2. 仅授权两仓库本地提交",
+      "3. 暂缓 Git 交付，保留现有成果",
+    ].join("\n"));
+    await f.observer.pollOnce();
+    f.observer.start();
+    await Bun.sleep(15);
+    await f.observer.stop();
+
+    expect(f.sent).toHaveLength(1);
+    const sentMsg = f.sent[0]!;
+    expect(extractQuestionOptions(sentMsg.text)).toEqual([
+      { index: 1, label: "授权提交、推送、创建并合并 PR（推荐）" },
+      { index: 2, label: "仅授权两仓库本地提交" },
+      { index: 3, label: "暂缓 Git 交付，保留现有成果" },
+    ]);
+    expect(sentMsg.buttons).toEqual([
+      [{ text: "1. 授权提交、推送、创建并合并 PR（推荐）", callback_data: "qopt:thread-a:1" }],
+      [{ text: "2. 仅授权两仓库本地提交", callback_data: "qopt:thread-a:2" }],
+      [{ text: "3. 暂缓 Git 交付，保留现有成果", callback_data: "qopt:thread-a:3" }],
+      [{ text: "💬 回复", callback_data: "reply:thread-a" }],
+    ]);
+    expect(notificationButtons("thread-a", "Codex: Test\n状态: 执行完成\n普通结果")).toEqual([
+      [{ text: "💬 回复", callback_data: "reply:thread-a" }],
+    ]);
+
+    const queued: Array<{ threadId: string; prompt: string }> = [];
+    const queueClient = {
+      queue: async (threadId: string, prompt: string) => {
+        queued.push({ threadId, prompt });
+        return { status: "delivered" as const, exitCode: 0 };
+      },
+    };
+    const first = await deliverDirectThreadReply(701, 1, "thread-a", "授权提交、推送、创建并合并 PR（推荐）", f.messages, queueClient);
+    expect(first).toEqual({ status: "delivered", threadId: "thread-a" });
+    expect(queued).toEqual([{ threadId: "thread-a", prompt: "[Telegram reply]\n授权提交、推送、创建并合并 PR（推荐）" }]);
+    const duplicate = await deliverDirectThreadReply(701, 1, "thread-a", "授权提交、推送、创建并合并 PR（推荐）", f.messages, queueClient);
+    expect(duplicate).toEqual({ status: "duplicate" });
+    expect(queued).toHaveLength(1);
+    await f.read.close(); f.state.close();
   });
 });

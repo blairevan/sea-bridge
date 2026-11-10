@@ -43,8 +43,13 @@ export interface WebSession {
   stateConfirmation?: StateConfirmation;
   state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
 }
+/** Structured question prompt emitted by Codex interactive question tools. */
+export interface WebQuestionPrompt {
+  title: string;
+  options?: string[];
+}
 /** Executed conversation, terminal source errors, and explicitly marked native queue inputs share safe display fields. */
-export interface WebMessage { id: string; role: "user" | "assistant" | "error"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; }
+export interface WebMessage { id: string; role: "user" | "assistant" | "error"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; questions?: WebQuestionPrompt[]; }
 /** Bounded history and an independent current queue snapshot with an opaque history cursor. */
 export interface WebTurnControl {
   activeTurnId: string | null;

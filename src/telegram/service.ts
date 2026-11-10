@@ -18,8 +18,9 @@ import { createDshCallback, renderDshModelMenu, renderDshProjectMenu } from "../
 import { isAuthorized } from "../security/auth.ts";
 import { TelegramClient, type TelegramUpdate, type BotCommand } from "./client.ts";
 import { renderModelMenu, renderProjectPage } from "./new-thread-ui.ts";
-import { routeThreadReply } from "./thread-reply-router.ts";
+import { deliverDirectThreadReply, routeThreadReply } from "./thread-reply-router.ts";
 import { routeProviderReply } from "./provider-reply-router.ts";
+import { extractQuestionOptions } from "../desktop/desktop-observer.ts";
 
 function hashPayload(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -293,6 +294,62 @@ export class TelegramService {
         threadId,
         messageId: promptMessage.message_id,
         replyToMessageId,
+      });
+      return;
+    }
+
+    const questionOptionMatch = /^qopt:([A-Za-z0-9_-]+):(\d+)$/.exec(data);
+    if (questionOptionMatch) {
+      const threadId = questionOptionMatch[1]!;
+      const optionIndex = Number.parseInt(questionOptionMatch[2]!, 10);
+      const options = extractQuestionOptions(callback.message?.text ?? "");
+      const matchedOption = options.find((opt) => opt.index === optionIndex);
+      const selectedAnswer = matchedOption?.label || String(optionIndex);
+      await this.client.answerCallbackQuery(callback.id, `已选择选项 ${optionIndex}`).catch(() => undefined);
+      const replyToMessageId = callback.message?.message_id ?? 0;
+      const result = await deliverDirectThreadReply(
+        update.update_id,
+        replyToMessageId,
+        threadId,
+        selectedAnswer,
+        this.messages,
+        this.queueClient,
+      );
+      if (result.status === "duplicate") return;
+      if (result.status === "delivered") {
+        const threadTitle = this.threadStore?.getThread?.(result.threadId)?.title || result.threadId;
+        await this.client.sendMessage(
+          chatId,
+          `已投递到对应的 Codex Desktop 会话：${threadTitle}\n已选择：${selectedAnswer}`,
+        );
+        this.logger.info("telegram_question_option_delivered", {
+          threadId: result.threadId,
+          optionIndex,
+          updateId: update.update_id,
+          threadTitle,
+        });
+        return;
+      }
+      if (result.status === "delivery_unknown") {
+        await this.client.sendMessage(
+          chatId,
+          "投递状态不确定，请不要重复点击；可在 Codex Desktop 中确认是否已收到。",
+        );
+        this.logger.warn("telegram_question_option_unknown", {
+          threadId: result.threadId,
+          optionIndex,
+          updateId: update.update_id,
+        });
+        return;
+      }
+      await this.client.sendMessage(
+        chatId,
+        "投递失败，未发送到 Codex Desktop 会话。请稍后点击选项重试或点击回复。",
+      );
+      this.logger.warn("telegram_question_option_failed", {
+        threadId: result.threadId,
+        optionIndex,
+        updateId: update.update_id,
       });
       return;
     }

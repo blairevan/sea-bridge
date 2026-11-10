@@ -10,7 +10,7 @@ import {
 } from "../state/codex-observer-store.ts";
 import type { InlineButton, TelegramClient } from "../telegram/client.ts";
 import type { CodexCatalogStore } from "./codex-catalog-store.ts";
-import type { CodexReadService, CodexReadThread, CodexReadTurn } from "./codex-read-service.ts";
+import { CODEX_QUESTION_BLOCK_MARKER, type CodexReadService, type CodexReadThread, type CodexReadTurn } from "./codex-read-service.ts";
 
 const TELEGRAM_SAFE_MESSAGE_LENGTH = 4_000;
 const TITLE_SAFE_LENGTH = 900;
@@ -59,7 +59,55 @@ function summary(value: string | null, maxChars: number): string | null {
   const redacted = redact(value);
   const text = typeof redacted === "string" ? redacted : "";
   if (!text) return null;
+  const marker = `\n\n${CODEX_QUESTION_BLOCK_MARKER}\n`;
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex >= 0 && text.length > maxChars) {
+    const main = text.slice(0, markerIndex);
+    const questionBlock = text.slice(markerIndex);
+    const mainBudget = Math.max(0, maxChars - questionBlock.length - "\n内容已截断".length);
+    return mainBudget > 0
+      ? `${main.slice(0, mainBudget)}\n内容已截断${questionBlock}`
+      : questionBlock.trimStart().slice(0, maxChars);
+  }
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n内容已截断`;
+}
+
+/** Extract numbered options from the trailing Codex question block in a notification message. */
+export function extractQuestionOptions(text: string): Array<{ index: number; label: string }> {
+  const marker = `${CODEX_QUESTION_BLOCK_MARKER}\n`;
+  const idx = text.lastIndexOf(marker);
+  if (idx < 0) return [];
+  const block = text.slice(idx + marker.length);
+  const options: Array<{ index: number; label: string }> = [];
+  for (const line of block.split("\n")) {
+    const match = /^(\d+)\.\s+(.+)$/.exec(line.trim());
+    if (!match) continue;
+    const index = Number.parseInt(match[1]!, 10);
+    const label = match[2]!.trim();
+    if (Number.isSafeInteger(index) && index > 0 && label) {
+      options.push({ index, label });
+    }
+  }
+  return options;
+}
+
+/** Build Telegram inline buttons including any numbered question options plus the reply action. */
+export function notificationButtons(threadId: string, text: string): InlineButton[][] {
+  const options = extractQuestionOptions(text);
+  const rows: InlineButton[][] = [];
+  for (const option of options.slice(0, 8)) {
+    const prefix = `${option.index}. `;
+    const maxLabelChars = 40 - prefix.length;
+    const displayLabel = option.label.length <= maxLabelChars
+      ? option.label
+      : `${option.label.slice(0, Math.max(1, maxLabelChars - 1))}…`;
+    const callbackData = `qopt:${threadId}:${option.index}`;
+    if (Buffer.byteLength(callbackData, "utf8") <= 64) {
+      rows.push([{ text: `${prefix}${displayLabel}`, callback_data: callbackData }]);
+    }
+  }
+  rows.push([{ text: "💬 回复", callback_data: "reply:" + threadId }]);
+  return rows;
 }
 
 /** Build the same bounded Telegram terminal notification as the legacy observer. */
@@ -87,6 +135,16 @@ function notificationText(
   const bodyBudget = TELEGRAM_SAFE_MESSAGE_LENGTH - header.length - 1;
   if (body.length <= bodyBudget) return `${header}\n${body}`;
   const suffix = "\n[内容已截断]";
+  const marker = `\n\n${CODEX_QUESTION_BLOCK_MARKER}\n`;
+  const markerIndex = body.lastIndexOf(marker);
+  if (markerIndex >= 0) {
+    const main = body.slice(0, markerIndex);
+    const questionBlock = body.slice(markerIndex);
+    const mainBudget = bodyBudget - questionBlock.length - suffix.length;
+    if (mainBudget > 0) {
+      return `${header}\n${main.slice(0, mainBudget)}${suffix}${questionBlock}`;
+    }
+  }
   const truncatedBody = body.slice(0, Math.max(0, bodyBudget - suffix.length));
   return `${header}\n${truncatedBody}${suffix}`;
 }
@@ -614,7 +672,7 @@ export class DesktopObserver {
   /** Delivers due notifications and retains failed sends or edits for backoff retry. */
   private async deliverPendingNotifications(): Promise<void> {
     for (const notification of this.messages.listPendingNotifications(this.now())) {
-      const buttons: InlineButton[][] = [[{ text: "💬 回复", callback_data: "reply:" + notification.threadId }]];
+      const buttons: InlineButton[][] = notificationButtons(notification.threadId, notification.text);
       try {
         const messageId = await this.deliverNotification(notification, buttons);
         const completed = this.messages.completeNotification(notification.eventFingerprint, messageId, this.now());

@@ -258,4 +258,63 @@ describe("CodexReadService", () => {
     ]);
     await service.close();
   });
+
+  test("finalText preserves async question prompts alongside a subsequent final_answer summary", async () => {
+    let proc!: MockProcess;
+    proc = new MockProcess((message) => {
+      if (message.method === "initialize") return proc.send({ id: message.id, result: {} });
+      if (message.method === "thread/items/list") {
+        return proc.send({
+          id: message.id,
+          result: {
+            data: [
+              {
+                turnId: "t",
+                item: {
+                  id: "call_q1",
+                  type: "agentMessage",
+                  phase: "final_answer",
+                  delivery: "async",
+                  text: "是否授权本次 Git 交付？\n- 授权提交、推送、创建并合并 PR（推荐）\n- 仅授权两仓库本地提交",
+                  questions: [
+                    {
+                      title: "是否授权本次 Git 交付？",
+                      options: ["授权提交、推送、创建并合并 PR（推荐）", "仅授权两仓库本地提交"],
+                    },
+                  ],
+                },
+              },
+              {
+                turnId: "t",
+                item: {
+                  id: "msg_final",
+                  type: "agentMessage",
+                  phase: "final_answer",
+                  delivery: null,
+                  questions: null,
+                  text: "Summary: 本地验证已完成。",
+                },
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+    });
+    const service = new CodexReadService("/codex", "/home/codex", {
+      spawner: () => proc as unknown as ChildProcessWithoutNullStreams,
+      requestTimeoutMs: 500,
+    });
+    await expect(service.finalText("thread", "turn")).resolves.toBe(
+      [
+        "Summary: 本地验证已完成。",
+        "",
+        "❓ 问题：",
+        "是否授权本次 Git 交付？",
+        "1. 授权提交、推送、创建并合并 PR（推荐）",
+        "2. 仅授权两仓库本地提交",
+      ].join("\n"),
+    );
+    await service.close();
+  });
 });
