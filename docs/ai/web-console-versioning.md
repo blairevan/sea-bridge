@@ -1,5 +1,13 @@
 # Sea-Bridge 版本规则
 
+## v1.6.0
+
+- 新增 Antigravity `ask_question`（等待用户输入）全链路识别、跨端实时通知与 Web / Telegram 直接接管作答能力：
+  1. **外部轨迹 `ask_question` 解析与 `waiting_user_input` 状态投影**：新增 `src/antigravity/question-parser.ts`，自动识别 `PLANNER_RESPONSE` 末尾未作答的 `ask_question` 工具调用（兼容数组或 JSON 字符串参数、`truncated_fields` 自动回读 `transcript_full.jsonl` 水合及前置说明正文保留），投影为 `waiting_user_input` 与结构化 `WebQuestionPrompt`（含 `multiSelect`）；本地私有桥 `LocalBridgeService` 向后兼容映射为 `waiting_external_approval`（`pendingApprovalsCount >= 1`）。
+  2. **桌面端排他锁安全释放与并发冲突保护（`1A`）**：接管处于 `waiting_user_input` 且被 `Antigravity.app` 占用的桌面会话时，自动检测是否有其他桌面会话处于活跃 `running` 态；无冲突时自动退出桌面端释放 SQLite 锁、通过 `agy acp` 提交回答并在本轮结束后自动重开定位原项目；存在其他运行中桌面会话时返回 `desktop_takeover_confirm_required`，支持 Web 弹窗确认与 Telegram 按钮强制接管。
+  3. **Telegram 实时提问通知、原地分页向导与序号简写回复（`2A`）**：`AntigravityDesktopObserver` 在会话进入 `waiting_user_input` 时即时去重推送通知（不干扰终态游标）；单题单选渲染一键选项按钮，多题或多选题渲染原地 `editMessageReplyMarkup` 分页勾选向导，并支持通过 `💬 回复` 发送 `1 1 1 1`、`1+3 2` 等序号简写或自由文本直接作答。
+  4. **Web 控制台「等待输入」状态、多选/自定义问题卡片与接管确认**：新增 `waiting_user_input` 状态徽标与筛选器；升级 `renderQuestionCard` 支持 `1/N..N/N` 题号、`multiSelect` 复选框切换、逐题「其他（自定义输入）」以及 `A1..AN` 标准格式组装（100% 兼容 Codex 单选卡片）；`submitWrite` 支持 `forceDesktopTakeover` 二次确认重试。
+
 ## v1.5.0
 
 - 统一全链路 `<Platform> · <Target>` 会话来源命名规范，支持 `CLI` 与 `Desktop` 执行目标细化创建及本机 `Antigravity CLI` 历史聚合：

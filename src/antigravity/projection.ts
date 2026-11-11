@@ -72,12 +72,15 @@ export function projectManagedWebSession(
     catalog: AntigravityModelCatalog;
     hasPendingApproval: boolean;
     sendEnabled: boolean;
+    waitingUserInput?: boolean;
   }
 ): WebSession {
   const sessionMeta = buildAntigravitySessionMeta(session, options.catalog);
   let state: WebSession["state"] = "idle";
   if (options.hasPendingApproval) {
     state = "waiting_external_approval";
+  } else if (options.waitingUserInput) {
+    state = "waiting_user_input";
   } else if (session.status === "running" || session.status === "cancelling") {
     state = "running";
   } else if (session.status === "unknown") {
@@ -95,7 +98,9 @@ export function projectManagedWebSession(
     creationClient: { kind: clientKind, evidence: "explicit" },
     ...(sessionMeta ? { sessionMeta } : {}),
     state,
-    sendEnabled: options.sendEnabled && session.status !== "running" && session.status !== "cancelling",
+    sendEnabled:
+      options.sendEnabled &&
+      (Boolean(options.waitingUserInput) || (session.status !== "running" && session.status !== "cancelling")),
   };
 }
 
@@ -107,6 +112,7 @@ export function projectManagedWebHistory(params: {
   executionControl: WebExecutionControl;
   catalog: AntigravityModelCatalog;
   limit: number;
+  waitingUserInput?: boolean;
   baseMessages?: WebMessage[];
   baseActiveTurnItems?: LiveActivityItem[];
 }): WebHistory & {
@@ -115,6 +121,8 @@ export function projectManagedWebHistory(params: {
 } {
   const { session, records, pendingApprovals, executionControl, catalog, limit, baseMessages, baseActiveTurnItems } = params;
   const visibleMessages: WebMessage[] = baseMessages ? [...baseMessages] : [];
+  const deferredTrailingQuestion =
+    params.waitingUserInput && visibleMessages.at(-1)?.questions?.length ? visibleMessages.pop() : undefined;
   const activeTurnItems: LiveActivityItem[] = baseActiveTurnItems ? [...baseActiveTurnItems] : [];
 
   for (const rec of records) {
@@ -133,12 +141,17 @@ export function projectManagedWebHistory(params: {
       visibleMessages.push({ id: rec.id, role: "error", text: rec.text, createdAt: rec.createdAt });
     }
   }
+  if (deferredTrailingQuestion) {
+    visibleMessages.push(deferredTrailingQuestion);
+  }
 
   const boundedMessages = visibleMessages.slice(-Math.max(1, Math.min(200, limit)));
   const sessionMeta = buildAntigravitySessionMeta(session, catalog);
   let sessionState: WebSession["state"] = "idle";
   if (pendingApprovals.length > 0) {
     sessionState = "waiting_external_approval";
+  } else if (params.waitingUserInput) {
+    sessionState = "waiting_user_input";
   } else if (session.status === "running" || session.status === "cancelling") {
     sessionState = "running";
   } else if (session.status === "unknown") {

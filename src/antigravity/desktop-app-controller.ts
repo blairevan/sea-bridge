@@ -58,7 +58,10 @@ export async function defaultCommandRunner(cmd: string, args: string[], timeoutM
  *   - If another desktop session is actively running, sends a `[🔄 立即重启桌面端同步显示]` button in Telegram instead of interrupting.
  */
 export class AntigravityDesktopAppController {
-  private readonly pendingRefreshBySession = new Map<string, { chatId: string | number }>();
+  private readonly pendingRefreshBySession = new Map<
+    string,
+    { chatId?: string | number | undefined; reopenWhenClosed?: boolean | undefined }
+  >();
   private readonly runCommand: CommandRunner;
   private readonly sleepFn: (ms: number) => Promise<void>;
 
@@ -192,7 +195,21 @@ export class AntigravityDesktopAppController {
 
   /** Mark a Desktop session to be refreshed in `Antigravity.app` once its background `agy acp` turn finishes. */
   markRefreshAfterTurn(sessionId: string, chatId: string | number): void {
-    this.pendingRefreshBySession.set(sessionId, { chatId });
+    const prev = this.pendingRefreshBySession.get(sessionId);
+    this.pendingRefreshBySession.set(sessionId, {
+      chatId,
+      ...(prev?.reopenWhenClosed ? { reopenWhenClosed: true } : {}),
+    });
+  }
+
+  /** Mark a Desktop session whose lock takeover quit `Antigravity.app` so it reopens once the turn settles. */
+  markReopenAfterTurn(sessionId: string, chatId?: string | number): void {
+    const prev = this.pendingRefreshBySession.get(sessionId);
+    const effectiveChatId = chatId ?? prev?.chatId;
+    this.pendingRefreshBySession.set(sessionId, {
+      ...(effectiveChatId !== undefined ? { chatId: effectiveChatId } : {}),
+      reopenWhenClosed: true,
+    });
   }
 
   /** Cancel a scheduled post-turn refresh for a session. */
@@ -202,6 +219,7 @@ export class AntigravityDesktopAppController {
 
   /**
    * Invoked when a Desktop session turn finishes and its `agy acp` worker has closed:
+   * - If pre-turn lock takeover closed `Antigravity.app`, reopens it once safe.
    * - If `Antigravity.app` does not have `<sessionId>` open in memory, no action needed.
    * - If another Desktop session is currently running, sends a manual refresh button in Telegram to avoid interrupting it.
    * - Otherwise, performs an automatic 1–2s restart of `Antigravity.app` so the completed turn appears immediately.
@@ -217,6 +235,19 @@ export class AntigravityDesktopAppController {
           : null;
 
     await this.sleepFn(200);
+    if (pending?.reopenWhenClosed && !(await this.isDesktopAppRunning())) {
+      if (!this.hasOtherRunningDesktopSession(sessionId)) {
+        const reopened = await this.reopenDesktopApp(sessionId);
+        if (!reopened && notifyChatId) {
+          await this.sendDeferredRestartPrompt(
+            notifyChatId,
+            sessionId,
+            "未能自动重新打开 Antigravity 桌面端以恢复该会话显示。"
+          );
+        }
+      }
+      return;
+    }
     const openInApp = await this.isSessionOpenInDesktopApp(sessionId);
     if (!openInApp) return;
 

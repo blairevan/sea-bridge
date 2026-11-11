@@ -50,16 +50,15 @@ function decodeEventKind(raw: string): { sessionOrigin: AntigravitySessionOrigin
 export class AntigravityTelegramStore {
   constructor(private readonly db: Database) {}
 
-  private getState<T>(key: string): { value: T; expiresAt: number | null; updatedAt: number } | null {
-    const row = this.db
-      .query("SELECT value_json AS valueJson, expires_at AS expiresAt, updated_at AS updatedAt FROM antigravity_telegram_state WHERE key=?")
-      .get(key) as { valueJson: string; expiresAt: number | null; updatedAt: number } | null;
+  /** Read a typed transient or persistent JSON state entry by key. */
+  getState<T>(key: string): { value: T; expiresAt: number | null; updatedAt: number } | null {
+    const row = this.db.query("SELECT value_json AS valueJson, expires_at AS expiresAt, updated_at AS updatedAt FROM antigravity_telegram_state WHERE key=?").get(key) as { valueJson: string; expiresAt: number | null; updatedAt: number } | null;
     if (!row) return null;
-    try { return { value: JSON.parse(row.valueJson) as T, expiresAt: row.expiresAt, updatedAt: row.updatedAt }; }
-    catch { return null; }
+    try { return { value: JSON.parse(row.valueJson) as T, expiresAt: row.expiresAt, updatedAt: row.updatedAt }; } catch { return null; }
   }
 
-  private setState(key: string, value: unknown, expiresAt: number | null, now: number): void {
+  /** Write a typed transient or persistent JSON state entry by key. */
+  setState(key: string, value: unknown, expiresAt: number | null, now = Date.now()): void {
     this.db.query(
       "INSERT INTO antigravity_telegram_state(key, value_json, expires_at, updated_at) VALUES(?,?,?,?) " +
         "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, expires_at=excluded.expires_at, updated_at=excluded.updated_at"
@@ -393,7 +392,7 @@ export class AntigravityTelegramStore {
   cleanupTransientState(now = Date.now(), retentionMs = 24 * 60 * 60_000): void {
     const cutoff = now - retentionMs;
     this.db
-      .query("DELETE FROM antigravity_telegram_state WHERE (key LIKE 'cb:%' OR key LIKE 'prompt:%') AND expires_at IS NOT NULL AND expires_at<=?")
+      .query("DELETE FROM antigravity_telegram_state WHERE (key LIKE 'cb:%' OR key LIKE 'prompt:%' OR key LIKE 'qoutbox:%' OR key LIKE 'qmeta:%' OR key LIKE 'qwiz:%') AND expires_at IS NOT NULL AND expires_at<=?")
       .run(cutoff);
   }
 }

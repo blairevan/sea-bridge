@@ -250,9 +250,15 @@ export class LocalBridgeService {
       };
     }
 
-    const state: BridgeSessionSummary["state"] = history?.sessionState
+    const rawState = history?.sessionState
       ?? matched?.state
       ?? (exec?.state === "running" || exec?.state === "waiting_external_approval" ? exec.state : "unknown");
+    const state: BridgeSessionSummary["state"] =
+      rawState === "waiting_user_input" ? "waiting_external_approval" : rawState;
+    const pendingApprovalsCount =
+      state === "waiting_external_approval"
+        ? Math.max(1, history?.pendingApprovals?.length ?? 0)
+        : (history?.pendingApprovals?.length ?? 0);
 
     let lastAssistantId: string | null = null;
     let lastAssistantText: string | null = null;
@@ -280,7 +286,7 @@ export class LocalBridgeService {
       updatedAt: matched?.updatedAt ?? null,
       lastAssistantId,
       lastAssistantText,
-      pendingApprovalsCount: history?.pendingApprovals?.length ?? (state === "waiting_external_approval" ? 1 : 0),
+      pendingApprovalsCount,
       activeTurnId: history?.turnControl?.activeTurnId ?? null,
       activeExecution,
       canOpenDesktop: sourceName === "codex" && !isCodexCli && Boolean(source.capabilities().desktopOpenEnabled),

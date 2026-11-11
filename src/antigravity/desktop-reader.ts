@@ -13,12 +13,14 @@ import {
   resolveAllowedProjectRoot,
   type AllowedAntigravityProject,
 } from "./policy.ts";
+import { inspectPendingAskQuestion } from "./question-parser.ts";
 
 export interface ExternalSessionInspection {
   found: boolean;
   title: string;
   updatedAt: number;
   externallyRunning: boolean;
+  waitingUserInput: boolean;
   projectId: string | null;
   cwd: string | null;
 }
@@ -88,7 +90,7 @@ export class AntigravityDesktopReader {
       updatedAt: info.updatedAt,
       projectId: info.projectId,
       creationClient: { kind: info.clientKind, evidence: "explicit" },
-      state: info.externallyRunning ? "running" : "idle",
+      state: info.waitingUserInput ? "waiting_user_input" : info.externallyRunning ? "running" : "idle",
       sendEnabled: false,
     };
   }
@@ -96,18 +98,18 @@ export class AntigravityDesktopReader {
   /** Inspect an external desktop session's live running state and workspace project binding for P4 write adoption. */
   inspectExternalSession(conversationId: string): ExternalSessionInspection {
     const empty: ExternalSessionInspection = {
-      found: false, title: conversationId, updatedAt: 0, externallyRunning: false, projectId: null, cwd: null,
+      found: false, title: conversationId, updatedAt: 0, externallyRunning: false, waitingUserInput: false, projectId: null, cwd: null,
     };
     if (!isValidDesktopConversationId(conversationId)) return empty;
     const row = this.querySingleRow(this.options.desktopAppDataDir, conversationId, true);
     if (!row) return empty;
-    return this.toInspection(row);
+    return this.toInspection(this.options.desktopAppDataDir, row);
   }
 
   /** Inspect an external session in either Desktop or CLI app-data directories, preserving its origin directory. */
   inspectAnyExternalSession(conversationId: string): AnyExternalSessionInspection {
     const empty: AnyExternalSessionInspection = {
-      found: false, title: conversationId, updatedAt: 0, externallyRunning: false,
+      found: false, title: conversationId, updatedAt: 0, externallyRunning: false, waitingUserInput: false,
       projectId: null, cwd: null, clientKind: "desktop", appDataDirPath: null,
     };
     if (!isValidDesktopConversationId(conversationId)) return empty;
@@ -116,7 +118,7 @@ export class AntigravityDesktopReader {
     if (desktopRow) {
       const clientKind = desktopRow.source === "CORTEX_TRAJECTORY_SOURCE_CLI" ? "cli" : "desktop";
       if (!isEmptyCliStub(desktopRow, clientKind)) {
-        return { ...this.toInspection(desktopRow), clientKind, appDataDirPath: this.options.desktopAppDataDir };
+        return { ...this.toInspection(this.options.desktopAppDataDir, desktopRow), clientKind, appDataDirPath: this.options.desktopAppDataDir };
       }
     }
 
@@ -124,7 +126,7 @@ export class AntigravityDesktopReader {
     if (cliDir) {
       const cliRow = this.querySingleRow(cliDir, conversationId, false);
       if (cliRow && !isEmptyCliStub(cliRow, "cli")) {
-        return { ...this.toInspection(cliRow), clientKind: "cli", appDataDirPath: cliDir };
+        return { ...this.toInspection(cliDir, cliRow), clientKind: "cli", appDataDirPath: cliDir };
       }
     }
     return empty;
@@ -198,7 +200,7 @@ export class AntigravityDesktopReader {
       return readBrainTranscriptHistory(
         info.appDataDirPath,
         conversationId,
-        info.externallyRunning ? "running" : "idle",
+        info.waitingUserInput ? "waiting_user_input" : info.externallyRunning ? "running" : "idle",
         true,
         limit,
       );
@@ -246,6 +248,7 @@ export class AntigravityDesktopReader {
       const updatedAt = parseTimestampMs(row.last_modified_time) ?? 0;
       const { projectId } = matchWorkspaceUriToProject(row.workspace_uris, allowedProjects);
       const isRunning = row.status === "CASCADE_RUN_STATUS_RUNNING" || Boolean(row.not_fully_idle);
+      const waitingUserInput = isRunning && inspectPendingAskQuestion(dirPath, row.conversation_id).length > 0;
       const title = (row.title || row.preview || row.conversation_id).trim();
       sessions.push({
         source: "antigravity",
@@ -254,7 +257,7 @@ export class AntigravityDesktopReader {
         updatedAt,
         projectId,
         creationClient: { kind: clientKind, evidence: "explicit" },
-        state: isRunning ? "running" : "idle",
+        state: waitingUserInput ? "waiting_user_input" : isRunning ? "running" : "idle",
         sendEnabled: false,
       });
     }
@@ -277,11 +280,12 @@ export class AntigravityDesktopReader {
     });
   }
 
-  private toInspection(row: SummaryDbRow): ExternalSessionInspection {
+  private toInspection(dirPath: string, row: SummaryDbRow): ExternalSessionInspection {
     const { projectId, cwd } = matchWorkspaceUriToProject(row.workspace_uris, this.options.getAllowedProjects());
     const externallyRunning = row.status === "CASCADE_RUN_STATUS_RUNNING" || Boolean(row.not_fully_idle);
+    const waitingUserInput = externallyRunning && inspectPendingAskQuestion(dirPath, row.conversation_id).length > 0;
     const title = (row.title || row.preview || row.conversation_id).trim();
     const updatedAt = parseTimestampMs(row.last_modified_time) ?? 0;
-    return { found: true, title, updatedAt, externallyRunning, projectId, cwd };
+    return { found: true, title, updatedAt, externallyRunning, waitingUserInput, projectId, cwd };
   }
 }
