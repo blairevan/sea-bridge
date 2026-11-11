@@ -1,5 +1,13 @@
 # Sea-Bridge 版本规则
 
+## v1.5.0
+
+- 统一全链路 `<Platform> · <Target>` 会话来源命名规范，支持 `CLI` 与 `Desktop` 执行目标细化创建及本机 `Antigravity CLI` 历史聚合：
+  1. **SQLite Schema v5 与正交 `clientTarget` 协议**：`web_operations` 新增 `client_target` 列与 `(source, session_id)` 索引；Web `POST /api/sessions` 与本地私有桥 `POST /v1/sessions` 支持 `clientTarget: "cli" | "desktop" | null`；`WebSourceCapabilities` 新增 `desktopCreateEnabled` 标识。
+  2. **Codex 目标投影与桌面打开门禁**：`CodexWebSource` 结合 `web_operations.client_target` 将显式创建的会话投影为 `Codex · Desktop` 或 `Codex · CLI`；对 `Codex · CLI` 会话关闭 `canOpenDesktop` 并拦截桌面打开请求。
+  3. **Antigravity 双目录隔离创建与本机 CLI 历史会话读取**：`AntigravitySessionManager.create` 支持 `clientTarget = "desktop"`（使用 `--app-data-dir=antigravity`，单轮结束自动回收 Worker 释放桌面锁）与 `clientTarget = "cli"`（使用 `--app-data-dir=antigravity-cli` 保活 Worker）；`AntigravityDesktopReader` 扩展聚合 `~/.gemini/antigravity-cli` 与 `~/.gemini/antigravity`（含 `CORTEX_TRAJECTORY_SOURCE_CLI`，过滤空模型探测存根）的外部 CLI 历史轨迹与续聊能力，同时保持桌面通知观察器边界不变。
+  4. **Web 控制台命名与新建选择器统一**：新建会话下拉框升级为 `Codex · Desktop`（默认）、`Codex · CLI`、`Antigravity · Desktop`、`Antigravity · CLI`、`DSH` 五项扁平选项；会话列表与详情统一显示 `Codex · Desktop`、`Antigravity · Desktop（只读）`、`Antigravity · CLI`、`DSH` 等规范标签。
+
 ## v1.4.0
 
 - 开放 ToolHub 统一认证与多源原生会话本地私有桥（`bridge.sock`），并升级自动设备识别与公网出口 IP 记录：

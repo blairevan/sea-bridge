@@ -9,6 +9,7 @@ import {
   LocalBridgeError,
   readBoundedString,
   readClientApp,
+  readClientTarget,
   readSource,
   readUuid,
   type BridgeCatalogResponse,
@@ -125,6 +126,7 @@ export class LocalBridgeService {
     if (reasoningEffort !== null && !/^[a-zA-Z0-9_-]{1,80}$/.test(reasoningEffort)) {
       throw new LocalBridgeError(400, "invalid_reasoning_effort");
     }
+    const clientTarget = readClientTarget(body.clientTarget, sourceName);
     const prompt = readBoundedString(body.prompt, 32000, { trim: false }) ?? "";
     if (!prompt.trim()) throw new LocalBridgeError(400, "invalid_field");
     const deviceId = readBoundedString(body.deviceId, 100, { nullable: true }) ?? "toolhub-local";
@@ -139,6 +141,7 @@ export class LocalBridgeService {
           projectId,
           modelId,
           reasoningEffort,
+          clientTarget,
           prompt,
         },
         deviceId,
@@ -267,6 +270,9 @@ export class LocalBridgeService {
       ? { executionId: history.executionControl.activeExecutionId, epoch: history.executionControl.activeEpoch }
       : null;
 
+    const isCodexCli = sourceName === "codex"
+      && (matched?.creationClient?.kind === "cli" || this.deps.store.getCreatedSessionTarget("codex", sessionId) === "cli");
+
     return {
       exists: true,
       state,
@@ -277,7 +283,7 @@ export class LocalBridgeService {
       pendingApprovalsCount: history?.pendingApprovals?.length ?? (state === "waiting_external_approval" ? 1 : 0),
       activeTurnId: history?.turnControl?.activeTurnId ?? null,
       activeExecution,
-      canOpenDesktop: sourceName === "codex" && Boolean(source.capabilities().desktopOpenEnabled),
+      canOpenDesktop: sourceName === "codex" && !isCodexCli && Boolean(source.capabilities().desktopOpenEnabled),
     };
   }
 
@@ -330,6 +336,9 @@ export class LocalBridgeService {
   /** Request opening a Codex session inside the local macOS Codex Desktop app. */
   async openDesktop(rawSessionId: string): Promise<{ status: "open_requested" }> {
     const sessionId = readBoundedString(rawSessionId, 200) ?? "";
+    if (this.deps.store.getCreatedSessionTarget("codex", sessionId) === "cli") {
+      throw new LocalBridgeError(409, "desktop_open_cli_session");
+    }
     const source = this.deps.sources.codex;
     if (!source?.openDesktop) {
       throw new LocalBridgeError(503, "desktop_open_unavailable");

@@ -70,6 +70,13 @@ export function migrateWeb(db: Database, beforeCommit?: () => void): void {
         INSERT INTO web_schema_migrations VALUES(4);
       `);
     }
+    if (!db.query("SELECT version FROM web_schema_migrations WHERE version=5").get()) {
+      db.exec(`
+        ALTER TABLE web_operations ADD COLUMN client_target TEXT CHECK(client_target IN ('cli','desktop'));
+        CREATE INDEX IF NOT EXISTS web_operations_source_session ON web_operations(source, session_id);
+        INSERT INTO web_schema_migrations VALUES(5);
+      `);
+    }
     beforeCommit?.();
   })();
 }

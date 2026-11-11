@@ -36,12 +36,14 @@ export interface CodexSourceDependencies {
   interruptRouter?: Pick<InterruptRouter, "capability" | "interrupt">;
   registerCreatedThread?: (id: string) => void;
   readQueue?: (id: string) => CodexQueueSnapshot;
+  findCreatedClientTargets?: () => ReadonlyMap<string, "cli" | "desktop">;
 }
 
 /** Transport-neutral Codex adapter with a first-turn ownership gate. */
 export class CodexWebSource implements WebSource {
   private desktopOpening = false;
   private desktopOpenedAt = 0;
+  private createdTargetsResolver: (() => ReadonlyMap<string, "cli" | "desktop">) | undefined;
   private readonly owners = new Set<string>();
   private readonly sessionActivity: SessionActivityResolver;
   private readonly projectCache: CatalogCache<ProjectItem[]>;
@@ -61,19 +63,20 @@ export class CodexWebSource implements WebSource {
     const actions = deps.actions ?? deps.appServer;
     if (!catalogs || !actions) throw new Error("codex_source_dependencies_missing");
     this.actions = actions;
+    this.createdTargetsResolver = deps.findCreatedClientTargets;
     this.projectCache = new CatalogCache(() => catalogs.listProjects());
     this.modelCache = new CatalogCache(() => catalogs.listModels());
+  }
+
+  /** Bind the WebStore-backed resolver mapping Sea-Bridge created sessions to explicit `cli` | `desktop` targets. */
+  setCreatedTargetsResolver(resolver: () => ReadonlyMap<string, "cli" | "desktop">): void {
+    this.createdTargetsResolver = resolver;
   }
 
   statusDetails(): Record<string, string> {
     const catalog = this.deps.catalogHealth?.() ?? "unavailable";
     const observer = this.deps.observerStatus?.();
-    return {
-      catalog,
-      history: observer?.history ?? "unavailable",
-      notifications: observer?.notifications ?? "unavailable",
-      actions: (this.deps.actionsAvailable?.() ?? this.deps.queueUsable) ? "ready" : "unavailable",
-    };
+    return { catalog, history: observer?.history ?? "unavailable", notifications: observer?.notifications ?? "unavailable", actions: (this.deps.actionsAvailable?.() ?? this.deps.queueUsable) ? "ready" : "unavailable" };
   }
 
   statusState(): WebSourceStatusState {
@@ -87,9 +90,10 @@ export class CodexWebSource implements WebSource {
 
   /** Report independently proven discovery and configured execution capabilities. */
   capabilities(): WebSourceCapabilities {
-    return { desktopOpenEnabled: Boolean(this.deps.openDesktop), modelUpdateEnabled: Boolean(this.actions.updateThreadModel), sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
+    const canCreate = this.projectsReadable && this.deps.queueUsable;
+    return { desktopCreateEnabled: canCreate, desktopOpenEnabled: Boolean(this.deps.openDesktop), modelUpdateEnabled: Boolean(this.actions.updateThreadModel), sessionsReadable: this.sessionsReadable, projectsReadable: this.projectsReadable, modelsReadable: this.modelsReadable,
       historyReadable: this.historyReadable, completeUserHistoryReadable: false, finalReplyReadable: this.historyReadable,
-      createEnabled: this.projectsReadable && this.deps.queueUsable, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
+      createEnabled: canCreate, sendEnabled: this.deps.queueUsable, approvalTransport: "telegram" };
   }
 
   /** Sample overview capabilities explicitly so "not yet used" is not rendered as unavailable. */
@@ -209,11 +213,16 @@ export class CodexWebSource implements WebSource {
     try {
       const health = this.deps.catalogHealth?.();
       if (health === "unavailable" || health === "reinitialize_required") throw new Error("catalog_unavailable");
+      const explicitTargets = this.createdTargetsResolver?.() ?? null;
+      const projectClient = (thread: CodexThread) => {
+        const target = thread.creationClient?.kind === "sea_bridge" ? explicitTargets?.get(thread.id) ?? null : null;
+        return target ? ({ kind: target, evidence: "explicit" } as const) : thread.creationClient;
+      };
       const threads = this.deps.threads.listActive().sort((a, b) => b.updatedAtMs - a.updatedAtMs);
       const candidates = threads.filter((thread) => (!options.sessionId || thread.id === options.sessionId)
         && (!options.sessionIds || options.sessionIds.includes(thread.id))
         && (!options.query || thread.title.toLowerCase().includes(options.query.toLowerCase()))
-        && (!options.creationClient || (thread.creationClient?.kind ?? "unknown") === options.creationClient));
+        && (!options.creationClient || (projectClient(thread)?.kind ?? "unknown") === options.creationClient));
       const visible = candidates.slice(options.offset ?? 0, (options.offset ?? 0) + Math.min(options.limit ?? 30, 100));
       const refreshed = new Map<string, Awaited<ReturnType<SessionActivityResolver["resolve"]>>>();
       let index = 0;
@@ -233,8 +242,9 @@ export class CodexWebSource implements WebSource {
           : ownedActive ? "running" as const
           : resolved?.state ?? (activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const);
         const sessionMeta = this.sessionMeta(thread.id, thread);
+        const creationClient = projectClient(thread);
         return {
-          source: "codex" as const, ...(thread.creationClient ? { creationClient: thread.creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}),
+          source: "codex" as const, ...(creationClient ? { creationClient } : {}), ...(sessionMeta ? { sessionMeta } : {}),
           id: thread.id, title: thread.title, updatedAt: thread.updatedAtMs, projectId: null, state,
           ...(state === "unknown" && resolved?.stateConfirmation ? { stateConfirmation: resolved.stateConfirmation } : {}),
           ...(state === "running" && resolved?.activity?.state === "active" ? { startedAt: resolved.activity.observedAt } : {}),

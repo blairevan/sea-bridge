@@ -1,5 +1,5 @@
 import { operationDigest } from "./crypto.ts";
-import type { WebStore, WebOperation, WebOperationSource } from "./store.ts";
+import type { WebStore, WebOperation, WebOperationSource, WebClientTarget } from "./store.ts";
 import type { WebRedaction } from "./redaction.ts";
 import type { WebSource } from "./sources/types.ts";
 
@@ -7,14 +7,34 @@ import type { WebSource } from "./sources/types.ts";
 export interface WebWriteRequest {
   operationId: string; source: WebOperationSource; kind: "create" | "send";
   targetId: string | null; projectId: string | null; modelId: string | null;
-  reasoningEffort?: string | null; prompt: string;
+  reasoningEffort?: string | null; clientTarget?: WebClientTarget | null; prompt: string;
+}
+
+/** Build a canonicalizable digest payload omitting undefined optional fields. */
+function buildDigestPayload(input: WebWriteRequest): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    operationId: input.operationId,
+    source: input.source,
+    kind: input.kind,
+    targetId: input.targetId,
+    projectId: input.projectId,
+    modelId: input.modelId,
+    prompt: input.prompt,
+  };
+  if (input.reasoningEffort !== undefined) payload.reasoningEffort = input.reasoningEffort;
+  if (input.clientTarget !== undefined && input.clientTarget !== null) payload.clientTarget = input.clientTarget;
+  return payload;
 }
 
 /** Atomically claim and dispatch once; no transport failure triggers an implicit replay. */
 export async function dispatchWebOperation(input: WebWriteRequest, deviceId: string, source: WebSource, store: WebStore, pepper: Uint8Array, redaction: WebRedaction): Promise<WebOperation> {
-  const digest = operationDigest(pepper, input);
+  const clientTarget: WebClientTarget | null = input.kind === "create" && input.source !== "dsh"
+    && (input.clientTarget === "cli" || input.clientTarget === "desktop")
+    ? input.clientTarget
+    : null;
+  const digest = operationDigest(pepper, buildDigestPayload({ ...input, clientTarget }));
   const claim = store.claimOperation({ id: input.operationId, digest, kind: input.kind, source: input.source, deviceId,
-    targetId: input.targetId, projectId: input.projectId, modelId: input.modelId, createdAt: Date.now() });
+    targetId: input.targetId, projectId: input.projectId, modelId: input.modelId, clientTarget, createdAt: Date.now() });
   if (claim === "mismatch") throw new Error("operation_conflict");
   const prior = store.getOperation(input.operationId);
   if (!prior) throw new Error("operation_missing");
@@ -33,7 +53,7 @@ export async function dispatchWebOperation(input: WebWriteRequest, deviceId: str
     const raced = store.getOperation(input.operationId); if (!raced) throw new Error("operation_missing"); return raced;
   }
   try {
-    const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? null, prompt: input.prompt,
+    const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? null, clientTarget, prompt: input.prompt,
       onSessionKnown: (id) => { store.setOperationSession(input.operationId, id, Date.now()); },
     }) : await source.send(input.targetId ?? "", input.operationId, input.prompt);
     if (result.sessionId) {

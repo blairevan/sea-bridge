@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import path from "node:path";
 import type { WebStore } from "../web/store.ts";
 import type { WebSource } from "../web/sources/types.ts";
 import { AntigravityWebSource } from "../web/sources/antigravity.ts";
@@ -69,6 +70,7 @@ export function createAntigravityRuntime(
     enabled: config.enabled,
     writeEnabled: config.writeEnabled,
     desktopReadEnabled: config.desktopReadEnabled,
+    externalSessionsEnabled: config.externalSessionsEnabled,
   });
   const modelCatalog = new AntigravityModelCatalog({
     cliPath: config.cliPath,
@@ -79,8 +81,12 @@ export function createAntigravityRuntime(
     timeoutMs: config.approvalTimeoutMs,
   });
   const getAllowedProjects = () => store.listProjects();
+  const cliAppDataDir = path.isAbsolute(config.appDataDir)
+    ? config.appDataDir
+    : path.join(config.geminiDir, config.appDataDir);
   const desktopReader = new AntigravityDesktopReader({
     desktopAppDataDir: config.desktopAppDataDir,
+    cliAppDataDir,
     getAllowedProjects,
   });
   if (config.allowedProjects.length === 0 && config.desktopReadEnabled) {

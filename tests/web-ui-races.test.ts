@@ -334,14 +334,33 @@ test("creation labels keep platform identity and pending provenance transient", 
   const result = ui.evaluate(`({
     platform: sourceDisplayName("codex"),
     desktop: sessionSourceLabel({source:"codex",creationClient:{kind:"desktop"}}),
+    cli: sessionSourceLabel({source:"codex",creationClient:{kind:"cli"}}),
     legacy: sessionSourceLabel({source:"codex"}),
     pending: sessionSourceLabel({source:"codex",creationPending:true}),
+    agyDesktop: sessionSourceLabel({source:"antigravity",creationClient:{kind:"desktop"},sendEnabled:true}),
+    agyDesktopRo: sessionSourceLabel({source:"antigravity",creationClient:{kind:"desktop"},sendEnabled:false,state:"idle"}),
+    agyCli: sessionSourceLabel({source:"antigravity",creationClient:{kind:"cli"},sendEnabled:true}),
+    agyCliRo: sessionSourceLabel({source:"antigravity",creationClient:{kind:"cli"},sendEnabled:false,state:"idle"}),
+    agyLegacy: sessionSourceLabel({source:"antigravity",creationClient:{kind:"sea_bridge"},sendEnabled:true}),
     dsh: sessionSourceLabel({source:"dsh",creationClient:{kind:"desktop"}}),
     dshExcluded: matchesCreationClient({source:"dsh"}, "unknown"),
     legacyUnknown: matchesCreationClient({source:"codex"}, "unknown")
   })`);
-  expect(result).toEqual({ platform: "Codex", desktop: "Codex · Desktop 创建", legacy: "Codex · 创建来源未知",
-    pending: "Codex · 创建来源待同步", dsh: "dsh", dshExcluded: false, legacyUnknown: true });
+  expect(result).toEqual({
+    platform: "Codex",
+    desktop: "Codex · Desktop",
+    cli: "Codex · CLI",
+    legacy: "Codex · 未知",
+    pending: "Codex · 待同步",
+    agyDesktop: "Antigravity · Desktop",
+    agyDesktopRo: "Antigravity · Desktop（只读）",
+    agyCli: "Antigravity · CLI",
+    agyCliRo: "Antigravity · CLI（只读）",
+    agyLegacy: "Antigravity · Sea-Bridge",
+    dsh: "DSH",
+    dshExcluded: false,
+    legacyUnknown: true,
+  });
 });
 
 test("paused session browsing filters cached provenance and clears it on switching to dsh", async () => {
@@ -425,7 +444,7 @@ test("newly created provenance syncs from native metadata outside the current li
   expect(paths).toHaveLength(2);
   expect(controller.state.selected).toEqual({ ...native, turnControl: null });
   expect(controller.state.selected).not.toHaveProperty("creationPending");
-  expect(ui.element("session-meta").textContent).toBe("Codex · Sea-Bridge 创建 · 空闲");
+  expect(ui.element("session-meta").textContent).toBe("Codex · Sea-Bridge · 空闲");
 });
 
 test("changing creation filters during an in-flight UI action loads the latest choice", async () => {
@@ -496,8 +515,8 @@ test("Antigravity provenance filter matches both sea_bridge managed and desktop 
   })`);
   expect(result).toEqual({
     platform: "Antigravity",
-    managedLabel: "Antigravity · Sea-Bridge 托管",
-    desktopLabel: "Antigravity · 桌面端（只读）",
+    managedLabel: "Antigravity · Sea-Bridge",
+    desktopLabel: "Antigravity · Desktop（只读）",
     matchManaged: true,
     matchDesktop: true,
     mismatch: false,

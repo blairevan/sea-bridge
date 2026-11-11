@@ -49,11 +49,37 @@ if (taskLinkedThread && !/^[0-9a-f-]{36}$/i.test(taskLinkedThread)) taskLinkedTh
 
 /** Keep platform labels independent of the original client. */
 function sourceDisplayName(source) {
-  return source === "codex" ? "Codex" : source === "dsh" ? "dsh" : source === "antigravity" ? "Antigravity" : "未知来源";
+  return source === "codex" ? "Codex" : source === "dsh" ? "DSH" : source === "antigravity" ? "Antigravity" : "未知来源";
 }
-/** Determine whether an Antigravity desktop session is strictly read-only rather than P4-writable or temporarily busy. */
+/** Parse `#create-source` composite (`codex:desktop`, `antigravity:cli`) or bare (`codex`, `dsh`) values. */
+function parseCreateSelection(raw = el("create-source")?.value) {
+  const text = String(raw || "codex").trim();
+  if (text === "codex:desktop") return { source: "codex", clientTarget: "desktop" };
+  if (text === "codex:cli") return { source: "codex", clientTarget: "cli" };
+  if (text === "antigravity:desktop") return { source: "antigravity", clientTarget: "desktop" };
+  if (text === "antigravity:cli") return { source: "antigravity", clientTarget: "cli" };
+  if (text === "dsh") return { source: "dsh", clientTarget: null };
+  return { source: text, clientTarget: null };
+}
+/** Check whether the selected creation source + target pair is currently enabled. */
+function isCreateSelectionEnabled(raw = el("create-source")?.value) {
+  const { source, clientTarget } = parseCreateSelection(raw);
+  const caps = state.caps[source];
+  if (!caps?.createEnabled) return false;
+  if (source === "antigravity" && clientTarget === "desktop" && caps.desktopCreateEnabled === false) return false;
+  return true;
+}
+/** Map a bare source name from overview shortcuts to its default `#create-source` option value. */
+function defaultCreateOptionForSource(source) {
+  if (source === "codex") return "codex:desktop";
+  if (source === "antigravity") return state.caps.antigravity?.desktopCreateEnabled === false ? "antigravity:cli" : "antigravity:desktop";
+  return source;
+}
+/** Determine whether an external Antigravity session (Desktop or CLI) is strictly read-only rather than P4-writable or temporarily busy. */
 function isReadOnlyDesktopSession(session = state.selected) {
-  if (session?.source !== "antigravity" || session?.creationClient?.kind !== "desktop") return false;
+  if (session?.source !== "antigravity") return false;
+  const kind = session?.creationClient?.kind;
+  if (kind !== "desktop" && kind !== "cli") return false;
   if (session.sendEnabled) return false;
   if (["running", "waiting_external_approval"].includes(session.state) && session.projectId && state.caps?.antigravity?.sendEnabled !== false) return false;
   return true;
@@ -62,12 +88,17 @@ function isReadOnlyDesktopSession(session = state.selected) {
 function sessionSourceLabel(session) {
   if (session.source === "antigravity") {
     const kind = session.creationClient?.kind;
-    const label = session.creationPending ? "创建来源待同步" : kind === "desktop" ? (!isReadOnlyDesktopSession(session) ? "桌面端" : "桌面端（只读）") : kind === "sea_bridge" ? "Sea-Bridge 托管" : "创建来源未知";
+    const ro = isReadOnlyDesktopSession(session) ? "（只读）" : "";
+    const label = session.creationPending ? "待同步"
+      : kind === "desktop" ? `Desktop${ro}`
+      : kind === "cli" ? `CLI${ro}`
+      : kind === "sea_bridge" ? "Sea-Bridge"
+      : "未知";
     return `Antigravity · ${label}`;
   }
   if (session.source !== "codex") return sourceDisplayName(session.source);
-  const names = { desktop: "Desktop 创建", cli: "CLI 创建", sea_bridge: "Sea-Bridge 创建", exec: "Exec 创建", unknown: "创建来源未知" };
-  return `Codex · ${session.creationPending ? "创建来源待同步" : (Object.hasOwn(names, session.creationClient?.kind ?? "unknown") ? names[session.creationClient?.kind ?? "unknown"] : names.unknown)}`;
+  const names = { desktop: "Desktop", cli: "CLI", sea_bridge: "Sea-Bridge", exec: "Exec", unknown: "未知" };
+  return `Codex · ${session.creationPending ? "待同步" : (Object.hasOwn(names, session.creationClient?.kind ?? "unknown") ? names[session.creationClient?.kind ?? "unknown"] : names.unknown)}`;
 }
 /** Match creation filters identically for loaded and server-projected sessions. */
 function matchesCreationClient(session, kind) {
@@ -756,7 +787,7 @@ function setConnectionControls(disabled) {
   const reconcile = el("reconcile"); if (reconcile) reconcile.disabled = disabled;
   const createReconcile = el("create-reconcile"); if (createReconcile) createReconcile.disabled = disabled;
   const createSubmit = el("create-submit");
-  if (createSubmit) createSubmit.disabled = disabled || Boolean(state.pending) || !el("create-project").value || !state.caps[el("create-source")?.value]?.createEnabled;
+  if (createSubmit) createSubmit.disabled = disabled || Boolean(state.pending) || !el("create-project").value || !isCreateSelectionEnabled();
   const settingsSubmit = el("redaction-form")?.querySelector?.('button[type="submit"]');
   if (settingsSubmit) settingsSubmit.disabled = disabled;
   const desktopOpen = el("open-desktop"); if (desktopOpen) desktopOpen.disabled = disabled;
@@ -827,7 +858,7 @@ async function requestApi(path, method = "GET", body) {
   }
   if (response.status === 401 && path !== "/api/auth/login") { showLogin(); throw clientError("auth_required", "设备登录已失效，请重新登录"); }
   if (method === "GET" && state.paused && !["/api/auth/session", "/api/settings"].includes(path.split("?")[0])) throw clientError("connection_unverified", "连接尚未重新确认设置");
-  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_writer_held: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", active_execution_changed: "当前执行轮次已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道", approval_not_found: "该权限请求已处理或已过期", invalid_option: "无效的审批选项", approval_unavailable: "当前权限审批通道暂不可用", desktop_session_read_only: "Antigravity 桌面端会话为只读，不支持发送消息" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
+  if (!response.ok) { const error = new Error(({ login_failed: "账号或密码不正确，或尝试过于频繁，请稍后重试", https_required: "请通过 HTTPS 地址登录", csrf_denied: "登录校验失败，请刷新页面", settings_conflict: "设置已被其他设备修改，请刷新", operation_conflict: "请求内容与原记录不一致", body_too_large: "消息过长", invalid_field: "输入不符合要求", invalid_source: "来源参数无效", invalid_client_target: "执行目标参数无效", invalid_operation_id: "请求标识无效", source_unavailable: "来源暂不可用", operation_not_received: "未找到提交记录", session_missing: "会话已不存在或尚未同步", model_unavailable: "所选模型当前不可用", model_update_busy: "当前任务仍在运行，请结束后再切换模型", model_update_writer_held: "当前会话已空闲，但仍被其他 Codex 客户端占用，暂不能从 Web 切换模型", model_update_unverified: "当前会话空闲状态尚未确认，暂不能切换模型", model_update_unconfirmed: "Codex 未确认模型切换结果，请刷新后核查", model_update_unavailable: "当前会话暂不支持模型切换", interrupt_not_owned: "当前任务不由 Sea-Bridge 持有，无法安全中断", active_turn_changed: "当前任务已经变化，本次中断未执行", active_execution_changed: "当前执行轮次已经变化，本次中断未执行", interrupt_already_finished: "目标任务已经结束，无需中断", interrupt_provider_unavailable: "当前中断通道暂不可用", interrupt_provider_unverified: "当前任务尚无经过验证的安全中断通道", approval_not_found: "该权限请求已处理或已过期", invalid_option: "无效的审批选项", approval_unavailable: "当前权限审批通道暂不可用", desktop_session_read_only: "当前 Antigravity 外部会话为只读，不支持写入或新建桌面会话" })[payload.data?.errorCode] ?? "请求失败，请刷新核查"); error.code = payload.data?.errorCode; throw error; }
   return payload.data;
 }
 /** Coalesce identical in-flight reads across polling, controls and reconnect handlers. */
@@ -1167,7 +1198,7 @@ async function openOverviewSessions(source = "", activity = "") {
 /** Open the create flow with an explicit source, without dispatching any task. */
 async function openOverviewCreate(source = null) {
   if (state.paused) { showConnectionNotice("连接尚未恢复，已保留草稿；恢复后可以新建会话。"); return; }
-  if (source) el("create-source").value = source;
+  if (source) el("create-source").value = defaultCreateOptionForSource(source);
   el("create-dialog").showModal(); await loadCatalogs();
 }
 /** Inspect a source catalog in a read-only dialog, keeping previous data if loading fails. */
@@ -1918,10 +1949,12 @@ async function loadRecords(more) {
 function renderDesktopRecoverySettings() {
   const available = Boolean(state.caps.codex?.desktopOpenEnabled);
   const selected = state.selected?.source === "codex" ? state.selected : null;
-  el("open-desktop").hidden = !available || !selected;
+  const isCliCodex = selected?.creationClient?.kind === "cli";
+  el("open-desktop").hidden = !available || !selected || isCliCodex;
   el("open-desktop").disabled = state.paused;
   el("desktop-recovery-target").textContent = !available
     ? "当前服务不支持在 Mac 上打开 Codex 会话。"
+    : isCliCodex ? "当前会话为 Codex · CLI，无需在桌面端恢复。"
     : selected ? `当前会话：${selected.title}` : "请先在会话页选择需要恢复的 Codex 会话，再返回设置。";
 }
 /** Display global policy and revocable device metadata. */
@@ -1958,7 +1991,7 @@ function closeProjectOptions() {
 }
 /** Filter loaded project names while retaining a selection that still matches. */
 function renderCreationProjects(selection = el("create-project").value) {
-  if (creationProjects.source !== el("create-source").value) return;
+  if (creationProjects.source !== parseCreateSelection(el("create-source").value).source) return;
   const query = el("create-project-search").value.trim().toLocaleLowerCase();
   const items = creationProjects.items.filter((project) => project.name.toLocaleLowerCase().includes(query));
   const select = el("create-project"); select.replaceChildren();
@@ -1969,16 +2002,16 @@ function renderCreationProjects(selection = el("create-project").value) {
     const option = node("button", project.name, "record-suggestion"); option.type = "button";
     option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(select.value === project.id));
     option.onclick = () => {
-      if (state.paused || creationProjects.source !== el("create-source").value) return;
+      if (state.paused || creationProjects.source !== parseCreateSelection(el("create-source").value).source) return;
       if (projectSearchTimer !== null) clearTimeout(projectSearchTimer); projectSearchTimer = null;
       select.value = project.id; el("create-project-search").value = project.name; closeProjectOptions();
-      el("create-submit").disabled = Boolean(state.pending) || !state.caps[creationProjects.source]?.createEnabled;
+      el("create-submit").disabled = Boolean(state.pending) || !isCreateSelectionEnabled();
     };
     list.append(option);
   }
   if (!items.length) list.append(node("p", "没有匹配的项目"));
   if (!list.hidden) el("create-project-search").setAttribute("aria-expanded", "true");
-  el("create-submit").disabled = state.paused || Boolean(state.pending) || !state.caps[creationProjects.source]?.createEnabled || !items.length;
+  el("create-submit").disabled = state.paused || Boolean(state.pending) || !isCreateSelectionEnabled() || !items.length;
 }
 /** Apply only the latest query after 500ms of inactivity without refetching catalogs. */
 function scheduleProjectSearch() {
@@ -2048,15 +2081,17 @@ function syncReasoningEffortControl() {
 /** Discover source-specific catalogs without storing a global default model. */
 async function loadCatalogs() {
   const viewEpoch = state.viewEpoch;
-  const source = el("create-source").value; el("create-submit").disabled = true;
+  const rawSelection = el("create-source").value;
+  const { source, clientTarget } = parseCreateSelection(rawSelection);
+  el("create-submit").disabled = true;
   const projectSelection = el("create-project").value; const modelSelection = el("create-model").value;
   const projects = await api(`/api/sources/${source}/projects`);
   let models = { items: [] }; let modelsUnavailable = false;
   try { models = await api(`/api/sources/${source}/models`); }
   catch (error) { if (isTransportError(error) || ["connection_unverified", "auth_required"].includes(error.code)) throw error; modelsUnavailable = true; }
-  if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || rawSelection !== el("create-source").value) return;
   await loadSessions(false);
-  if (state.paused || viewEpoch !== state.viewEpoch || source !== el("create-source").value) return;
+  if (state.paused || viewEpoch !== state.viewEpoch || rawSelection !== el("create-source").value) return;
   creationProjects = { source, items: projects.items };
   creationModels = { source, items: models.items };
   el("create-model").replaceChildren(node("option", "使用来源默认模型")); el("create-model").firstChild.value = "";
@@ -2065,8 +2100,10 @@ async function loadCatalogs() {
   for (const model of models.items) { const option = node("option", model.name); option.value = model.id; el("create-model").append(option); }
   if (models.items.some((model) => model.id === modelSelection)) el("create-model").value = modelSelection;
   syncReasoningEffortControl();
-  const allowed = state.caps[source]?.createEnabled;
-  el("create-hint").textContent = !allowed ? "此来源当前不支持新建会话。" : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : source === "antigravity" ? "新会话的权限请求将通过 Web 在线审批。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
+  const allowed = isCreateSelectionEnabled(rawSelection);
+  el("create-hint").textContent = !allowed
+    ? (source === "antigravity" && clientTarget === "desktop" ? "当前服务未开启 Antigravity 外部桌面会话写入，请改选 Antigravity · CLI。" : "此来源当前不支持新建会话。")
+    : modelsUnavailable ? "模型目录不可用，可使用来源默认模型。" : source === "antigravity" ? "新会话的权限请求将通过 Web 在线审批。" : "新会话的审批继续通过 Telegram 处理（如来源需要）。";
 }
 /** Keep Composer metadata factual and field-wise; missing values are omitted rather than defaulted. */
 function composerMetadataLabels(meta) {
@@ -2278,7 +2315,7 @@ function syncComposerControl(now = Date.now()) {
   if (status) {
     if (isReadOnlyDesktop) {
       status.hidden = false;
-      status.textContent = "Antigravity 桌面端会话（只读） · 暂不支持从 Web 发送消息";
+      status.textContent = `${sessionSourceLabel(session)} · 暂不支持从 Web 发送消息`;
     } else {
       const activity = liveActivityPresentation(session, state.paused, now);
       const hideIdle = Boolean(session && session.state === "idle" && !activity.visible);
@@ -2297,7 +2334,7 @@ function syncComposerControl(now = Date.now()) {
   if (prompt) {
     if (isReadOnlyDesktop) {
       prompt.disabled = true;
-      prompt.placeholder = "Antigravity 桌面端会话仅支持只读浏览，暂不支持从 Web 续聊";
+      prompt.placeholder = `${sessionSourceLabel(session)} 仅支持只读浏览，暂不支持从 Web 续聊`;
     } else if (prompt.disabled || prompt.placeholder !== "输入消息…") {
       prompt.disabled = false;
       prompt.placeholder = "输入消息…";
@@ -2415,9 +2452,12 @@ async function submitWrite(create, promptOverride = undefined) {
   if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
   const promptText = typeof promptOverride === "string" ? promptOverride : (create ? el("create-prompt").value : el("prompt").value);
   if (!create && !String(promptText || "").trim()) return;
-  const operationId = operationUuid(); const source = create ? el("create-source").value : session.source;
+  const operationId = operationUuid();
+  const createSel = create ? parseCreateSelection(el("create-source").value) : null;
+  const source = create ? createSel.source : session.source;
+  const clientTarget = create ? createSel.clientTarget : null;
   const reasoningEffort = create ? (el("create-reasoning-effort")?.value || null) : null;
-  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), prompt: promptText } : { operationId, prompt: promptText };
+  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), ...(clientTarget ? { clientTarget } : {}), prompt: promptText } : { operationId, prompt: promptText };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   if (!create) { setComposerStatus("发送中…"); syncComposerControl(); }
   try {
@@ -2433,13 +2473,13 @@ async function submitWrite(create, promptOverride = undefined) {
         draft.value = "";
         if (!create) { draft.style.height = ""; syncComposerControl(); }
       }
-      if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false, creationPending: source === "codex" }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
+      if (create) { el("create-dialog").close(); state.messages = []; state.historyCursor = null; messageViews.clear(); state.selected = { id: operation.sessionId, source, title: "新会话", state: "unknown", sendEnabled: false, ...(clientTarget ? { creationClient: { kind: clientTarget, evidence: "explicit" } } : { creationPending: source === "codex" }) }; el("sessions").classList.remove("browse-only"); el("sessions").classList.add("detail-open"); await showPage("sessions"); }
     }
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
     showOperation(operation); await refresh();
   } catch (error) {
     if (["auth_changed", "auth_required"].includes(error.code)) return;
-    const definite = new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"]);
+    const definite = new Set(["invalid_field", "invalid_source", "invalid_client_target", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict", "desktop_session_read_only"]);
     if (definite.has(error.code)) {
       state.pending = null; if (!create) setComposerStatus("发送失败，请检查后重试"); notice(error.message || "提交失败", { sticky: true, kind: "error" }); el("reconcile").hidden = true; el("create-reconcile").hidden = true; await refresh();
     } else {
@@ -2450,7 +2490,7 @@ async function submitWrite(create, promptOverride = undefined) {
     }
   }
   finally {
-    if (authEpoch === state.authEpoch && create && !state.pending) el("create-submit").disabled = state.paused || !state.caps[source]?.createEnabled;
+    if (authEpoch === state.authEpoch && create && !state.pending) el("create-submit").disabled = state.paused || !isCreateSelectionEnabled();
     if (authEpoch === state.authEpoch && !create) syncComposerControl();
   }
 }
@@ -2469,7 +2509,7 @@ async function reconcilePending() {
     state.pending = null; setComposerStatus(""); el("reconcile").hidden = true; el("create-reconcile").hidden = true;
     notice("未找到提交记录。请核对任务后再手动提交。", { sticky: true, kind: "warning" });
   }
-  if (el("create-dialog").open && !state.pending) el("create-submit").disabled = state.paused || !el("create-project").value || !state.caps[el("create-source").value]?.createEnabled;
+  if (el("create-dialog").open && !state.pending) el("create-submit").disabled = state.paused || !el("create-project").value || !isCreateSelectionEnabled();
   await refresh();
 }
 

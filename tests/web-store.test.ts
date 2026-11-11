@@ -53,7 +53,7 @@ describe("Web isolated persistence", () => {
       expect(db.query("SELECT thread_id FROM desktop_message_links").get()).toEqual({ thread_id: "thread" });
       expect(db.query("SELECT cursor FROM dsh_observer_state").get()).toEqual({ cursor: 1 });
       expect(new WebStore(db).getSettings()).toEqual({ redactionEnabled: true, version: 1 });
-      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 4 });
+      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 5 });
       db.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -99,14 +99,16 @@ describe("Web isolated persistence", () => {
   test("operation claim is immutable, recoverable, and persists early session id", () => {
     const db = new Database(":memory:"); migrateWeb(db);
     const store = new WebStore(db);
-    const request = { id: "op", digest: "digest", kind: "create" as const, source: "codex" as const, deviceId: "device", targetId: null, projectId: "project", modelId: null, createdAt: 1 };
+    const request = { id: "op", digest: "digest", kind: "create" as const, source: "codex" as const, deviceId: "device", targetId: null, projectId: "project", modelId: null, clientTarget: "cli" as const, createdAt: 1 };
     expect(store.claimOperation(request)).toBe("new");
     expect(store.claimOperation(request)).toBe("duplicate");
     expect(store.claimOperation({ ...request, digest: "different" })).toBe("mismatch");
     expect(store.transitionOperation("op", "received", "dispatching", 2)).toBe(true);
     store.setOperationSession("op", "session", 3);
+    expect(store.getCreatedSessionTarget("codex", "session")).toBe("cli");
+    expect(store.findCreatedSessionTargets("codex").get("session")).toBe("cli");
     expect(store.recoverOperations(4)).toBe(1);
-    expect(store.getOperation("op")).toMatchObject({ state: "delivery_unknown", sessionId: "session" });
+    expect(store.getOperation("op")).toMatchObject({ state: "delivery_unknown", sessionId: "session", clientTarget: "cli" });
     expect(store.transitionOperation("op", "delivery_unknown", "dispatching", 5)).toBe(false);
     expect(store.recoverOperations(6)).toBe(0);
     db.close();

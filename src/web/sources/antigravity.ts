@@ -92,8 +92,8 @@ export class AntigravityWebSource implements WebSource {
     for (const rec of managedRecords) {
       const pendingApprovals = this.deps.store.listPendingApprovals(rec.sessionId);
       const isDesktopOrigin = rec.sessionOrigin === "desktop";
-      const extInfo = isDesktopOrigin && this.deps.config.desktopReadEnabled
-        ? this.deps.desktopReader.inspectExternalSession(rec.sessionId)
+      const extInfo = (isDesktopOrigin || rec.clientTarget === "cli") && this.deps.config.desktopReadEnabled
+        ? this.deps.desktopReader.inspectAnyExternalSession(rec.sessionId)
         : null;
       const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(rec.sessionId);
       let effectiveRec = rec;
@@ -102,7 +102,7 @@ export class AntigravityWebSource implements WebSource {
       } else if (
         rec.status === "unknown" &&
         !hasActiveTurn &&
-        (!isDesktopOrigin || (extInfo?.found && !extInfo.externallyRunning))
+        (!isDesktopOrigin || !extInfo?.found || !extInfo.externallyRunning)
       ) {
         effectiveRec = { ...rec, status: "idle" as const };
         this.deps.store.upsertSession(effectiveRec);
@@ -118,19 +118,19 @@ export class AntigravityWebSource implements WebSource {
       merged.set(projected.id, projected);
     }
 
-    // 2. Desktop sessions fill in non-managed conversation IDs
+    // 2. External Desktop & CLI sessions fill in non-managed conversation IDs
     if (this.deps.config.desktopReadEnabled) {
-      const desktopSessions = this.deps.desktopReader.listSessions(500);
-      for (const desktopSess of desktopSessions) {
-        if (!merged.has(desktopSess.id)) {
+      const externalSessions = this.deps.desktopReader.listExternalSessions(500);
+      for (const extSess of externalSessions) {
+        if (!merged.has(extSess.id)) {
           const canSendExternal = Boolean(
             this.deps.config.writeEnabled &&
               this.deps.config.externalSessionsEnabled &&
-              desktopSess.projectId !== null &&
-              desktopSess.state !== "running"
+              extSess.projectId !== null &&
+              extSess.state !== "running"
           );
-          merged.set(desktopSess.id, {
-            ...desktopSess,
+          merged.set(extSess.id, {
+            ...extSess,
             sendEnabled: canSendExternal,
           });
         }
@@ -169,18 +169,18 @@ export class AntigravityWebSource implements WebSource {
       const records = this.deps.store.listMessages(id, managed.snapshotGeneration);
       const pendingApprovals = this.deps.store.listPendingApprovals(id);
       const executionControl = this.deps.sessionManager.getExecutionControl(id);
-      const desktopHistory =
-        managed.sessionOrigin === "desktop" && this.deps.config.desktopReadEnabled
-          ? this.deps.desktopReader.readHistory(id, limit)
+      const externalHistory =
+        (managed.sessionOrigin === "desktop" || managed.clientTarget === "cli") && this.deps.config.desktopReadEnabled
+          ? this.deps.desktopReader.readExternalHistory(id, limit)
           : null;
       const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(id);
       let effectiveSession = managed;
-      if (desktopHistory?.sessionState === "running" && (managed.status === "idle" || managed.status === "unknown")) {
+      if (externalHistory?.sessionState === "running" && (managed.status === "idle" || managed.status === "unknown")) {
         effectiveSession = { ...managed, status: "running" as const };
       } else if (
         managed.status === "unknown" &&
         !hasActiveTurn &&
-        (managed.sessionOrigin !== "desktop" || desktopHistory?.sessionState === "idle")
+        (managed.sessionOrigin !== "desktop" || !externalHistory || externalHistory.sessionState === "idle")
       ) {
         effectiveSession = { ...managed, status: "idle" as const };
         this.deps.store.upsertSession(effectiveSession);
@@ -192,20 +192,20 @@ export class AntigravityWebSource implements WebSource {
         executionControl,
         catalog: this.deps.modelCatalog,
         limit,
-        ...(desktopHistory
+        ...(externalHistory
           ? {
-              baseMessages: desktopHistory.messages,
-              ...(desktopHistory.activeTurnItems ? { baseActiveTurnItems: desktopHistory.activeTurnItems } : {}),
+              baseMessages: externalHistory.messages,
+              ...(externalHistory.activeTurnItems ? { baseActiveTurnItems: externalHistory.activeTurnItems } : {}),
             }
           : {}),
       });
     }
 
     if (this.deps.config.desktopReadEnabled) {
-      const desktopHistory = this.deps.desktopReader.readHistory(id, limit);
-      if (desktopHistory) {
+      const externalHistory = this.deps.desktopReader.readExternalHistory(id, limit);
+      if (externalHistory) {
         return {
-          ...desktopHistory,
+          ...externalHistory,
           executionControl: {
             activeExecutionId: null,
             activeEpoch: null,
@@ -255,7 +255,7 @@ export class AntigravityWebSource implements WebSource {
     }
     const managed = this.deps.store.getSession(id);
     if (!managed) {
-      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getSession(id)) {
+      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getExternalSession(id)) {
         if (!this.deps.config.externalSessionsEnabled) {
           return { state: "failed", sessionId: id, errorCode: "desktop_session_read_only" };
         }
@@ -276,7 +276,7 @@ export class AntigravityWebSource implements WebSource {
     }
     const managed = this.deps.store.getSession(id);
     if (!managed) {
-      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getSession(id)) {
+      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getExternalSession(id)) {
         if (!this.deps.config.externalSessionsEnabled) {
           throw new Error("model_update_unverified");
         }
@@ -306,7 +306,7 @@ export class AntigravityWebSource implements WebSource {
     }
     const managed = this.deps.store.getSession(id);
     if (!managed) {
-      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getSession(id)) {
+      if (this.deps.config.desktopReadEnabled && this.deps.desktopReader.getExternalSession(id)) {
         throw new Error("interrupt_not_owned");
       }
       throw new Error("session_missing");

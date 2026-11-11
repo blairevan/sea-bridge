@@ -314,6 +314,7 @@ async function main(): Promise<void> {
         egressIpProbe: createCachedEgressIpProbe(),
       },
       sourceFactory: (webStore) => {
+        codexSource.setCreatedTargetsResolver(() => webStore.findCreatedSessionTargets("codex"));
         const antigravity = antigravityRuntime.createWebSource(webStore);
         return {
           codex: codexSource,
