@@ -38,6 +38,7 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(html).toContain(`src="/app.js?v=${APP_VERSION}"`); expect(html).toContain(`href="/app.css?v=${APP_VERSION}"`);
   expect(html).toContain('<main id="login" class="login" hidden>');
   expect(html).toContain('<form id="login-form" class="card" method="post" action="/api/auth/login" novalidate>');
+  expect(html).not.toContain('id="device-name"');
   expect(html).toContain('id="auth-loading"');
   expect(html).not.toContain('id="connection-panel"'); expect(html).not.toContain('id="connection-retry"');
   expect(script).not.toContain("connection-panel"); expect(css).not.toContain(".connection-panel");
@@ -100,6 +101,7 @@ test("real loopback server sends strict static headers, allows no traversal, and
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(await response.text()).toContain(`v${APP_VERSION}`);
     expect(response.status).toBe(200); expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("Accept-CH")).toContain("Sec-CH-UA-Platform");
     expect(response.headers.get("Cache-Control")).toBe("no-store"); expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     for (const route of ["/overview", "/sessions", "/records", "/settings"]) {
       const pageRes = await fetch(`http://127.0.0.1:${port}${route}`);

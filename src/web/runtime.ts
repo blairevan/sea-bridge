@@ -12,11 +12,15 @@ import type { WebConfig, WebService } from "./types.ts";
 import type { WebSource } from "./sources/types.ts";
 import type { TelegramStatus } from "./status.ts";
 import type { CodexQueueRecoveryNotice } from "../desktop/codex-queue-recovery.ts";
+import type { DeviceIdentityProbes } from "./device-identity.ts";
+import { LocalBridgeService } from "../bridge/service.ts";
+import { LocalBridgeServer } from "../bridge/server.ts";
 
 /** Web runtime resources composed after the existing bridge's database is healthy. */
 export class WebRuntime implements WebService {
   private server: WebServer | null = null;
   private control: WebControlServer | null = null;
+  private localBridge: LocalBridgeServer | null = null;
   private events: WebEvents | null = null;
   private cleanup: ReturnType<typeof setInterval> | null = null;
 
@@ -25,6 +29,7 @@ export class WebRuntime implements WebService {
     config: WebConfig; db: Database; secrets: readonly string[];
     sourceFactory: (store: WebStore) => Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>;
     telegramStatus: () => TelegramStatus; staticRoot?: string;
+    identityProbes?: DeviceIdentityProbes;
   }) {}
 
   /** Migrate and quarantine incomplete dispatches before exposing any browser write route. */
@@ -37,8 +42,23 @@ export class WebRuntime implements WebService {
     const redaction = new WebRedaction(this.options.secrets);
     const sources = this.options.sourceFactory(store);
     const handler = createWebHandler({ store, auth, events: this.events, redaction, pepper, sources, port: config.port,
-      remoteOrigin: config.remoteOrigin, telegramStatus: this.options.telegramStatus });
+      remoteOrigin: config.remoteOrigin, telegramStatus: this.options.telegramStatus,
+      ...(this.options.identityProbes ? { identityProbes: this.options.identityProbes } : {}),
+    });
     this.control = new WebControlServer(config.controlSocketPath, auth, () => this.events?.revokeAll()); await this.control.start();
+    if (config.localBridgeSocketPath && config.localBridgeSocketPath.length <= 100) {
+      const bridgeService = new LocalBridgeService({
+        store,
+        auth,
+        events: this.events,
+        redaction,
+        pepper,
+        sources,
+        webBaseUrl: config.remoteOrigin ?? `http://127.0.0.1:${config.port}`,
+      });
+      this.localBridge = new LocalBridgeServer(config.localBridgeSocketPath, bridgeService);
+      await this.localBridge.start();
+    }
     this.server = new WebServer({ config, handler, staticRoot: this.options.staticRoot ?? await resolveWebStaticRoot() }); await this.server.start();
     this.cleanup = setInterval(() => { try { store.cleanup(Date.now()); } catch { /* Retention failure cannot stop the existing bridge. */ } }, 60000);
     this.cleanup.unref();
@@ -54,6 +74,7 @@ export class WebRuntime implements WebService {
   async stop(): Promise<void> {
     if (this.cleanup) clearInterval(this.cleanup); this.cleanup = null;
     const server = this.server; this.server = null; await server?.stop();
+    const localBridge = this.localBridge; this.localBridge = null; await localBridge?.stop();
     this.events?.close(); this.events = null;
     const control = this.control; this.control = null; await control?.stop();
   }

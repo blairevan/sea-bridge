@@ -121,6 +121,7 @@ describe("Antigravity migrations and store", () => {
         { version: 1 },
         { version: 2 },
         { version: 3 },
+        { version: 4 },
       ]);
       expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
       expect(db.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });

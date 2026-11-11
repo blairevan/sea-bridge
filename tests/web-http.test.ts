@@ -30,9 +30,14 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
       return { state: "accepted", sessionId: "session-example" };
     }, async send() { throw new Error("unused"); },
   };
-  const handler = createWebHandler({ store, auth, events, sources: { codex: source, dsh: source }, pepper: randomBytes(32), redaction: new WebRedaction(["fixture-secret"]), port: 7310, remoteOrigin: null, telegramStatus: () => ({ stopped: false, lastPollSuccessAt: null, pollFailed: false }) });
+  const handler = createWebHandler({
+    store, auth, events, sources: { codex: source, dsh: source }, pepper: randomBytes(32),
+    redaction: new WebRedaction(["fixture-secret"]), port: 7310, remoteOrigin: null,
+    telegramStatus: () => ({ stopped: false, lastPollSuccessAt: null, pollFailed: false }),
+    identityProbes: { localHostName: () => "Mac-Mini-M5", egressIpProbe: async () => "203.0.113.88" },
+  });
   const request = (path: string, method = "GET", body?: unknown, cookie?: string, csrf?: string) => handler(new Request("http://127.0.0.1:7310" + path, {
-    method, headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), Origin: "http://127.0.0.1:7310", ...(cookie ? { Cookie: cookie } : {}), ...(csrf ? { "X-Sea-Bridge-CSRF": csrf } : {}) },
+    method, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/131.0.0.0 Safari/537.36", ...(body !== undefined ? { "Content-Type": "application/json" } : {}), Origin: "http://127.0.0.1:7310", ...(cookie ? { Cookie: cookie } : {}), ...(csrf ? { "X-Sea-Bridge-CSRF": csrf } : {}) },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   }), "127.0.0.1");
   try {
@@ -40,7 +45,9 @@ test("HTTP protects reads/writes and durably claims raw requests exactly once", 
     auth.setAccount(LOGIN_FIXTURE.username, LOGIN_HASH);
     expect((await request("/api/auth/pair", "POST", { code: "12345678" })).status).toBe(404);
     expect((await request("/api/auth/login", "POST", { ...LOGIN_FIXTURE, name: "fixture-secret" })).status).toBe(200);
-    expect(JSON.stringify(db.query("SELECT name FROM web_device_sessions").all())).not.toContain("fixture-secret");
+    const savedDevices = db.query("SELECT name, login_ip, client_app FROM web_device_sessions").all() as Array<{ name: string; login_ip: string; client_app: string }>;
+    expect(JSON.stringify(savedDevices)).not.toContain("fixture-secret");
+    expect(savedDevices[0]).toEqual({ name: "Mac-Mini-M5 · Chrome", login_ip: "203.0.113.88", client_app: "sea-bridge" });
     const paired = await loginFixture(auth); if (!paired) throw new Error("fixture failed");
     const cookie = `sea_session=${paired.sessionToken}; sea_csrf=${paired.csrfToken}`;
     const imagePath = "/api/sessions/codex/thread/attachments/rollout-1/0";

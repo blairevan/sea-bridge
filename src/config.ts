@@ -26,11 +26,18 @@ export function loadWebConfig(env: Readonly<Record<string, string | undefined>> 
       throw new Error("web_remote_origin_invalid");
     }
   }
+  const controlSocketPath = expandHome(env.SEA_BRIDGE_WEB_CONTROL_SOCKET ?? "~/Library/Application Support/SeaBridge/run/web-control.sock");
+  const localBridgeSocketPath = env.SEA_BRIDGE_LOCAL_SOCKET
+    ? expandHome(env.SEA_BRIDGE_LOCAL_SOCKET)
+    : env.SEA_BRIDGE_WEB_CONTROL_SOCKET
+      ? resolve(dirname(controlSocketPath), "bridge.sock")
+      : expandHome("~/Library/Application Support/SeaBridge/run/bridge.sock");
   return {
     enabled: ["true", "1", "yes", "on"].includes(enabledValue),
     port,
     remoteOrigin,
-    controlSocketPath: expandHome(env.SEA_BRIDGE_WEB_CONTROL_SOCKET ?? "~/Library/Application Support/SeaBridge/run/web-control.sock"),
+    controlSocketPath,
+    localBridgeSocketPath,
     operationPepperPath: expandHome(env.SEA_BRIDGE_WEB_OPERATION_PEPPER_PATH ?? "~/Library/Application Support/SeaBridge/web-operation.key"),
   };
 }

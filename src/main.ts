@@ -38,8 +38,11 @@ import { DshReadOnlyBridge } from "./dsh/read-only-bridge.ts";
 import { DshSessionObserver } from "./dsh/session-observer.ts";
 import { DshReplyRouter } from "./dsh/reply-router.ts";
 import { DshNewSessionManager } from "./dsh/new-session-manager.ts";
-import { startConfiguredTaskConversations } from "./tasks/runtime.ts";
-import { randomUUID } from 'node:crypto';
+import {
+  createCachedEgressIpProbe,
+  createLocalHostNameReader,
+  queryTailscaleWhois,
+} from "./web/device-identity.ts";
 
 function seedCapabilities(state: StateDb): void {
   const now = Date.now();
@@ -250,20 +253,7 @@ async function main(): Promise<void> {
     antigravityTelegram?.handler,
   );
 
-  const taskConversations = await startConfiguredTaskConversations({ db: state.db, dbPath: config.dbPath,
-    binary: config.codexCliPath, codexHome: config.codexHome, projects: () => readService.listProjects(),
-    registerThread: id => observerStore.registerCreatedThread(id) });
-  if (taskConversations) queueClient.setTaskRouter(async (threadId, prompt, context) => {
-    const requestId = context?.source === 'telegram' && context.updateId !== undefined
-      ? 'telegram-task-' + String(context.updateId) : randomUUID();
-    const result = await taskConversations.service.send(threadId, requestId, prompt);
-    if (!result) return null;
-    return { status: result.state === 'queued' || result.state === 'accepted' ? 'delivered'
-      : result.state === 'failed' ? 'failed' : 'delivery_unknown', exitCode: result.state === 'failed' ? 1 : null,
-      ...(result.errorCode ? { errorCode: result.errorCode } : {}) };
-  });
   const codexSource = new CodexWebSource({ ...(process.platform === "darwin" ? { openDesktop: openCodexDesktopThread } : {}), threads: catalogStore,
-    ...(taskConversations ? { taskConversations: taskConversations.service } : {}),
     catalogs: readService, actions: actionClient,
     readLatestTurn: async (id) => (await readService.listTurnPage(id)).data[0] ?? null,
     readThread: (id) => readService.getThread(id),
@@ -318,6 +308,11 @@ async function main(): Promise<void> {
       secrets.push(readFileSync(config.dshTokenPath, "utf8").trim());
     }
     webRuntime = new WebRuntime({ config: webConfig, db: state.db, secrets, telegramStatus: () => telegram.getStatus(),
+      identityProbes: {
+        localHostName: createLocalHostNameReader(),
+        tailscaleWhois: queryTailscaleWhois,
+        egressIpProbe: createCachedEgressIpProbe(),
+      },
       sourceFactory: (webStore) => {
         const antigravity = antigravityRuntime.createWebSource(webStore);
         return {
@@ -336,7 +331,6 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("shutdown_started", { signal });
     await queueRecovery?.stop();
-    await taskConversations?.stop().catch(() => logger.warn('task_bridge_stop_failed', {}));
     await web?.stop().catch(() => logger.warn("web_stop_failed", { errorCode: "web_stop_failed" }));
     await antigravityRuntime.stop().catch(() => logger.warn("antigravity_stop_failed", {}));
     await telegram.stop();

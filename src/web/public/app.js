@@ -1937,7 +1937,8 @@ async function loadSettings() {
   if (state.paused || viewEpoch !== state.viewEpoch) return;
   el("device-items").replaceChildren();
   for (const device of devices.items) {
-    const row = node("div", "", "device-row"); row.append(node("span", `${device.name}${device.id === devices.currentDeviceId ? "（当前设备）" : ""}\n登录：${new Date(device.pairedAt).toLocaleString()} · 活跃：${new Date(device.lastActiveAt).toLocaleString()}`));
+    const appLabel = device.clientApp === "toolhub" ? "ToolHub" : "Sea-Bridge";
+    const row = node("div", "", "device-row"); row.append(node("span", `${device.name} (${appLabel})${device.id === devices.currentDeviceId ? "（当前设备）" : ""}\n出口 IP：${device.loginIp || "未知"} · 登录：${new Date(device.pairedAt).toLocaleString()} · 活跃：${new Date(device.lastActiveAt).toLocaleString()}`));
     const button = node("button", device.revokedAt ? "已撤销" : "撤销", "quiet"); button.disabled = state.paused || Boolean(device.revokedAt); button.dataset.revoked = String(Boolean(device.revokedAt));
     button.onclick = () => run("revoke", async () => { await api("/api/devices/" + device.id, "DELETE"); if (device.id === devices.currentDeviceId) showLogin(); else await loadSettings(); }); row.append(button); el("device-items").append(row);
   }
@@ -2785,7 +2786,7 @@ async function loginDevice() {
   if (!username || !password) { notice("请输入账号和密码"); return; }
   notice("正在登录…"); el("login-submit").disabled = true;
   try {
-    await api("/api/auth/login", "POST", { username, password, name: el("device-name").value || null });
+    await api("/api/auth/login", "POST", { username, password });
     notice("正在确认登录…"); await bootstrap();
   } finally { el("login-password").value = ""; el("login-submit").disabled = false; }
 }
