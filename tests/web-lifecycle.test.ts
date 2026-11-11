@@ -25,8 +25,10 @@ test("full runtime recovers before requests and cleans socket/server before data
     expect(store.getOperation("incomplete")?.state).toBe("delivery_unknown");
     expect((await fetch(`http://127.0.0.1:${port}/api/status`)).status).toBe(401);
     expect(existsSync(config.controlSocketPath)).toBe(true);
+    if (config.localBridgeSocketPath) expect(existsSync(config.localBridgeSocketPath)).toBe(true);
   } finally { await runtime.stop(); state.close(); rmSync(root, { recursive: true, force: true }); }
   expect(existsSync(config.controlSocketPath)).toBe(false);
+  if (config.localBridgeSocketPath) expect(existsSync(config.localBridgeSocketPath)).toBe(false);
 });
 
 describe("Web configuration", () => {

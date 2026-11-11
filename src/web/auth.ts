@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { randomToken, safeEqual, tokenHash } from "./crypto.ts";
 import { validUsername, validPasswordHash } from "./password.ts";
-import { WebStore, type WebDevice } from "./store.ts";
+import { WebStore, type WebClientApp, type WebDevice } from "./store.ts";
 
 /** Credentials exist only while issuing a response; persistence contains hashes. */
 export interface LoggedInDevice { device: WebDevice; sessionToken: string; csrfToken: string; }
@@ -47,7 +47,13 @@ export class WebAuth {
   }
 
   /** Reserve attempts before asynchronous verification and fence concurrent resets. */
-  async login(username: string, password: string, bucket: string, name: string): Promise<LoggedInDevice | null> {
+  async login(
+    username: string,
+    password: string,
+    bucket: string,
+    name: string,
+    metadata?: { loginIp?: string; clientApp?: WebClientApp },
+  ): Promise<LoggedInDevice | null> {
     const now = this.now();
     for (const [key, value] of this.buckets) if (now - value.start >= 60000) this.buckets.delete(key);
     if (now - this.global.start >= 60000) this.global = { start: now, attempts: 0 };
@@ -66,8 +72,17 @@ export class WebAuth {
     if (!verified || !safeEqual(username, account.username) || this.store.getAccount()?.revision !== account.revision) return null;
     const issuedAt = this.now();
     const sessionToken = randomToken(); const csrfToken = randomToken(); const id = randomUUID();
-    const deviceName = name.trim().slice(0, 80).replace(/[\u0000-\u001f\u007f]/g, "") || "设备";
-    this.store.createDevice({ id, name: deviceName, sessionHash: tokenHash(sessionToken), csrfHash: tokenHash(csrfToken), pairedAt: issuedAt, expiresAt: issuedAt + 30 * 86400000 });
+    const deviceName = name.trim().slice(0, 80).replace(/[\u0000-\u001f\u007f]/g, "") || "Web · Browser";
+    this.store.createDevice({
+      id,
+      name: deviceName,
+      loginIp: metadata?.loginIp ?? "",
+      clientApp: metadata?.clientApp ?? "sea-bridge",
+      sessionHash: tokenHash(sessionToken),
+      csrfHash: tokenHash(csrfToken),
+      pairedAt: issuedAt,
+      expiresAt: issuedAt + 30 * 86400000,
+    });
     const device = this.store.findDevice(tokenHash(sessionToken), issuedAt);
     if (!device) throw new Error("web_device_creation_failed");
     return { device, sessionToken, csrfToken };

@@ -1,5 +1,12 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.4.0 ToolHub 统一登录与本地私有会话桥 (bridge.sock)
+
+- **移除旧任务子系统，启用本地私有会话桥 (`bridge.sock`)**：移除历史 `src/tasks/*` 与 `SEA_BRIDGE_TASKS_ENABLED` / `tasks.sock`，默认在 `~/Library/Application Support/SeaBridge/run/bridge.sock`（可通过 `SEA_BRIDGE_LOCAL_SOCKET` 覆盖，父目录 `0700`、socket `0600`、同 UID 校验，且显式拒绝携带 `Origin` 或 `Sec-Fetch-Site` 的浏览器请求头）暴露免应用层密码配置的本地私有接口。
+- **双站统一账密与 30 天设备会话**：`ToolHub`（`https://toolhub.example.com`）与 `Sea-Bridge`（`https://code.example.com`）共用 `Sea-Bridge` 唯一管理员账密及 `web_device_sessions` / `web_csrf_tokens` 会话表，各自下发 Host-Only Cookie（`sea_session` + `sea_csrf`，`SameSite=Strict`，绝不设置跨兄弟子站的 `Domain=.example.com`）；重置密码或在设置页撤销设备将同步使双端会话立即失效。
+- **自动记录设备名称与真实公网出口 IP**：移除登录页“设备名称（可选）”手动输入框（仅保留账号 + 密码）。服务端按「Tailscale 直连（`tailscale whois` 主机名）→ 本机回环（`scutil --get ComputerName` / `hostname` 本机名）→ 公网 Tunnel（`系统平台 · 浏览器`）」三级规则自动生成设备名并标记登录入口（`Sea-Bridge` / `ToolHub`）；同时记录客户端真实公网出口 IP（Tunnel 链路读取受校验 `CF-Connecting-IP`，回环/Tailscale 链路通过 1500ms 有界缓存探测 `cloudflare.com/cdn-cgi/trace` 获取出口 IP，离线时优雅回退连接对端 IP），并在全局脱敏中豁免 `loginIp` 以便在「已登录设备」中直接核查。
+- **多源原生会话执行接口**：本地私有桥提供 `/v1/catalog` 与 `/v1/sessions*`，直接复用 `Codex`、`Antigravity`、`dsh` 三类原生 `WebSource` 创建会话、发送续聊/返工轮次、查询状态及中断运行。
+
 ## v1.2.2 复用现有新建会话的消息路径
 
 普通 `POST /api/sessions` → `CodexWebSource.create` → `startThreadAndTurn` 与任务入口现在共用 `createNativeConversation` / `sendNativeConversationMessage`。原样文本只放入 `input.text`，项目/模型/权限与可选监督上下文是独立参数；二者均不传 outputSchema，不把检查报告字段当作聊天格式。保留各自鉴权及任务的工作区、检查和人工验收边界，不借浏览器 Cookie 调用私有接口，也不沿用 Desktop full-access。
@@ -75,6 +82,7 @@ Cloudflare Tunnel 创建、DNS 路由与指定配置运行的流程以 [Cloudfla
 | Tunnel LaunchAgent | `~/Library/LaunchAgents/com.example.sea-bridge-cloudflared.plist` |
 | 应用数据库 | `~/Library/Application Support/SeaBridge/sea-bridge.sqlite3` |
 | 本机账号控制 socket | `~/Library/Application Support/SeaBridge/run/web-control.sock` |
+| ToolHub 本地私有会话桥 socket | `~/Library/Application Support/SeaBridge/run/bridge.sock` |
 | Web 操作密钥文件 | `~/Library/Application Support/SeaBridge/web-operation.key` |
 
 发布目录是版本快照；修改源码或执行构建不会自动切换运行中的服务。实际启动路径以 LaunchAgent 的 `ProgramArguments` 为准。

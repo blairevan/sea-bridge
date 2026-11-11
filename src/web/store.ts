@@ -3,8 +3,10 @@ import { safeEqual } from "./crypto.ts";
 
 /** Persisted Web settings snapshot used consistently for an entire response. */
 export interface WebSettings { redactionEnabled: boolean; version: number; }
+/** Supported Web login entry applications sharing administrator sessions. */
+export type WebClientApp = "sea-bridge" | "toolhub";
 /** Device identity with no raw credential material. */
-export interface WebDevice { id: string; name: string; pairedAt: number; lastActiveAt: number; expiresAt: number; revokedAt: number | null; }
+export interface WebDevice { id: string; name: string; loginIp: string; clientApp: WebClientApp; pairedAt: number; lastActiveAt: number; expiresAt: number; revokedAt: number | null; }
 /** Single administrator credential; never include this projection in HTTP responses. */
 export interface WebAccount { username: string; passwordHash: string; revision: number; }
 /** State vocabulary separates submission acceptance from source execution. */
@@ -21,7 +23,7 @@ export interface WebOperation {
   targetId: string | null; projectId: string | null; modelId: string | null; state: OperationState;
   sessionId: string | null; turnId: string | null; errorCode: string | null; createdAt: number; updatedAt: number;
 }
-const DEVICE_COLUMNS = "id,name,paired_at AS pairedAt,last_active_at AS lastActiveAt,expires_at AS expiresAt,revoked_at AS revokedAt";
+const DEVICE_COLUMNS = "id,name,login_ip AS loginIp,client_app AS clientApp,paired_at AS pairedAt,last_active_at AS lastActiveAt,expires_at AS expiresAt,revoked_at AS revokedAt";
 const OP_COLUMNS = "id,kind,source,device_id AS deviceId,target_id AS targetId,project_id AS projectId,model_id AS modelId,state,session_id AS sessionId,turn_id AS turnId,error_code AS errorCode,created_at AS createdAt,updated_at AS updatedAt";
 
 /** Web-only persistence; callers must filter content before storage. */
@@ -62,9 +64,11 @@ export class WebStore {
   }
 
   /** Insert credential hashes and absolute expiry in one transaction. */
-  createDevice(input: { id: string; name: string; sessionHash: string; csrfHash: string; pairedAt: number; expiresAt: number }): void {
+  createDevice(input: { id: string; name: string; loginIp?: string; clientApp?: WebClientApp; sessionHash: string; csrfHash: string; pairedAt: number; expiresAt: number }): void {
+    const loginIp = (input.loginIp ?? "").trim().slice(0, 64);
+    const clientApp: WebClientApp = input.clientApp === "toolhub" ? "toolhub" : "sea-bridge";
     this.db.transaction(() => {
-      this.db.query("INSERT INTO web_device_sessions VALUES(?,?,?,?,?,?,NULL)").run(input.id, input.name, input.sessionHash, input.pairedAt, input.pairedAt, input.expiresAt);
+      this.db.query("INSERT INTO web_device_sessions(id,name,session_hash,paired_at,last_active_at,expires_at,revoked_at,login_ip,client_app) VALUES(?,?,?,?,?,?,NULL,?,?)").run(input.id, input.name, input.sessionHash, input.pairedAt, input.pairedAt, input.expiresAt, loginIp, clientApp);
       this.db.query("INSERT INTO web_csrf_tokens VALUES(?,?,?)").run(input.id, input.csrfHash, input.expiresAt);
     })();
   }

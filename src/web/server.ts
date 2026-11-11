@@ -80,6 +80,7 @@ export class WebServer implements WebService {
           const isPageRoute = ["/", "/overview", "/sessions", "/records", "/settings"].includes(url.pathname);
           return new Response(asset.bytes, { headers: {
             "Content-Type": asset.type, "Cache-Control": !isPageRoute && url.searchParams.get("v") === APP_VERSION ? "public, max-age=31536000, immutable" : "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+            ...(isPageRoute ? { "Accept-CH": "Sec-CH-UA-Platform, Sec-CH-UA-Model" } : {}),
             "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           } });
         }

@@ -116,11 +116,11 @@ test("mobile login validates fields, preserves password whitespace and releases 
   const start = script.indexOf("async function loginDevice()");
   const end = script.indexOf('\nel("login-form").onsubmit', start);
   if (start < 0 || end < 0) throw new Error("login handler missing");
-  const nodes: Record<string, { value: string; disabled: boolean }> = { "login-username": { value: "", disabled: false }, "login-password": { value: "", disabled: false }, "login-submit": { value: "", disabled: false }, "device-name": { value: "", disabled: false } };
+  const nodes: Record<string, { value: string; disabled: boolean }> = { "login-username": { value: "", disabled: false }, "login-password": { value: "", disabled: false }, "login-submit": { value: "", disabled: false } };
   let calls = 0; const notices: string[] = [];
   const location = { protocol: "http:", hostname: "127.0.0.1" };
-  const login = runInNewContext(script.slice(start, end) + "\nloginDevice", { location, el: (id: string) => nodes[id], notice: (text: string) => notices.push(text), api: async (_path: string, _method: string, body: { username: string; password: string }) => {
-    calls++; expect(body.username).toBe("fixture-admin"); expect(body.password).toBe(" fixture-password "); throw new Error("fixture transport failure");
+  const login = runInNewContext(script.slice(start, end) + "\nloginDevice", { location, el: (id: string) => nodes[id], notice: (text: string) => notices.push(text), api: async (_path: string, _method: string, body: Record<string, unknown>) => {
+    calls++; expect(body).toEqual({ username: "fixture-admin", password: " fixture-password " }); throw new Error("fixture transport failure");
   } }) as () => Promise<void>;
   await login(); expect(calls).toBe(0); expect(notices).toContain("请输入账号和密码");
   nodes["login-username"]!.value = " fixture-admin "; nodes["login-password"]!.value = " fixture-password ";

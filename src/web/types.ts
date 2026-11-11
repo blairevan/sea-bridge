@@ -3,6 +3,7 @@ export interface WebConfig {
   enabled: boolean;
   port: number;
   controlSocketPath: string;
+  localBridgeSocketPath?: string;
   remoteOrigin: string | null;
   operationPepperPath: string;
 }

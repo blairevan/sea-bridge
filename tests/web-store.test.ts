@@ -53,7 +53,7 @@ describe("Web isolated persistence", () => {
       expect(db.query("SELECT thread_id FROM desktop_message_links").get()).toEqual({ thread_id: "thread" });
       expect(db.query("SELECT cursor FROM dsh_observer_state").get()).toEqual({ cursor: 1 });
       expect(new WebStore(db).getSettings()).toEqual({ redactionEnabled: true, version: 1 });
-      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 3 });
+      expect(db.query("SELECT count(*) AS count FROM web_schema_migrations").get()).toEqual({ count: 4 });
       db.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

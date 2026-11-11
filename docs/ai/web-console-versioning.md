@@ -1,5 +1,11 @@
 # Sea-Bridge 版本规则
 
+## v1.4.0
+
+- 开放 ToolHub 统一认证与多源原生会话本地私有桥（`bridge.sock`），并升级自动设备识别与公网出口 IP 记录：
+  1. **SQLite Schema v4 与自动设备/出口 IP 审计**：`web_device_sessions` 新增 `login_ip` 与 `client_app`（`sea-bridge` | `toolhub`）列；移除登录页 `#device-name` 手动输入框，自动按 Tailscale 节点名 / 本机名称 / 系统平台+浏览器三级策略生成设备名，记录真实公网出口 IP，并在 `WebRedaction` 中豁免 `loginIp` 掩码以便在设置页「已登录设备」直接核查。
+  2. **本地私有会话桥 (`src/bridge/*`)**：默认监听 `~/Library/Application Support/SeaBridge/run/bridge.sock`（父目录 `0700`、socket `0600`、同 UID 校验 + 拒绝 `Origin` / `Sec-Fetch-Site` 浏览器请求头），提供 `/v1/auth/*` 统一账密/会话委托与 `/v1/catalog`、`/v1/sessions*` 多源（`codex` / `antigravity` / `dsh`）原生会话创建、续聊、查询与中断接口；清理旧版 `src/tasks/*` 代码。
+
 ## v1.3.4
 
 - 新增移动端会话详情手势返回、浏览器 History 联动与下拉刷新：

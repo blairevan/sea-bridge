@@ -15,12 +15,6 @@ import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
-  taskConversations?: {
-    locked(id: string): boolean;
-    activity(id: string): { state: 'active' | 'idle' | 'unknown'; turnId: string | null } | null;
-    send(id: string, operationId: string, prompt: string): Promise<SourceResult | null>;
-    interruptThread(id: string, turnId: string): Promise<boolean>;
-  };
   openDesktop?: (id: string) => Promise<void>;
   threads: CodexThreadReader;
   appServer?: Pick<CodexAppServerClient, "listProjects" | "listModels" | "startThreadAndTurn"> & Partial<Pick<CodexAppServerClient, "ownsThread" | "ownedTurn" | "interruptOwnedTurn" | "updateThreadModel">>;
@@ -118,7 +112,7 @@ export class CodexWebSource implements WebSource {
 
   /** Prefer the shared Action registry; local callbacks are only a compatibility fallback for narrow test doubles. */
   private ownsThread(id: string): boolean {
-    return !!this.deps.taskConversations?.locked(id) || (this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id));
+    return this.actions.ownsThread ? this.actions.ownsThread(id) : this.owners.has(id);
   }
 
   /** Resolve field-wise metadata without exposing evidence provenance or private source paths to Web. */
@@ -152,8 +146,6 @@ export class CodexWebSource implements WebSource {
 
   /** Project exact active-turn control through the server-side provider router. */
   private turnControl(id: string, activity: { state: "active" | "idle" | "unknown"; turnId: string | null } | CodexActivity | null = null): WebTurnControl {
-    const task = this.deps.taskConversations?.activity(id);
-    if (task?.state === 'active' && task.turnId) return { activeTurnId: task.turnId, interrupt: { status: 'available', scope: 'exact_codex_turn' } };
     const owned = this.actions.ownedTurn?.(id) ?? null;
     const activeTurnId = owned && !owned.terminalObserved ? owned.turnId
       : activity?.state === "active" && activity.turnId ? activity.turnId : null;
@@ -235,11 +227,10 @@ export class CodexWebSource implements WebSource {
       return threads.map((thread) => {
         const resolved = refreshed.get(thread.id);
         const activity = resolved?.activity ?? this.deps.activity?.(thread.id) ?? null;
-        const task = this.deps.taskConversations?.activity(thread.id);
         const owned = this.actions.ownedTurn?.(thread.id) ?? null;
         const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(thread.id);
         const state = this.deps.pendingApproval(thread.id) ? "waiting_external_approval" as const
-          : task?.state === "active" || ownedActive ? "running" as const : task?.state === "idle" ? "idle" as const
+          : ownedActive ? "running" as const
           : resolved?.state ?? (activity?.state === "active" ? "running" as const : activity?.state === "idle" ? "idle" as const : "unknown" as const);
         const sessionMeta = this.sessionMeta(thread.id, thread);
         return {
@@ -301,11 +292,10 @@ export class CodexWebSource implements WebSource {
         this.sessionActivity.resolve(thread, this.deps.activity?.(id) ?? null),
       ]);
       const activity = resolved.activity;
-      const task = this.deps.taskConversations?.activity(id);
       const owned = this.actions.ownedTurn?.(id) ?? null;
       const ownedActive = owned ? !owned.terminalObserved : this.ownsThread(id);
       const sessionState: WebSession["state"] = this.deps.pendingApproval(id) ? "waiting_external_approval"
-        : task?.state === "active" || ownedActive ? "running" : task?.state === "idle" ? "idle" : resolved.state;
+        : ownedActive ? "running" : resolved.state;
       this.historyReadable = true;
       const queue = this.deps.readQueue?.(id);
       const timing = activity?.state === "active" ? { activeTurnStartedAt: activity.observedAt, activeTurnItems: activity.items ?? [] } : {};
@@ -345,7 +335,6 @@ export class CodexWebSource implements WebSource {
 
   /** Interrupt an exact turn through a verified provider selected by the server-side router. */
   async interrupt(id: string, expectedTurnId: string): Promise<{ status: "interrupting" }> {
-    if (await this.deps.taskConversations?.interruptThread(id, expectedTurnId)) return { status: 'interrupting' };
     if (!this.deps.interruptRouter) throw new Error("interrupt_provider_unavailable");
     const result = await this.deps.interruptRouter.interrupt({ threadId: id, expectedTurnId });
     if (result.status === "interrupting") return result;
@@ -390,9 +379,7 @@ export class CodexWebSource implements WebSource {
   }
 
   /** Reject owned/missing threads before queueing; queue success proves only admission. */
-  async send(id: string, operationId: string, prompt: string): Promise<SourceResult> {
-    const managed = await this.deps.taskConversations?.send(id, operationId, prompt);
-    if (managed) return managed;
+  async send(id: string, _operationId: string, prompt: string): Promise<SourceResult> {
     if (!this.deps.queueUsable) return { state: "failed", sessionId: id, errorCode: "queue_unavailable" };
     if (this.ownsThread(id)) return { state: "failed", sessionId: id, errorCode: "first_turn_owned" };
     if (!this.deps.threads.getThread?.(id)) return { state: "failed", sessionId: id, errorCode: "session_missing" };

@@ -7,6 +7,7 @@ import { dispatchWebOperation } from "./operations.ts";
 import { operationRecords, withSessionTitles } from "./records.ts";
 import { listWebSessions } from "./session-list.ts";
 import type { WebSource, ExecutionEvidence } from "./sources/types.ts";
+import { resolveDeviceIdentity, type DeviceIdentityProbes } from "./device-identity.ts";
 
 export const WEB_MAX_REQUEST_BYTES = 256 * 1024;
 
@@ -15,6 +16,7 @@ export interface WebHttpDependencies {
   store: WebStore; auth: WebAuth; events: WebEvents; redaction: WebRedaction; pepper: Uint8Array;
   sources: Partial<Record<"codex" | "dsh" | "antigravity", WebSource>>;
   port: number; remoteOrigin: string | null; telegramStatus: () => TelegramStatus;
+  identityProbes?: DeviceIdentityProbes;
 }
 
 /** Stable HTTP failures contain only allowlisted codes. */
@@ -91,7 +93,14 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
       if (path === "/api/auth/login" && method === "POST") {
         const body = await readJson(request, 2048);
         if (context.remote && !context.origin.startsWith("https://")) throw new HttpError(403, "https_required");
-        const paired = await deps.auth.login(text(body.username, 64) ?? "", text(body.password, 256) ?? "", context.bucket, deps.redaction.storage(text(body.name, 80, true) ?? "设备"));
+        const identity = await resolveDeviceIdentity(request, { remote: context.remote, peer }, deps.identityProbes);
+        const paired = await deps.auth.login(
+          text(body.username, 64) ?? "",
+          text(body.password, 256) ?? "",
+          context.bucket,
+          deps.redaction.storage(identity.name),
+          { loginIp: identity.loginIp, clientApp: "sea-bridge" },
+        );
         if (!paired) throw new HttpError(401, "login_failed");
         const response = json({ loggedIn: true });
         for (const cookie of deps.auth.cookies(paired, context.origin.startsWith("https://"))) response.headers.append("Set-Cookie", cookie);

@@ -63,6 +63,13 @@ export function migrateWeb(db: Database, beforeCommit?: () => void): void {
         INSERT INTO web_schema_migrations VALUES(3);
       `);
     }
+    if (!db.query("SELECT version FROM web_schema_migrations WHERE version=4").get()) {
+      db.exec(`
+        ALTER TABLE web_device_sessions ADD COLUMN login_ip TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_device_sessions ADD COLUMN client_app TEXT NOT NULL DEFAULT 'sea-bridge';
+        INSERT INTO web_schema_migrations VALUES(4);
+      `);
+    }
     beforeCommit?.();
   })();
 }
