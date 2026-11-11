@@ -157,7 +157,7 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
         const creationClient = url.searchParams.get("creationClient");
         if (creationClient !== null && !["desktop", "cli", "sea_bridge", "exec", "unknown"].includes(creationClient)) throw new HttpError(400, "invalid_creation_client");
         const activity = url.searchParams.get("activity");
-        if (activity && !["running", "waiting_external_approval", "unknown"].includes(activity)) throw new HttpError(400, "invalid_activity");
+        if (activity && !["running", "waiting_external_approval", "waiting_user_input", "unknown"].includes(activity)) throw new HttpError(400, "invalid_activity");
         const page = await listWebSessions(deps.sources, { source: selected, sessionId, query, creationClient, activity, offset, limit });
         return json({ ...page, capabilities: Object.fromEntries(Object.entries(deps.sources).map(([name, source]) => [name, source?.capabilities()])) });
       }
@@ -335,10 +335,16 @@ export function createWebHandler(deps: WebHttpDependencies): (request: Request, 
           throw new HttpError(400, "invalid_client_target");
         }
         const clientTarget = !send && executionSource !== "dsh" && (rawTarget === "cli" || rawTarget === "desktop") ? rawTarget : null;
+        if (body.forceDesktopTakeover !== undefined && typeof body.forceDesktopTakeover !== "boolean") {
+          throw new HttpError(400, "invalid_field");
+        }
+        const forceDesktopTakeover = Boolean(send && body.forceDesktopTakeover === true);
         const operation = await dispatchWebOperation({ operationId, source: executionSource, kind: send ? "send" : "create",
           targetId: send ? text(decodeURIComponent(send[2] ?? ""), 200) : null,
           projectId: send ? null : text(body.projectId, 200), modelId: send ? null : text(body.modelId, 2000, true),
-          reasoningEffort, clientTarget, prompt: text(body.prompt, 32000) ?? "",
+          reasoningEffort, clientTarget,
+          ...(forceDesktopTakeover ? { forceDesktopTakeover: true } : {}),
+          prompt: text(body.prompt, 32000) ?? "",
         }, device.id, source, deps.store, deps.pepper, deps.redaction);
         return json(operation);
       }

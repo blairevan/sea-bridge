@@ -9,7 +9,11 @@ const PULL_REFRESH_MIN_Y = 68;
 const PULL_REFRESH_MAX_X = 48;
 const GESTURE_MAX_DURATION_MS = 1000;
 let mobileGesture = null;
-const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", idle: "空闲", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批" };
+const labels = { queued: "已入队，正在确认是否执行", accepted: "来源已接受", failed: "提交失败", delivery_unknown: "结果待确认，请刷新核查", received: "已接收", dispatching: "提交中", running: "执行中", idle: "空闲", unknown: "状态未知", waiting_external_approval: "等待 Telegram 审批", waiting_user_input: "等待输入" };
+const operationErrorLabels = {
+  desktop_takeover_confirm_required: "检测到 Antigravity 桌面端有其他会话正在运行，需确认后强制接管",
+  desktop_app_busy_lock: "未能释放 Antigravity 桌面端会话锁，请先关闭桌面端弹窗后重试",
+};
 
 
 const reads = new Map();
@@ -81,7 +85,7 @@ function isReadOnlyDesktopSession(session = state.selected) {
   const kind = session?.creationClient?.kind;
   if (kind !== "desktop" && kind !== "cli") return false;
   if (session.sendEnabled) return false;
-  if (["running", "waiting_external_approval"].includes(session.state) && session.projectId && state.caps?.antigravity?.sendEnabled !== false) return false;
+  if (["running", "waiting_external_approval", "waiting_user_input"].includes(session.state) && session.projectId && state.caps?.antigravity?.sendEnabled !== false) return false;
   return true;
 }
 /** Display normalized creation evidence; pending is browser-only for a newly created session. */
@@ -339,7 +343,14 @@ function loadedTurnPreview(messages, userMessage) {
 /** Derive activity copy from server evidence; reconnect copy marks the state as stale. */
 function liveActivityPresentation(session, paused, now = Date.now()) {
   const hasPendingApprovals = Array.isArray(session?.pendingApprovals) && session.pendingApprovals.length > 0;
-  if (!session || (!["running", "waiting_external_approval"].includes(session.state) && !hasPendingApprovals)) return { visible: false, status: "", detail: "" };
+  if (!session || (!["running", "waiting_external_approval", "waiting_user_input"].includes(session.state) && !hasPendingApprovals)) return { visible: false, status: "", detail: "" };
+  if (session.state === "waiting_user_input") {
+    return {
+      visible: true,
+      status: paused ? "连接重连中 · 最后已知等待输入" : "等待输入",
+      detail: "请在问题卡片中选择或直接输入回复",
+    };
+  }
   if (session.state === "waiting_external_approval" || hasPendingApprovals) {
     const channel = session.source === "antigravity" ? "Web" : "Telegram";
     return {
@@ -574,60 +585,146 @@ function renderActionPills(container, text) {
   container.append(row); return container;
 }
 
-/** Render an interactive Codex Desktop-style question card with option selection and direct send. */
+/** Render an interactive question card supporting single-select, multi-select, custom answers, and multi-question A1..AN submission. */
 function renderQuestionCard(message) {
-  const questions = Array.isArray(message.questions) ? message.questions : [];
+  const rawQuestions = Array.isArray(message.questions) ? message.questions : [];
+  const validQuestions = rawQuestions.filter((q) => q && typeof q.title === "string");
   const card = node("section", "", "question-card");
   card.setAttribute?.("aria-label", "问题确认卡片");
   const header = node("div", "", "question-card-header");
-  header.append(node("span", "?", "question-card-badge"), node("strong", "问题", "question-card-heading"));
+  header.append(node("span", "?", "question-card-badge"), node("strong", validQuestions.length > 1 ? `问题（共 ${validQuestions.length} 题）` : "问题", "question-card-heading"));
   card.append(header);
 
-  const selectedAnswers = questions.map((q) => (Array.isArray(q?.options) && q.options.length > 0 ? String(q.options[0]) : ""));
+  const questionStates = validQuestions.map((q) => {
+    const options = Array.isArray(q.options) ? q.options.filter((opt) => typeof opt === "string" && opt.trim()) : [];
+    const multiSelect = Boolean(q.multiSelect);
+    return {
+      title: q.title,
+      options,
+      multiSelect,
+      selectedIndices: !multiSelect && options.length > 0 ? [0] : [],
+      customOpen: options.length === 0,
+      customText: "",
+    };
+  });
+
+  /** Resolve a single question's answer string from its selected options and/or custom text. */
+  const resolveQuestionAnswer = (qState) => {
+    if (qState.multiSelect) {
+      const picked = qState.selectedIndices.map((idx) => qState.options[idx]).filter(Boolean);
+      const custom = qState.customOpen ? qState.customText.trim() : "";
+      if (custom) picked.push(custom);
+      return picked.join("；");
+    }
+    if (qState.customOpen || qState.options.length === 0) {
+      return qState.customText.trim();
+    }
+    const idx = qState.selectedIndices[0];
+    return typeof idx === "number" && qState.options[idx] ? String(qState.options[idx]).trim() : "";
+  };
+
+  /** Format the complete card submission payload; returns empty string if any question is unanswered. */
+  const formatCardAnswer = () => {
+    if (questionStates.length === 0) return "";
+    const resolved = questionStates.map((qState) => resolveQuestionAnswer(qState));
+    if (resolved.some((ans) => !ans)) return "";
+    if (resolved.length === 1) return resolved[0];
+    return resolved.map((ans, idx) => `A${idx + 1}: ${ans}`).join("\n");
+  };
+
   let sendBtn = null;
+  /** Synchronize the question card submit button state with selection completeness and session readiness. */
   const syncSendState = () => {
-    const answer = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+    const answer = formatCardAnswer();
     if (!sendBtn) return;
     if (sendBtn.dataset) sendBtn.dataset.hasSelection = answer ? "true" : "";
     sendBtn.disabled = Boolean(state.paused || !state.selected?.sendEnabled || state.pending || !answer);
   };
 
-  questions.forEach((q, qIndex) => {
-    if (!q || typeof q.title !== "string") return;
+  questionStates.forEach((qState, qIndex) => {
     const group = node("div", "", "question-card-group");
-    const titleNode = renderMarkdown(q.title);
+    if (questionStates.length > 1 || qState.multiSelect) {
+      const meta = node("div", "", "question-card-meta");
+      if (questionStates.length > 1) meta.append(node("span", `${qIndex + 1}/${questionStates.length}`, "question-card-step"));
+      if (qState.multiSelect) meta.append(node("span", "可多选", "question-card-mode"));
+      group.append(meta);
+    }
+    const titleNode = renderMarkdown(qState.title);
     titleNode.className = "markdown question-card-title";
     group.append(titleNode);
 
-    const options = Array.isArray(q.options) ? q.options.filter((opt) => typeof opt === "string" && opt.trim()) : [];
-    if (options.length > 0) {
+    const optionButtons = [];
+    let otherToggle = null;
+    const otherInput = node("input", "", "question-other-input");
+    otherInput.type = "text";
+    otherInput.placeholder = "输入自定义回答…";
+    otherInput.hidden = !qState.customOpen;
+
+    /** Refresh option button and custom input visual states for this question. */
+    const syncQuestionVisuals = () => {
+      optionButtons.forEach((btn, idx) => {
+        const active = (!qState.customOpen || qState.multiSelect) && qState.selectedIndices.includes(idx);
+        btn.className = active ? "question-option-btn selected" : "question-option-btn";
+        btn.setAttribute?.("aria-checked", String(active));
+      });
+      if (otherToggle) {
+        otherToggle.className = qState.customOpen ? "question-other-toggle quiet selected" : "question-other-toggle quiet";
+        otherToggle.setAttribute?.("aria-expanded", String(qState.customOpen));
+      }
+      otherInput.hidden = !qState.customOpen;
+      syncSendState();
+    };
+
+    if (qState.options.length > 0) {
       const list = node("div", "", "question-option-list");
-      list.setAttribute?.("role", "radiogroup");
-      const optionButtons = [];
-      const selectOption = (optIndex) => {
-        selectedAnswers[qIndex] = options[optIndex] ?? "";
-        optionButtons.forEach((btn, idx) => {
-          const active = idx === optIndex;
-          btn.className = active ? "question-option-btn selected" : "question-option-btn";
-          btn.setAttribute?.("aria-checked", String(active));
-        });
-        syncSendState();
-      };
-      options.forEach((opt, optIndex) => {
-        const btn = node("button", "", optIndex === 0 ? "question-option-btn selected" : "question-option-btn");
+      list.setAttribute?.("role", qState.multiSelect ? "group" : "radiogroup");
+      qState.options.forEach((opt, optIndex) => {
+        const initiallyActive = !qState.customOpen && qState.selectedIndices.includes(optIndex);
+        const btn = node("button", "", initiallyActive ? "question-option-btn selected" : "question-option-btn");
         btn.type = "button";
-        btn.setAttribute?.("role", "radio");
-        btn.setAttribute?.("aria-checked", String(optIndex === 0));
+        btn.setAttribute?.("role", qState.multiSelect ? "checkbox" : "radio");
+        btn.setAttribute?.("aria-checked", String(initiallyActive));
         btn.append(
           node("span", String(optIndex + 1), "question-option-index"),
           node("span", opt, "question-option-label"),
         );
-        btn.onclick = () => selectOption(optIndex);
+        btn.onclick = () => {
+          if (qState.multiSelect) {
+            if (qState.selectedIndices.includes(optIndex)) {
+              qState.selectedIndices = qState.selectedIndices.filter((item) => item !== optIndex);
+            } else {
+              qState.selectedIndices = [...qState.selectedIndices, optIndex].sort((a, b) => a - b);
+            }
+          } else {
+            qState.selectedIndices = [optIndex];
+            qState.customOpen = false;
+          }
+          syncQuestionVisuals();
+        };
         optionButtons.push(btn);
         list.append(btn);
       });
       group.append(list);
+
+      otherToggle = node("button", "✎ 其他（自定义输入）", "question-other-toggle quiet");
+      otherToggle.type = "button";
+      otherToggle.setAttribute?.("aria-expanded", String(qState.customOpen));
+      otherToggle.onclick = () => {
+        qState.customOpen = !qState.customOpen;
+        if (!qState.customOpen && !qState.multiSelect && qState.selectedIndices.length === 0 && qState.options.length > 0) {
+          qState.selectedIndices = [0];
+        }
+        syncQuestionVisuals();
+        if (qState.customOpen) otherInput.focus?.();
+      };
+      group.append(otherToggle);
     }
+
+    otherInput.oninput = () => {
+      qState.customText = String(otherInput.value || "");
+      syncSendState();
+    };
+    group.append(otherInput);
     card.append(group);
   });
 
@@ -637,7 +734,7 @@ function renderQuestionCard(message) {
   customBtn.onclick = () => {
     const prompt = el("prompt"); if (!prompt) return;
     if (!String(prompt.value || "").trim()) {
-      const current = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+      const current = formatCardAnswer();
       if (current) prompt.value = current;
     }
     prompt.focus?.(); resizeComposer(); syncComposerControl();
@@ -647,7 +744,7 @@ function renderQuestionCard(message) {
   sendBtn.type = "button";
   syncSendState();
   sendBtn.onclick = () => {
-    const answer = selectedAnswers.map((item) => item.trim()).filter(Boolean).join("\n");
+    const answer = formatCardAnswer();
     if (!answer) return;
     run("write", () => submitWrite(false, answer));
   };
@@ -686,7 +783,7 @@ function clearNotice() {
   const bar = el("notice-bar"); if (bar) { bar.hidden = true; bar.className = "notice-bar notice-info"; }
   const content = el("notice-text"); if (content) content.textContent = "";
   const toggle = el("notice-toggle"); if (toggle) { toggle.hidden = true; toggle.textContent = "展开"; }
-  const retry = el("notice-retry"); if (retry) { retry.hidden = true; retry.disabled = false; retry.textContent = "立即重试"; }
+  const retry = el("notice-retry"); if (retry) { retry.hidden = true; retry.disabled = false; retry.textContent = "立即重试"; retry.onclick = retryConnection; }
   const close = el("notice-close"); if (close) close.hidden = false;
   const login = el("login-notice"); if (login) login.textContent = "";
 }
@@ -723,7 +820,17 @@ function notice(text, options = {}) {
   state.noticeState.kind = ["success", "warning", "error"].includes(options.kind) ? options.kind : "info";
   const bar = el("notice-bar"); bar.hidden = false; bar.className = `notice-bar notice-${state.noticeState.kind}`;
   el("notice-text").textContent = text; el("notice-toggle").hidden = true; el("notice-toggle").textContent = "展开";
-  el("notice-retry").hidden = true; el("notice-close").hidden = false;
+  const retry = el("notice-retry");
+  if (typeof options.onAction === "function") {
+    retry.hidden = false;
+    retry.disabled = false;
+    retry.textContent = options.actionLabel || "重试";
+    retry.onclick = () => { clearNotice(); options.onAction(); };
+  } else {
+    retry.hidden = true;
+    retry.onclick = retryConnection;
+  }
+  el("notice-close").hidden = false;
   const apply = () => refreshNoticeLayout(seq, Number.isFinite(options.durationMs) ? Number(options.durationMs) : null);
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply); else apply();
 }
@@ -764,7 +871,7 @@ function showConnectionNotice(detail = "服务暂不可达，已保留页面数�
   state.noticeState.sticky = true; state.noticeState.expanded = false; state.noticeState.connection = true; state.noticeState.kind = "connection";
   const bar = el("notice-bar"); bar.hidden = false; bar.className = "notice-bar notice-connection";
   el("notice-text").textContent = text; el("notice-toggle").hidden = true; el("notice-toggle").textContent = "展开";
-  const retry = el("notice-retry"); retry.hidden = false; retry.disabled = state.recovering; retry.textContent = state.recovering ? "重试中…" : "立即重试";
+  const retry = el("notice-retry"); retry.hidden = false; retry.disabled = state.recovering; retry.textContent = state.recovering ? "重试中…" : "立即重试"; retry.onclick = retryConnection;
   el("notice-close").hidden = true;
   const apply = () => refreshNoticeLayout(seq, null);
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply); else apply();
@@ -1317,7 +1424,7 @@ function renderOverview(status, sessions, continuation, cached = false) {
   el("overview-privacy").textContent = state.settings?.redactionEnabled === true ? "隐私脱敏已开启" : state.settings?.redactionEnabled === false ? "隐私脱敏已关闭" : "脱敏状态未确认";
   el("overview-session-count").textContent = `${sessions.items.length}${sessions.cursor ? "+" : ""}`;
   el("overview-running-count").textContent = String(sessions.items.filter((session) => session.state === "running").length);
-  el("overview-approval-count").textContent = String(sessions.items.filter((session) => session.state === "waiting_external_approval").length);
+  el("overview-approval-count").textContent = String(sessions.items.filter((session) => session.state === "waiting_external_approval" || session.state === "waiting_user_input").length);
   el("overview-session-scope").textContent = sessions.partial ? "部分来源暂不可用，统计仅包含当前返回的会话" : "统计仅包含最近一页会话，不代表全部历史";
   const container = el("status-cards"); container.replaceChildren();
   for (const name of ["codex", "dsh", "antigravity"]) container.append(sourceStatusCard(name, status.sources?.[name]));
@@ -1552,6 +1659,7 @@ function syncLiveActivityCard(now = Date.now()) {
   } else if (liveActivityCard.parentElement && liveActivityCard.parentElement !== container) {
     container.append(liveActivityCard);
   }
+  if (liveActivityCard?.dataset) liveActivityCard.dataset.state = state.selected?.state || "";
   if (liveActivityStatus && liveActivityStatus.textContent !== presentation.status) liveActivityStatus.textContent = presentation.status;
   if (liveActivityDetail) { liveActivityDetail.textContent = presentation.detail; liveActivityDetail.hidden = !presentation.detail; }
   if (liveActivityStale) liveActivityStale.hidden = !state.paused;
@@ -1768,12 +1876,14 @@ async function loadHistory(older) {
   const result = await api(`/api/sessions/${session.source}/${encodeURIComponent(session.id)}/history?${params}`);
   if (state.paused || viewEpoch !== state.viewEpoch || state.selected?.id !== session.id || state.selected?.source !== session.source) return;
   rememberSession(session);
-  if (["running", "idle", "unknown", "waiting_external_approval"].includes(result.sessionState)) {
+  if (["running", "idle", "unknown", "waiting_external_approval", "waiting_user_input"].includes(result.sessionState)) {
     const canRestoreAntigravitySend = state.selected.source === "antigravity"
-      && ["running", "waiting_external_approval"].includes(state.selected.state)
-      && result.sessionState === "idle"
       && Boolean(state.caps?.antigravity?.sendEnabled)
-      && (state.selected.creationClient?.kind !== "desktop" || Boolean(state.selected.projectId));
+      && (state.selected.creationClient?.kind !== "desktop" || Boolean(state.selected.projectId))
+      && (
+        result.sessionState === "waiting_user_input"
+        || (["running", "waiting_external_approval", "waiting_user_input"].includes(state.selected.state) && result.sessionState === "idle")
+      );
     state.selected = {
       ...state.selected,
       state: result.sessionState,
@@ -2159,11 +2269,13 @@ async function ensureSessionModelCatalog(source = state.selected?.source || "cod
   return loading;
 }
 
+/** Return a human-readable reason why inline model/effort controls are temporarily disabled. */
 function modelControlDisabledReason(session, catalogReady, updating) {
   if (updating) return "正在切换模型";
   if (state.paused) return "连接恢复后可切换模型";
   if (session?.state === "running") return "任务执行中，完成后可切换模型";
   if (session?.state === "waiting_external_approval") return "等待审批时不能切换模型";
+  if (session?.state === "waiting_user_input") return "等待输入时不能切换模型";
   if (session?.state !== "idle") return "当前状态不能切换模型";
   if (!catalogReady) return "正在加载可用模型";
   return "";
@@ -2351,7 +2463,10 @@ function syncComposerControl(now = Date.now()) {
     send.type = "submit"; send.dataset.mode = "send"; send.textContent = "↑ 发送"; send.title = "";
     send.disabled = state.paused || !session?.sendEnabled || Boolean(state.pending); return;
   }
-  const active = ["codex", "antigravity"].includes(session?.source) && ["running", "waiting_external_approval"].includes(session.state);
+  const active = ["codex", "antigravity"].includes(session?.source) && (
+    ["running", "waiting_external_approval"].includes(session.state)
+    || (session.state === "waiting_user_input" && Boolean(interruptTarget))
+  );
   if (active) {
     send.type = "button"; send.dataset.mode = "interrupt"; send.textContent = "⏹ 中断";
     send.disabled = state.paused || Boolean(state.pending) || !interruptTarget;
@@ -2424,7 +2539,8 @@ function showOperation(operation, announce = true) {
   if (operation.execution?.state === "running") status = operation.execution.exact ? "正在执行" : "会话正在执行";
   if (operation.execution?.state === "session_ended") status = operation.execution.exact ? "本轮已结束" : "会话在投递后有任务结束，本次投递关联未确认";
   if (operation.state === "delivery_unknown" && operation.execution?.state === "running") status += " · 投递回执待确认";
-  const detail = `${status}${operation.errorCode && operation.execution?.state !== "running" ? " · " + operation.errorCode : ""}${knownSession}`;
+  const mappedError = operation.errorCode ? (operationErrorLabels[operation.errorCode] ?? operation.errorCode) : "";
+  const detail = `${status}${mappedError && operation.execution?.state !== "running" ? " · " + mappedError : ""}${knownSession}`;
   if (!state.pending || state.pending.operationId === operation.id) {
     setComposerStatus(["failed", "delivery_unknown", "received", "dispatching"].includes(operation.state) ? detail : "");
   }
@@ -2446,7 +2562,7 @@ async function refreshExecutionStatus() {
   showOperation(operation, false);
 }
 /** Submit once with a stable UUID; ambiguous transport leaves only manual reconciliation. */
-async function submitWrite(create, promptOverride = undefined) {
+async function submitWrite(create, promptOverride = undefined, writeOptions = undefined) {
   const authEpoch = state.authEpoch; const viewEpoch = state.viewEpoch;
   const session = state.selected; if (!create && !session) return;
   if (state.pending) { notice("已有提交待确认，请先刷新核查", { sticky: true, kind: "warning" }); return; }
@@ -2457,12 +2573,38 @@ async function submitWrite(create, promptOverride = undefined) {
   const source = create ? createSel.source : session.source;
   const clientTarget = create ? createSel.clientTarget : null;
   const reasoningEffort = create ? (el("create-reasoning-effort")?.value || null) : null;
-  const body = create ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), ...(clientTarget ? { clientTarget } : {}), prompt: promptText } : { operationId, prompt: promptText };
+  const forceDesktopTakeover = Boolean(!create && writeOptions?.forceDesktopTakeover);
+  const body = create
+    ? { operationId, source, projectId: el("create-project").value, modelId: el("create-model").value || null, ...(reasoningEffort ? { reasoningEffort } : {}), ...(clientTarget ? { clientTarget } : {}), prompt: promptText }
+    : { operationId, prompt: promptText, ...(forceDesktopTakeover ? { forceDesktopTakeover: true } : {}) };
   state.pending = { operationId }; el(create ? "create-submit" : "send-button").disabled = true;
   if (!create) { setComposerStatus("发送中…"); syncComposerControl(); }
   try {
     const operation = await api(create ? "/api/sessions" : `/api/sessions/${source}/${encodeURIComponent(session.id)}/messages`, "POST", body);
     if (authEpoch !== state.authEpoch || viewEpoch !== state.viewEpoch) return;
+    if (!create && operation.state === "failed" && operation.errorCode === "desktop_takeover_confirm_required" && !forceDesktopTakeover) {
+      state.pending = null;
+      el("reconcile").hidden = true;
+      el("create-reconcile").hidden = true;
+      const confirmPrompt = "检测到 Antigravity 桌面端当前有其他会话正在执行任务。提交回答需要临时退出并重启 Antigravity.app，是否强制接管并提交？";
+      if (typeof confirm === "function") {
+        if (confirm(confirmPrompt)) {
+          await submitWrite(false, promptText, { forceDesktopTakeover: true });
+          return;
+        }
+        setComposerStatus("已取消强制接管；回答草稿与选择已保留");
+        notice("已取消强制接管，待桌面端其他任务完成后可直接重试", { kind: "info" });
+        return;
+      }
+      setComposerStatus(operationErrorLabels.desktop_takeover_confirm_required);
+      notice(operationErrorLabels.desktop_takeover_confirm_required, {
+        sticky: true,
+        kind: "warning",
+        actionLabel: "强制接管并提交",
+        onAction: () => { run("write-force", () => submitWrite(false, promptText, { forceDesktopTakeover: true })); },
+      });
+      return;
+    }
     if (operation.state !== "delivery_unknown" && operation.state !== "dispatching") state.pending = null;
     if (["accepted", "queued", "delivery_unknown"].includes(operation.state) && operation.sessionId) state.executionWatch = { operationId };
     if (["accepted", "queued"].includes(operation.state)) {
@@ -2835,7 +2977,11 @@ el("logout").onclick = () => run("logout", confirmLogout);
 el("overview-all-sessions").onclick = () => run("overview-action", () => openOverviewSessions());
 el("overview-total").onclick = () => run("overview-action", () => openOverviewSessions());
 el("overview-running").onclick = () => run("overview-action", () => openOverviewSessions("", "running"));
-el("overview-approval").onclick = () => run("overview-action", () => openOverviewSessions("", "waiting_external_approval"));
+el("overview-approval").onclick = () => run("overview-action", () => {
+  const hasApproval = state.overviewSessions.some((s) => s.state === "waiting_external_approval");
+  const hasQuestion = state.overviewSessions.some((s) => s.state === "waiting_user_input");
+  return openOverviewSessions("", !hasApproval && hasQuestion ? "waiting_user_input" : "waiting_external_approval");
+});
 el("overview-privacy").onclick = () => run("page", () => showPage("settings"));
 el("overview-new-session").onclick = () => run("overview-action", () => openOverviewCreate());
 el("catalog-retry").onclick = () => run("retry", retryConnection);

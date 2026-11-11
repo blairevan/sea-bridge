@@ -1,5 +1,11 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.6.0 Antigravity `ask_question` 等待输入识别、通知与跨端接管作答
+
+- **外部轨迹 `ask_question` 解析与 `waiting_user_input` 状态投影**：识别 `PLANNER_RESPONSE` 末尾未作答的 `ask_question` 调用（支持数组/字符串参数与 `transcript_full.jsonl` 截断水合），在 Web 投影为 `waiting_user_input` 与多选/自定义问题卡片，在 `bridge.sock` 向后兼容映射为 `waiting_external_approval`。
+- **桌面端排他锁释放与 `1A` 并发保护**：接管被 `Antigravity.app` 占用的 `waiting_user_input` 桌面会话时，无其他 `running` 桌面会话则自动退出释放锁、通过 `agy acp --app-data-dir=antigravity` 提交回答并在轮次结束后重开桌面端；存在其他 `running` 桌面会话时返回 `desktop_takeover_confirm_required`，由 Web 弹窗或 Telegram 按钮二次确认强制接管。
+- **Telegram 实时通知、分页按钮向导与序号简写回复（`2A`）**：进入 `waiting_user_input` 时即时去重推送通知，支持单题一键按钮、多题/多选原地翻页勾选向导，以及 `💬 回复` 发送 `1 1 1 1` / `1+3 2` 等序号简写或自由文本直接作答。
+
 ## v1.5.0 执行来源 CLI / Desktop 细化与命名规范统一
 
 - **新建会话与本地桥接支持 `clientTarget` (`cli` | `desktop`)**：`web_schema_migrations` 升级至 `v5`（为 `web_operations` 增加 `client_target` 字段，为 `antigravity_sessions` 幂等增加 `client_target` 与 `app_data_dir` 字段）。Web 控制台新建对话框与 `ToolHub` 任务中心统一提供 `Codex · Desktop`（默认）、`Codex · CLI`、`Antigravity · Desktop`、`Antigravity · CLI`、`DSH` 五项扁平选项。

@@ -13,6 +13,7 @@ import type {
   ExecutionEvidence,
   SessionListOptions,
   SourceResult,
+  SourceSendOptions,
   WebHistory,
   WebSession,
   WebSource,
@@ -96,8 +97,9 @@ export class AntigravityWebSource implements WebSource {
         ? this.deps.desktopReader.inspectAnyExternalSession(rec.sessionId)
         : null;
       const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(rec.sessionId);
+      const waitingUserInput = Boolean(extInfo?.waitingUserInput && !hasActiveTurn);
       let effectiveRec = rec;
-      if (extInfo?.externallyRunning && (rec.status === "idle" || rec.status === "unknown")) {
+      if (extInfo?.externallyRunning && !waitingUserInput && (rec.status === "idle" || rec.status === "unknown")) {
         effectiveRec = { ...rec, status: "running" as const };
       } else if (
         rec.status === "unknown" &&
@@ -114,6 +116,7 @@ export class AntigravityWebSource implements WebSource {
         catalog: this.deps.modelCatalog,
         hasPendingApproval: pendingApprovals.length > 0,
         sendEnabled: canWrite,
+        waitingUserInput,
       });
       merged.set(projected.id, projected);
     }
@@ -174,6 +177,7 @@ export class AntigravityWebSource implements WebSource {
           ? this.deps.desktopReader.readExternalHistory(id, limit)
           : null;
       const hasActiveTurn = this.deps.sessionManager.hasActiveTurn(id);
+      const waitingUserInput = Boolean(externalHistory?.sessionState === "waiting_user_input" && !hasActiveTurn);
       let effectiveSession = managed;
       if (externalHistory?.sessionState === "running" && (managed.status === "idle" || managed.status === "unknown")) {
         effectiveSession = { ...managed, status: "running" as const };
@@ -192,6 +196,7 @@ export class AntigravityWebSource implements WebSource {
         executionControl,
         catalog: this.deps.modelCatalog,
         limit,
+        waitingUserInput,
         ...(externalHistory
           ? {
               baseMessages: externalHistory.messages,
@@ -249,7 +254,7 @@ export class AntigravityWebSource implements WebSource {
     return await this.deps.sessionManager.create(input);
   }
 
-  async send(id: string, operationId: string, prompt: string): Promise<SourceResult> {
+  async send(id: string, operationId: string, prompt: string, options?: SourceSendOptions): Promise<SourceResult> {
     if (!this.deps.config.enabled || !this.deps.config.writeEnabled) {
       return { state: "failed", sessionId: id, errorCode: "write_disabled" };
     }
@@ -259,11 +264,11 @@ export class AntigravityWebSource implements WebSource {
         if (!this.deps.config.externalSessionsEnabled) {
           return { state: "failed", sessionId: id, errorCode: "desktop_session_read_only" };
         }
-        return await this.deps.sessionManager.send(id, operationId, prompt);
+        return await this.deps.sessionManager.send(id, operationId, prompt, options);
       }
       return { state: "failed", sessionId: id, errorCode: "session_not_found" };
     }
-    return await this.deps.sessionManager.send(id, operationId, prompt);
+    return await this.deps.sessionManager.send(id, operationId, prompt, options);
   }
 
   async updateModel(

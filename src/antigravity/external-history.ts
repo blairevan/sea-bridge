@@ -4,6 +4,7 @@ import path from "node:path";
 import type { LiveActivityItem } from "../web/codex-transcript.ts";
 import type { WebHistory, WebMessage, WebSession } from "../web/sources/types.ts";
 import { resolveInsideDirectory } from "./policy.ts";
+import { extractAskQuestionPrompts } from "./question-parser.ts";
 
 /** Summary row shape inside Antigravity `conversation_summaries.db`. */
 export interface SummaryDbRow {
@@ -188,23 +189,44 @@ export function readBrainTranscriptHistory(
     }
 
     if (step.type === "PLANNER_RESPONSE") {
+      const isLastStep = i === compactLines.length - 1;
+      const canHavePendingQuestion =
+        isLastStep && (sessionState === "waiting_user_input" || sessionState === "running" || sessionState === undefined);
+      const pendingQuestions = canHavePendingQuestion ? extractAskQuestionPrompts(step.tool_calls) : [];
       if (Array.isArray(step.tool_calls)) {
         for (const tc of step.tool_calls) {
-          activeTurnItems.push({ kind: "tool", text: typeof tc?.name === "string" ? tc.name : "tool" });
+          const toolName = typeof tc?.name === "string" ? tc.name : "tool";
+          if (pendingQuestions.length > 0 && toolName === "ask_question") continue;
+          activeTurnItems.push({ kind: "tool", text: toolName });
         }
       }
       const replyText = extractTextContent(step.content);
       if (replyText) {
         messages.push({ id: `${stepId}-assistant`, role: "assistant", text: replyText, createdAt });
       }
+      if (pendingQuestions.length > 0) {
+        messages.push({
+          id: `${stepId}-question`,
+          role: "assistant",
+          text: "",
+          createdAt,
+          questions: pendingQuestions,
+        });
+      }
     }
   }
+
+  const hasTrailingQuestion = messages.at(-1)?.questions !== undefined;
+  const effectiveState =
+    hasTrailingQuestion && (sessionState === "running" || sessionState === "waiting_user_input")
+      ? "waiting_user_input"
+      : sessionState;
 
   return {
     messages: messages.slice(-Math.max(1, Math.min(200, limit))),
     cursor: null,
     completeUserHistory: true,
-    ...(sessionState ? { sessionState } : {}),
+    ...(effectiveState ? { sessionState: effectiveState } : {}),
     ...(activeTurnItems.length > 0 ? { activeTurnItems: activeTurnItems.slice(-20) } : {}),
   };
 }

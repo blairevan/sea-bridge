@@ -4,11 +4,11 @@ import type { InlineButton } from "../telegram/client.ts";
 import type { AntigravityApprovalBridge } from "./approval-bridge.ts";
 import type { AntigravityDesktopReader } from "./desktop-reader.ts";
 import { createAntigravityCallback, formatAntigravityTerminal } from "./menu-ui.ts";
+import { enqueueDesktopQuestionNotification, finalizeQuestionNotification, prepareNotificationKeyboard } from "./question-telegram-ui.ts";
 import type { AntigravityApprovalRecord, AntigravityStore } from "./store.ts";
 import type { AntigravityTelegramStore } from "./telegram-store.ts";
 
 const TELEGRAM_SEND_TIMEOUT_MS = 15_000;
-const REPLY_CALLBACK_TTL_MS = 24 * 60 * 60_000;
 const MAX_POLL_BACKOFF_MS = 5 * 60_000;
 
 export interface AntigravityTelegramTransport {
@@ -170,9 +170,15 @@ export class AntigravityDesktopObserver {
       const history = this.deps.desktopReader.readHistory(desk.id, 400);
       if (!history) continue;
 
-      const assistantMsgs = history.messages.filter((m) => m.role === "assistant");
+      const assistantMsgs = history.messages.filter((m) => m.role === "assistant" && !m.questions?.length);
       const currentCursor = assistantMsgs.length;
       const prev = this.deps.tgStore.getObserverCursor("desktop", desk.id);
+
+      if (desk.state === "waiting_user_input") {
+        enqueueDesktopQuestionNotification({ tgStore: this.deps.tgStore, chatId: this.deps.chatId, desk, messages: history.messages, writable: desktopWritable });
+        this.deps.tgStore.saveObserverCursor("desktop", desk.id, { cursor: currentCursor, lastEventFingerprint: prev?.lastEventFingerprint ?? null });
+        continue;
+      }
 
       if (!prev) {
         // First time observing this existing desktop session: record baseline without backfilling old notifications
@@ -225,41 +231,25 @@ export class AntigravityDesktopObserver {
     const blockedSessions = new Set<string>();
     for (const notification of this.deps.tgStore.listPendingNotifications()) {
       if (blockedSessions.has(notification.sessionId)) continue;
-      let callbackToken: string | null = null;
+      let callbackTokens: string[] = [];
       try {
-        let buttons: InlineButton[][] | undefined;
         const canReply =
           notification.sessionOrigin === "sea_bridge"
             ? Boolean(this.deps.replyEnabled)
             : Boolean(this.deps.replyEnabled && this.deps.externalSessionsEnabled);
+        const prepared = prepareNotificationKeyboard({ tgStore: this.deps.tgStore, notification, canReply });
+        callbackTokens = prepared.callbackTokens;
 
-        if (canReply && !notification.eventKind.endsWith("_part")) {
-          const cb = createAntigravityCallback(
-            this.deps.tgStore,
-            notification.chatId,
-            "reply",
-            { sessionId: notification.sessionId },
-            Date.now(),
-            REPLY_CALLBACK_TTL_MS
-          );
-          callbackToken = cb.slice("agy:".length);
-          buttons = [[{ text: "💬 回复", callback_data: cb }]];
-        }
-
-        const msg = await this.sendTelegramBounded(notification.chatId, notification.text, buttons);
-        if (
-          !this.deps.tgStore.completeNotification(
-            notification.eventFingerprint,
-            msg.message_id,
-            notification.sessionOrigin
-          )
-        ) {
-          if (callbackToken) this.deps.tgStore.expireCallback(callbackToken);
+        const msg = await this.sendTelegramBounded(notification.chatId, notification.text, prepared.buttons);
+        if (!this.deps.tgStore.completeNotification(notification.eventFingerprint, msg.message_id, notification.sessionOrigin)) {
+          for (const t of callbackTokens) this.deps.tgStore.expireCallback(t);
           this.deps.tgStore.quarantineNotification(notification.eventFingerprint, "mapping_unknown", msg.message_id);
           blockedSessions.add(notification.sessionId);
+        } else {
+          finalizeQuestionNotification(this.deps.tgStore, notification, msg.message_id);
         }
       } catch (err) {
-        if (callbackToken) this.deps.tgStore.expireCallback(callbackToken);
+        for (const t of callbackTokens) this.deps.tgStore.expireCallback(t);
         const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
         if (code === 429) {
           const delay = Math.min(5_000 * 2 ** Math.min(notification.attemptCount, 6), 300_000);

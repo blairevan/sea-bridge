@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BotCommand, InlineButton } from "../telegram/client.ts";
+import type { SourceResult, SourceSendOptions } from "../web/sources/types.ts";
 import type { AntigravityApprovalBridge } from "./approval-bridge.ts";
 import type { AntigravityCapabilityGate } from "./capabilities.ts";
 import type { AntigravityConfig } from "./config.ts";
@@ -8,6 +9,7 @@ import type { AntigravityDesktopObserver } from "./desktop-observer.ts";
 import { createAntigravityCallback, renderAntigravityModelMenu, renderAntigravityProjectMenu } from "./menu-ui.ts";
 import type { AntigravityModelCatalog } from "./model-catalog.ts";
 import type { AntigravityNewSessionManager } from "./new-session-manager.ts";
+import { copyQuestionMetaToReplyPrompt, handleQuestionCallback, sendDesktopTakeoverConfirmPrompt } from "./question-telegram-ui.ts";
 import type { AntigravityReplyRouter } from "./reply-router.ts";
 import type { AntigravityStore } from "./store.ts";
 import type { AntigravityTelegramStore } from "./telegram-store.ts";
@@ -28,6 +30,7 @@ export class AntigravityTelegramHandler {
       capabilityGate: AntigravityCapabilityGate; modelCatalog: AntigravityModelCatalog;
       approvalBridge: AntigravityApprovalBridge; newSessions: AntigravityNewSessionManager;
       replyRouter: AntigravityReplyRouter; desktopAppController?: AntigravityDesktopAppController | undefined;
+      sessionManager?: { send(id: string, operationId: string, prompt: string, options?: SourceSendOptions): Promise<SourceResult> } | undefined;
       observer?: AntigravityDesktopObserver | undefined; telegram: TelegramHandlerClient;
     }
   ) {}
@@ -60,6 +63,11 @@ export class AntigravityTelegramHandler {
   /** Clean up expired callbacks and pending ForceReply prompts. */
   cleanupTransientState(): void {
     this.deps.tgStore.cleanupTransientState();
+  }
+
+  /** Send a `1A` force-takeover confirmation prompt when a Telegram text reply hits a running Desktop conflict. */
+  async sendDesktopTakeoverConfirmPrompt(chatId: number, sessionId: string, promptText: string): Promise<void> {
+    await sendDesktopTakeoverConfirmPrompt({ tgStore: this.deps.tgStore, telegram: this.deps.telegram, chatId, sessionId, promptText });
   }
 
   /** Inspect pending `/agy_new` ForceReply status for 3-way conflict detection. */
@@ -149,6 +157,10 @@ export class AntigravityTelegramHandler {
       await this.deps.telegram.answerCallbackQuery(callbackId, "操作已过期或已使用").catch(() => undefined);
       return true;
     }
+    if (action.action.startsWith("q.")) {
+      await handleQuestionCallback({ action: action.action, payload: action.payload, chatId, callbackId, sourceMessageId, tgStore: this.deps.tgStore, telegram: this.deps.telegram, sessionManager: this.deps.sessionManager, desktopAppController: this.deps.desktopAppController });
+      return true;
+    }
     await this.deps.telegram.answerCallbackQuery(callbackId).catch(() => undefined);
 
     if (action.action === "reply") {
@@ -161,20 +173,12 @@ export class AntigravityTelegramHandler {
         this.deps.store.getSession(sessionId)?.sessionOrigin ??
         (sourceMessageId !== undefined ? this.deps.tgStore.findMessageLink(String(chatId), sourceMessageId)?.sessionOrigin : undefined) ??
         "sea_bridge";
-      const promptMsg = await this.deps.telegram.sendForceReply(
-        chatId,
-        "💬 请回复此消息，内容将投递给该 Antigravity 会话：",
-        sourceMessageId,
-        "输入回复内容"
-      );
+      const promptMsg = await this.deps.telegram.sendForceReply(chatId, "💬 请回复此消息，内容将投递给该 Antigravity 会话：", sourceMessageId, "输入回复内容");
       this.deps.tgStore.linkMessage({
-        chatId: String(chatId),
-        messageId: promptMsg.message_id,
-        sessionId,
-        sessionOrigin: origin,
-        eventKind: "reply_prompt",
+        chatId: String(chatId), messageId: promptMsg.message_id, sessionId, sessionOrigin: origin, eventKind: "reply_prompt",
         eventFingerprint: createHash("sha256").update(`agy_reply_prompt:${chatId}:${promptMsg.message_id}:${sessionId}`).digest("hex"),
       });
+      copyQuestionMetaToReplyPrompt(this.deps.tgStore, String(chatId), sourceMessageId, promptMsg.message_id);
       return true;
     }
 

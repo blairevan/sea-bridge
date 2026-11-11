@@ -42,12 +42,13 @@ export interface WebSession {
   creationClient?: CreationClient;
   sessionMeta?: WebSessionMeta;
   stateConfirmation?: StateConfirmation;
-  state: "running" | "idle" | "unknown" | "waiting_external_approval"; startedAt?: number; sendEnabled: boolean;
+  state: "running" | "idle" | "unknown" | "waiting_external_approval" | "waiting_user_input"; startedAt?: number; sendEnabled: boolean;
 }
-/** Structured question prompt emitted by Codex interactive question tools. */
+/** Structured question prompt emitted by Codex or Antigravity interactive question tools. */
 export interface WebQuestionPrompt {
   title: string;
   options?: string[];
+  multiSelect?: boolean;
 }
 /** Executed conversation, terminal source errors, and explicitly marked native queue inputs share safe display fields. */
 export interface WebMessage { id: string; role: "user" | "assistant" | "error"; text: string; createdAt?: number | null; durationMs?: number; deliveryState?: "queued" | "queue_unknown"; images?: Array<{ contentType: string; base64: string }>; questions?: WebQuestionPrompt[]; }
@@ -79,6 +80,11 @@ export interface ExecutionEvidence {
   state: "running" | "waiting_external_approval" | "session_ended" | "unknown";
   exact: boolean;
 }
+/** Optional source-level flags for message submission (such as confirmed Desktop lock takeover). */
+export interface SourceSendOptions {
+  forceDesktopTakeover?: boolean;
+  notifyChatId?: string | number;
+}
 /** Submission acceptance does not imply source execution completion. */
 export interface SourceResult { state: OperationState; sessionId: string | null; turnId?: string; errorCode?: string; }
 /** Explicit per-request model choice and early persistence callback. */
@@ -108,5 +114,5 @@ export interface WebSource {
   updateModel?(id: string, modelId: string, reasoningEffort?: string | null): Promise<{ status: "updated"; model: { id: string; displayName?: string }; reasoningEffort?: string }>;
   decideApproval?(sessionId: string, approvalId: string, optionId: string, decidedBy: string): Promise<{ status: "decided" | "already_decided" | "expired"; optionId?: string | null }>;
   create(input: CreateRequest): Promise<SourceResult>;
-  send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
+  send(id: string, operationId: string, prompt: string, options?: SourceSendOptions): Promise<SourceResult>;
 }

@@ -7,7 +7,8 @@ import type { WebSource } from "./sources/types.ts";
 export interface WebWriteRequest {
   operationId: string; source: WebOperationSource; kind: "create" | "send";
   targetId: string | null; projectId: string | null; modelId: string | null;
-  reasoningEffort?: string | null; clientTarget?: WebClientTarget | null; prompt: string;
+  reasoningEffort?: string | null; clientTarget?: WebClientTarget | null;
+  forceDesktopTakeover?: boolean; prompt: string;
 }
 
 /** Build a canonicalizable digest payload omitting undefined optional fields. */
@@ -23,6 +24,7 @@ function buildDigestPayload(input: WebWriteRequest): Record<string, unknown> {
   };
   if (input.reasoningEffort !== undefined) payload.reasoningEffort = input.reasoningEffort;
   if (input.clientTarget !== undefined && input.clientTarget !== null) payload.clientTarget = input.clientTarget;
+  if (input.forceDesktopTakeover === true) payload.forceDesktopTakeover = true;
   return payload;
 }
 
@@ -55,7 +57,12 @@ export async function dispatchWebOperation(input: WebWriteRequest, deviceId: str
   try {
     const result = input.kind === "create" ? await source.create({ operationId: input.operationId, projectId: input.projectId ?? "", modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? null, clientTarget, prompt: input.prompt,
       onSessionKnown: (id) => { store.setOperationSession(input.operationId, id, Date.now()); },
-    }) : await source.send(input.targetId ?? "", input.operationId, input.prompt);
+    }) : await source.send(
+      input.targetId ?? "",
+      input.operationId,
+      input.prompt,
+      input.forceDesktopTakeover ? { forceDesktopTakeover: true } : undefined,
+    );
     if (result.sessionId) {
       store.setOperationSession(input.operationId, result.sessionId, Date.now(), result.turnId ?? null);
       store.db.query("UPDATE web_message_snapshots SET session_id=? WHERE operation_id=?").run(result.sessionId, input.operationId);

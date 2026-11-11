@@ -791,6 +791,14 @@ export class TelegramService {
           await this.client.sendMessage(message.chat.id, "已投递到对应的 Antigravity 会话。");
           return;
         }
+        if (agyResult.status === "desktop_takeover_confirm_required") {
+          await this.antigravityHandler?.sendDesktopTakeoverConfirmPrompt(
+            message.chat.id,
+            agyResult.sessionId,
+            agyResult.promptText,
+          );
+          return;
+        }
         if (agyResult.status === "session_busy") {
           await this.client.sendMessage(
             message.chat.id,

@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { WebStore } from "../web/store.ts";
-import type { CreateRequest, SourceResult } from "../web/sources/types.ts";
+import type { CreateRequest, SourceResult, SourceSendOptions } from "../web/sources/types.ts";
 import type { AntigravityApprovalBridge } from "./approval-bridge.ts";
-import { applyAcpModelConfig, spawnAcpWorker, type AcpClientFactory } from "./acp-worker-helpers.ts";
+import {
+  applyAcpModelConfig,
+  prepareDesktopQuestionTakeover,
+  resolveOrAdoptExternalSession,
+  spawnAcpWorker,
+  type AcpClientFactory,
+  type DesktopTakeoverController,
+} from "./acp-worker-helpers.ts";
 import type { AntigravityCapabilityGate } from "./capabilities.ts";
 import type { AcpClient } from "./client.ts";
 import type { AntigravityDesktopReader } from "./desktop-reader.ts";
@@ -30,6 +37,8 @@ export class AntigravitySessionManager {
     capabilityGate: AntigravityCapabilityGate; modelCatalog: AntigravityModelCatalog;
     cliPath: string; geminiDir?: string | undefined; appDataDir?: string | undefined;
     desktopReader?: AntigravityDesktopReader | undefined; desktopAppDataDir?: string | undefined;
+    desktopAppController?: DesktopTakeoverController | undefined;
+    getDesktopAppController?: (() => DesktopTakeoverController | null | undefined) | undefined;
     approvalPolicy?: "auto" | "ask" | undefined; externalSessionsEnabled?: boolean | undefined;
     getAllowedProjects: () => readonly AllowedAntigravityProject[]; clientFactory?: AcpClientFactory | undefined;
     onSessionEvent?: ((sessionId: string) => void) | undefined; onDesktopTurnSettled?: ((sessionId: string) => void) | undefined;
@@ -96,14 +105,28 @@ export class AntigravitySessionManager {
   }
 
   /** Send a follow-up prompt to a managed or P4-adopted Desktop session; rejects concurrent turns with `session_busy`. */
-  async send(sessionId: string, operationId: string, prompt: string): Promise<SourceResult> {
-    const resolved = this.resolveOrAdoptSession(sessionId);
+  async send(sessionId: string, operationId: string, prompt: string, options?: SourceSendOptions): Promise<SourceResult> {
+    const resolved = this.resolveOrAdoptSession(sessionId, true);
     if (!resolved.session) return { state: "failed", sessionId, errorCode: resolved.errorCode ?? "session_not_found" };
     const session = resolved.session;
     const existingActor = this.actors.get(sessionId);
-    if (existingActor?.activeTurn || existingActor?.replaying || session.status === "running" || session.status === "cancelling") {
+    if (
+      existingActor?.activeTurn ||
+      existingActor?.replaying ||
+      session.status === "cancelling" ||
+      (session.status === "running" && !resolved.waitingUserInput)
+    ) {
       return { state: "failed", sessionId, errorCode: "session_busy" };
     }
+    const controller = this.deps.getDesktopAppController?.() ?? this.deps.desktopAppController;
+    const takeover = await prepareDesktopQuestionTakeover({
+      session,
+      waitingUserInput: Boolean(resolved.waitingUserInput),
+      options,
+      controller,
+    });
+    if (!takeover.ok) return { state: "failed", sessionId, errorCode: takeover.errorCode };
+    if (resolved.isNewAdoption) this.deps.store.upsertSession(session);
     try {
       const actor = await this.ensureIdleActor(session);
       if (session.sessionOrigin === "desktop") actor.retireWorkerAfterTurn = true;
@@ -221,39 +244,16 @@ export class AntigravitySessionManager {
     this.actors.clear();
   }
 
-  private resolveOrAdoptSession(sessionId: string): { session?: AntigravitySessionRecord; errorCode?: string } {
-    const reader = this.deps.desktopReader;
-    const inspectExt = () => reader?.inspectAnyExternalSession
-      ? reader.inspectAnyExternalSession(sessionId)
-      : reader ? { ...reader.inspectExternalSession(sessionId), clientKind: "desktop" as const, appDataDirPath: this.deps.desktopAppDataDir ?? null } : null;
-    const existing = this.deps.store.getSession(sessionId);
-    if (existing) {
-      if (existing.sessionOrigin === "desktop") {
-        if (!this.deps.externalSessionsEnabled) return { errorCode: "desktop_session_read_only" };
-        if (inspectExt()?.externallyRunning && !this.actors.get(sessionId)?.activeTurn) return { errorCode: "session_busy" };
-      } else if (existing.clientTarget === "cli" && !this.actors.get(sessionId)?.activeTurn && inspectExt()?.externallyRunning) {
-        return { errorCode: "session_busy" };
-      }
-      return { session: existing };
-    }
-    const ext = inspectExt();
-    if (!ext || !ext.found) return { errorCode: "session_not_found" };
-    if (!this.deps.externalSessionsEnabled) return { errorCode: "desktop_session_read_only" };
-    if (ext.externallyRunning) return { errorCode: "session_busy" };
-    if (!ext.projectId || !ext.cwd) return { errorCode: "invalid_project" };
-    const desktopDirName = this.deps.desktopAppDataDir ? path.basename(this.deps.desktopAppDataDir) : "antigravity";
-    const extDirName = ext.appDataDirPath ? path.basename(ext.appDataDirPath) : desktopDirName;
-    const now = Date.now();
-    const adopted: AntigravitySessionRecord = {
-      sessionId, nativeSessionId: sessionId, sessionOrigin: extDirName === desktopDirName ? "desktop" : "sea_bridge",
-      clientTarget: ext.clientKind, appDataDir: extDirName,
-      projectId: ext.projectId, cwd: ext.cwd, title: ext.title || sessionId,
-      modelId: null, reasoningEffort: null, modeId: "default", status: "idle",
-      completeHistory: true, snapshotGeneration: 1, lastExecutionId: null, lastExecutionEpoch: 0,
-      createdAt: ext.updatedAt || now, updatedAt: ext.updatedAt || now,
-    };
-    this.deps.store.upsertSession(adopted);
-    return { session: adopted };
+  private resolveOrAdoptSession(sessionId: string, allowWaitingUserInput = false) {
+    return resolveOrAdoptExternalSession({
+      sessionId,
+      store: this.deps.store,
+      desktopReader: this.deps.desktopReader,
+      desktopAppDataDir: this.deps.desktopAppDataDir,
+      externalSessionsEnabled: this.deps.externalSessionsEnabled,
+      hasActiveTurn: Boolean(this.actors.get(sessionId)?.activeTurn),
+      allowWaitingUserInput,
+    });
   }
 
   private targetAppDataDir(session: AntigravitySessionRecord): string | undefined {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import type { SourceResult } from "../web/sources/types.ts";
+import type { SourceResult, SourceSendOptions } from "../web/sources/types.ts";
 import type { AntigravityDesktopAppController } from "./desktop-app-controller.ts";
+import { expandReplyWithQuestionMeta } from "./question-telegram-ui.ts";
 import type { AntigravityTelegramStore } from "./telegram-store.ts";
 
 export type AntigravityReplyResult =
@@ -8,6 +9,7 @@ export type AntigravityReplyResult =
   | { status: "delivered"; sessionId: string }
   | { status: "session_busy"; sessionId: string }
   | { status: "desktop_read_only"; sessionId: string }
+  | { status: "desktop_takeover_confirm_required"; sessionId: string; promptText: string }
   | { status: "failed"; sessionId: string; errorCode: string }
   | { status: "delivery_unknown"; sessionId: string; errorCode: string };
 
@@ -27,7 +29,7 @@ export class AntigravityReplyRouter {
       externalSessionsEnabled?: boolean | undefined;
       desktopAppController?: AntigravityDesktopAppController | undefined;
       sessionManager: {
-        send(id: string, operationId: string, prompt: string): Promise<SourceResult>;
+        send(id: string, operationId: string, prompt: string, options?: SourceSendOptions): Promise<SourceResult>;
       };
       now?: () => number;
     }
@@ -52,7 +54,7 @@ export class AntigravityReplyRouter {
       return { status: "desktop_read_only", sessionId: link.sessionId };
     }
 
-    const normalized = text.trim();
+    const normalized = expandReplyWithQuestionMeta(this.deps.tgStore, chatId, replyMessageId, text, this.now());
     if (!normalized) {
       return { status: "failed", sessionId: link.sessionId, errorCode: "empty_prompt" };
     }
@@ -101,7 +103,9 @@ export class AntigravityReplyRouter {
     }
 
     try {
-      const result = await this.deps.sessionManager.send(link.sessionId, requestId(updateId), normalized);
+      const result = await this.deps.sessionManager.send(link.sessionId, requestId(updateId), normalized, {
+        notifyChatId: chatId,
+      });
       if (result.state === "queued" || result.state === "accepted") {
         this.deps.tgStore.finishDelivery(updateId, "delivered", null, this.now());
         if (link.sessionOrigin === "desktop") {
@@ -117,6 +121,9 @@ export class AntigravityReplyRouter {
         }
         if (code === "desktop_session_read_only") {
           return { status: "desktop_read_only", sessionId: link.sessionId };
+        }
+        if (code === "desktop_takeover_confirm_required") {
+          return { status: "desktop_takeover_confirm_required", sessionId: link.sessionId, promptText: normalized };
         }
         return { status: "failed", sessionId: link.sessionId, errorCode: code };
       }
