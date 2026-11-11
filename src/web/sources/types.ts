@@ -1,12 +1,13 @@
 import type { LiveActivityItem } from "../codex-transcript.ts";
 import type { CreationClient } from "../../desktop/codex-provenance.ts";
-import type { OperationState, WebOperationSource } from "../store.ts";
+import type { OperationState, WebClientTarget, WebOperationSource } from "../store.ts";
 import type { WebExecutionControl, WebPendingApproval } from "../../antigravity/projection.ts";
 
 /** Independent capability flags prevent a partial source appearing fully available. */
 export interface WebSourceCapabilities {
   sessionsReadable: boolean; projectsReadable: boolean; modelsReadable: boolean; historyReadable: boolean;
   completeUserHistoryReadable: boolean; finalReplyReadable: boolean; createEnabled: boolean; sendEnabled: boolean;
+  desktopCreateEnabled?: boolean;
   desktopOpenEnabled?: boolean;
   modelUpdateEnabled?: boolean;
   approvalTransport: "telegram" | "web" | "web_and_telegram" | null;
@@ -82,7 +83,8 @@ export interface ExecutionEvidence {
 export interface SourceResult { state: OperationState; sessionId: string | null; turnId?: string; errorCode?: string; }
 /** Explicit per-request model choice and early persistence callback. */
 export interface CreateRequest {
-  operationId: string; projectId: string; modelId: string | null; reasoningEffort?: string | null; prompt: string;
+  operationId: string; projectId: string; modelId: string | null; reasoningEffort?: string | null;
+  clientTarget?: WebClientTarget | null; prompt: string;
   onSessionKnown: (id: string) => void;
 }
 /** Web adapter boundary independent of Telegram IDs and preferences. */

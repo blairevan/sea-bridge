@@ -12,19 +12,23 @@ export interface WebAccount { username: string; passwordHash: string; revision: 
 /** State vocabulary separates submission acceptance from source execution. */
 export type OperationState = "received" | "dispatching" | "queued" | "accepted" | "failed" | "delivery_unknown";
 export type WebOperationSource = "codex" | "dsh" | "antigravity";
+/** Optional client surface targeted when creating a session (`cli` vs `desktop`). */
+export type WebClientTarget = "cli" | "desktop";
 /** Immutable request identity supplied to the atomic operation claim. */
 export interface OperationClaim {
   id: string; digest: string; kind: "create" | "send"; source: WebOperationSource;
-  deviceId: string; targetId: string | null; projectId: string | null; modelId: string | null; createdAt: number;
+  deviceId: string; targetId: string | null; projectId: string | null; modelId: string | null;
+  clientTarget?: WebClientTarget | null; createdAt: number;
 }
 /** Safe operation projection; digest stays internal to the store. */
 export interface WebOperation {
   id: string; kind: "create" | "send"; source: WebOperationSource; deviceId: string;
-  targetId: string | null; projectId: string | null; modelId: string | null; state: OperationState;
+  targetId: string | null; projectId: string | null; modelId: string | null;
+  clientTarget: WebClientTarget | null; state: OperationState;
   sessionId: string | null; turnId: string | null; errorCode: string | null; createdAt: number; updatedAt: number;
 }
 const DEVICE_COLUMNS = "id,name,login_ip AS loginIp,client_app AS clientApp,paired_at AS pairedAt,last_active_at AS lastActiveAt,expires_at AS expiresAt,revoked_at AS revokedAt";
-const OP_COLUMNS = "id,kind,source,device_id AS deviceId,target_id AS targetId,project_id AS projectId,model_id AS modelId,state,session_id AS sessionId,turn_id AS turnId,error_code AS errorCode,created_at AS createdAt,updated_at AS updatedAt";
+const OP_COLUMNS = "id,kind,source,device_id AS deviceId,target_id AS targetId,project_id AS projectId,model_id AS modelId,client_target AS clientTarget,state,session_id AS sessionId,turn_id AS turnId,error_code AS errorCode,created_at AS createdAt,updated_at AS updatedAt";
 
 /** Web-only persistence; callers must filter content before storage. */
 export class WebStore {
@@ -106,10 +110,11 @@ export class WebStore {
 
   /** Claim a request once; a changed payload never replaces a prior claim. */
   claimOperation(input: OperationClaim): "new" | "duplicate" | "mismatch" {
+    const clientTarget = input.clientTarget === "cli" || input.clientTarget === "desktop" ? input.clientTarget : null;
     return this.db.transaction(() => {
       const prior = this.db.query("SELECT digest FROM web_operations WHERE id=?").get(input.id) as { digest: string } | null;
       if (prior) return safeEqual(prior.digest, input.digest) ? "duplicate" : "mismatch";
-      this.db.query("INSERT INTO web_operations(id,digest,kind,source,device_id,target_id,project_id,model_id,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'received',?,?)").run(input.id, input.digest, input.kind, input.source, input.deviceId, input.targetId, input.projectId, input.modelId, input.createdAt, input.createdAt);
+      this.db.query("INSERT INTO web_operations(id,digest,kind,source,device_id,target_id,project_id,model_id,client_target,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'received',?,?)").run(input.id, input.digest, input.kind, input.source, input.deviceId, input.targetId, input.projectId, input.modelId, clientTarget, input.createdAt, input.createdAt);
       return "new";
     })();
   }
@@ -117,6 +122,24 @@ export class WebStore {
   /** Retrieve safe operation state including partial creation identifiers. */
   getOperation(id: string): WebOperation | null {
     return this.db.query(`SELECT ${OP_COLUMNS} FROM web_operations WHERE id=?`).get(id) as WebOperation | null;
+  }
+
+  /** Look up the explicit client target (`cli` | `desktop`) recorded when Sea-Bridge created a session. */
+  getCreatedSessionTarget(source: WebOperationSource, sessionId: string): WebClientTarget | null {
+    const row = this.db.query(
+      "SELECT client_target AS clientTarget FROM web_operations WHERE kind='create' AND source=? AND session_id=? AND client_target IN ('cli','desktop') ORDER BY created_at DESC LIMIT 1",
+    ).get(source, sessionId) as { clientTarget: WebClientTarget } | null;
+    return row?.clientTarget ?? null;
+  }
+
+  /** Map all known session IDs for a source to their explicit Sea-Bridge creation client target. */
+  findCreatedSessionTargets(source: WebOperationSource): Map<string, WebClientTarget> {
+    const rows = this.db.query(
+      "SELECT session_id AS sessionId, client_target AS clientTarget FROM web_operations WHERE kind='create' AND source=? AND session_id IS NOT NULL AND client_target IN ('cli','desktop') ORDER BY created_at ASC",
+    ).all(source) as Array<{ sessionId: string; clientTarget: WebClientTarget }>;
+    const map = new Map<string, WebClientTarget>();
+    for (const row of rows) map.set(row.sessionId, row.clientTarget);
+    return map;
   }
 
   /** Merge only prompts the source explicitly accepted; failed/ambiguous writes never become fake history. */

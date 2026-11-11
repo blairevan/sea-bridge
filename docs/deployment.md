@@ -1,5 +1,11 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.5.0 执行来源 CLI / Desktop 细化与命名规范统一
+
+- **新建会话与本地桥接支持 `clientTarget` (`cli` | `desktop`)**：`web_schema_migrations` 升级至 `v5`（为 `web_operations` 增加 `client_target` 字段，为 `antigravity_sessions` 幂等增加 `client_target` 与 `app_data_dir` 字段）。Web 控制台新建对话框与 `ToolHub` 任务中心统一提供 `Codex · Desktop`（默认）、`Codex · CLI`、`Antigravity · Desktop`、`Antigravity · CLI`、`DSH` 五项扁平选项。
+- **Antigravity 双目录物理隔离与外部 CLI 轨迹聚合**：新建 `Antigravity · Desktop` 会话要求 `SEA_BRIDGE_ANTIGRAVITY_EXTERNAL_SESSIONS_ENABLED=true`，使用 `--app-data-dir=antigravity` 并在每轮结束后自动回收 Worker 释放桌面 SQLite 写锁；新建 `Antigravity · CLI` 会话使用 `--app-data-dir=antigravity-cli` 温热复用 Worker。同时只读聚合 `~/.gemini/antigravity-cli/conversation_summaries.db` 与 `brain/<id>` 历史轨迹，支持在 Web 控制台浏览与续写本机 `agy` CLI 历史会话。
+- **Codex 桌面打开门禁与统一文案**：显式以 `Codex · CLI` 创建的会话返回 `canOpenDesktop: false`，不再暴露“在 Mac 上打开此会话”入口；全站标签统一为 `<Platform> · <Target>`（如 `Codex · Desktop`、`Antigravity · Desktop（只读）`、`Antigravity · CLI`、`DSH`）。
+
 ## v1.4.0 ToolHub 统一登录与本地私有会话桥 (bridge.sock)
 
 - **移除旧任务子系统，启用本地私有会话桥 (`bridge.sock`)**：移除历史 `src/tasks/*` 与 `SEA_BRIDGE_TASKS_ENABLED` / `tasks.sock`，默认在 `~/Library/Application Support/SeaBridge/run/bridge.sock`（可通过 `SEA_BRIDGE_LOCAL_SOCKET` 覆盖，父目录 `0700`、socket `0600`、同 UID 校验，且显式拒绝携带 `Origin` 或 `Sec-Fetch-Site` 的浏览器请求头）暴露免应用层密码配置的本地私有接口。

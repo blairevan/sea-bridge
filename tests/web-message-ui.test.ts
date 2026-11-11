@@ -280,7 +280,7 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   ui.state.paused = false; ui.state.selected = { id: "thread", source: "codex" };
   await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history", "q2", "q1"]);
-  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 创建来源未知 · 执行中");
+  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 未知 · 执行中");
   const root = nodes.get("messages")!;
   expect(flatten(root).filter((node) => node.textContent === "↳ 排队中")).toHaveLength(2);
   queued[0]!.text = "edited second"; await ui.loadHistory(false);
@@ -290,7 +290,7 @@ test("queued bubbles refresh by identity, preserve queue order and disappear whe
   expect(flatten(root).filter((node) => node.textContent === "排队状态待确认")).toHaveLength(2);
   unavailable = false; queued = []; sessionState = "idle"; await ui.loadHistory(false);
   expect(ui.state.messages.map((message) => message.id)).toEqual(["history"]);
-  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 创建来源未知 · 空闲");
+  expect(nodes.get("session-meta")?.textContent).toBe("Codex · 未知 · 空闲");
   expect(flatten(root).some((node) => node.textContent.includes("排队"))).toBe(false);
 });
 
@@ -1632,8 +1632,8 @@ test("Antigravity desktop read-only sessions disable composer input and show rea
     creationClient: { kind: "sea_bridge", evidence: "explicit" },
   };
 
-  expect(ui.sessionSourceLabel(desktopSession)).toBe("Antigravity · 桌面端（只读）");
-  expect(ui.sessionSourceLabel(managedSession)).toBe("Antigravity · Sea-Bridge 托管");
+  expect(ui.sessionSourceLabel(desktopSession)).toBe("Antigravity · Desktop（只读）");
+  expect(ui.sessionSourceLabel(managedSession)).toBe("Antigravity · Sea-Bridge");
 
   ui.state.selected = desktopSession;
   ui.syncComposerControl(1000);
@@ -1658,7 +1658,7 @@ test("Antigravity desktop read-only sessions disable composer input and show rea
     sendEnabled: true,
     creationClient: { kind: "desktop", evidence: "explicit" },
   };
-  expect(ui.sessionSourceLabel(writableDesktopSession)).toBe("Antigravity · 桌面端");
+  expect(ui.sessionSourceLabel(writableDesktopSession)).toBe("Antigravity · Desktop");
   ui.state.selected = writableDesktopSession;
   ui.syncComposerControl(1000);
   expect(elements.get("prompt").disabled).toBe(false);
@@ -1671,14 +1671,14 @@ test("Antigravity desktop read-only sessions disable composer input and show rea
   expect(elements.get("send-button").disabled).toBe(false);
   expect(elements.get("send-button").dataset.mode).toBe("send");
 
-  // While a P4-writable desktop session is running, it stays labeled "桌面端" and shows running status instead of read-only
+  // While a P4-writable desktop session is running, it stays labeled "Desktop" and shows running status instead of read-only
   elements.get("prompt").value = "";
   const runningDesktopSession = {
     ...writableDesktopSession,
     state: "running",
     sendEnabled: false,
   };
-  expect(ui.sessionSourceLabel(runningDesktopSession)).toBe("Antigravity · 桌面端");
+  expect(ui.sessionSourceLabel(runningDesktopSession)).toBe("Antigravity · Desktop");
   ui.state.selected = runningDesktopSession;
   ui.syncComposerControl(1000);
   expect(elements.get("prompt").disabled).toBe(false);

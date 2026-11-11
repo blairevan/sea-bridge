@@ -20,6 +20,7 @@ export interface AntigravityProjectRecord {
 
 export interface AntigravitySessionRecord {
   sessionId: string; nativeSessionId: string; sessionOrigin?: "sea_bridge" | "desktop";
+  clientTarget?: "cli" | "desktop" | null; appDataDir?: string | null;
   projectId: string | null; cwd: string; title: string;
   modelId: string | null; reasoningEffort: string | null; modeId: string | null;
   status: AntigravitySessionStatus; completeHistory: boolean; snapshotGeneration: number;
@@ -53,7 +54,8 @@ export interface AntigravityApprovalRecord {
 }
 
 const SESSION_COLUMNS = `session_id AS sessionId, native_session_id AS nativeSessionId,
-  session_origin AS sessionOrigin, project_id AS projectId,
+  session_origin AS sessionOrigin, client_target AS clientTarget, app_data_dir AS appDataDir,
+  project_id AS projectId,
   cwd, title, model_id AS modelId, reasoning_effort AS reasoningEffort, mode_id AS modeId,
   status, complete_history AS completeHistory, snapshot_generation AS snapshotGeneration,
   last_execution_id AS lastExecutionId, last_execution_epoch AS lastExecutionEpoch,
@@ -75,6 +77,8 @@ export function migrateAntigravityBridgeTables(db: Database): void {
     CREATE TABLE IF NOT EXISTS antigravity_sessions (
       session_id TEXT PRIMARY KEY, native_session_id TEXT NOT NULL UNIQUE,
       session_origin TEXT NOT NULL DEFAULT 'sea_bridge' CHECK(session_origin IN ('sea_bridge','desktop')),
+      client_target TEXT CHECK(client_target IN ('cli','desktop')),
+      app_data_dir TEXT,
       project_id TEXT,
       cwd TEXT NOT NULL, title TEXT NOT NULL, model_id TEXT, reasoning_effort TEXT, mode_id TEXT,
       status TEXT NOT NULL CHECK(status IN ('idle','running','cancelling','failed','unknown')),
@@ -130,6 +134,12 @@ export function migrateAntigravityBridgeTables(db: Database): void {
   if (!cols.some((c) => c.name === "session_origin")) {
     db.exec("ALTER TABLE antigravity_sessions ADD COLUMN session_origin TEXT NOT NULL DEFAULT 'sea_bridge'");
   }
+  if (!cols.some((c) => c.name === "client_target")) {
+    db.exec("ALTER TABLE antigravity_sessions ADD COLUMN client_target TEXT CHECK(client_target IN ('cli','desktop'))");
+  }
+  if (!cols.some((c) => c.name === "app_data_dir")) {
+    db.exec("ALTER TABLE antigravity_sessions ADD COLUMN app_data_dir TEXT");
+  }
 }
 
 /** Persistence store for SeaBridge-managed Antigravity sessions, executions, messages, and approvals. */
@@ -156,17 +166,21 @@ export class AntigravityStore {
   upsertSession(s: AntigravitySessionRecord): void {
     this.db.query(`
       INSERT INTO antigravity_sessions(
-        session_id, native_session_id, session_origin, project_id, cwd, title, model_id, reasoning_effort, mode_id,
+        session_id, native_session_id, session_origin, client_target, app_data_dir, project_id, cwd, title, model_id, reasoning_effort, mode_id,
         status, complete_history, snapshot_generation, last_execution_id, last_execution_epoch, last_error, created_at, updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(session_id) DO UPDATE SET
-        session_origin=excluded.session_origin, project_id=excluded.project_id, cwd=excluded.cwd, title=excluded.title,
+        session_origin=excluded.session_origin,
+        client_target=COALESCE(excluded.client_target, antigravity_sessions.client_target),
+        app_data_dir=COALESCE(excluded.app_data_dir, antigravity_sessions.app_data_dir),
+        project_id=excluded.project_id, cwd=excluded.cwd, title=excluded.title,
         model_id=excluded.model_id, reasoning_effort=excluded.reasoning_effort, mode_id=excluded.mode_id, status=excluded.status,
         complete_history=excluded.complete_history, snapshot_generation=excluded.snapshot_generation,
         last_execution_id=excluded.last_execution_id, last_execution_epoch=excluded.last_execution_epoch,
         last_error=excluded.last_error, updated_at=excluded.updated_at
     `).run(
-      s.sessionId, s.nativeSessionId, s.sessionOrigin ?? "sea_bridge", s.projectId, s.cwd, s.title, s.modelId, s.reasoningEffort, s.modeId,
+      s.sessionId, s.nativeSessionId, s.sessionOrigin ?? "sea_bridge", s.clientTarget ?? null, s.appDataDir ?? null,
+      s.projectId, s.cwd, s.title, s.modelId, s.reasoningEffort, s.modeId,
       s.status, s.completeHistory ? 1 : 0, s.snapshotGeneration, s.lastExecutionId ?? null,
       s.lastExecutionEpoch ?? 0, s.lastError ?? null, s.createdAt, s.updatedAt
     );

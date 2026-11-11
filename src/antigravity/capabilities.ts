@@ -32,6 +32,7 @@ export class AntigravityCapabilityGate {
       enabled: boolean;
       writeEnabled: boolean;
       desktopReadEnabled: boolean;
+      externalSessionsEnabled?: boolean;
     }
   ) {}
 
@@ -92,6 +93,7 @@ export class AntigravityCapabilityGate {
         completeUserHistoryReadable: false,
         finalReplyReadable: false,
         createEnabled: false,
+        desktopCreateEnabled: false,
         sendEnabled: false,
         modelUpdateEnabled: false,
         approvalTransport: null,
@@ -111,9 +113,10 @@ export class AntigravityCapabilityGate {
       completeUserHistoryReadable: true,
       finalReplyReadable: true,
       createEnabled: canWrite,
+      desktopCreateEnabled: canWrite && (this.options.externalSessionsEnabled ?? true),
       sendEnabled: canWrite,
       modelUpdateEnabled: canWrite,
-      approvalTransport: canWrite ? "web" as any : null,
+      approvalTransport: canWrite ? "web" : null,
     };
   }
 

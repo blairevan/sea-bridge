@@ -3,16 +3,17 @@ import path from "node:path";
 import type { WebStore } from "../web/store.ts";
 import type { CreateRequest, SourceResult } from "../web/sources/types.ts";
 import type { AntigravityApprovalBridge } from "./approval-bridge.ts";
+import { applyAcpModelConfig, spawnAcpWorker, type AcpClientFactory } from "./acp-worker-helpers.ts";
 import type { AntigravityCapabilityGate } from "./capabilities.ts";
-import { AcpClient, type AcpClientCallbacks } from "./client.ts";
+import type { AcpClient } from "./client.ts";
 import type { AntigravityDesktopReader } from "./desktop-reader.ts";
 import type { AntigravityModelCatalog } from "./model-catalog.ts";
 import { isValidAntigravitySessionId, type AllowedAntigravityProject } from "./policy.ts";
 import { applyLiveSessionUpdate, collectReplayUpdate, type ActiveTurnCollector, type ReplayCollector, type WebExecutionControl } from "./projection.ts";
-import type { AcpConfigOption, AcpSessionUpdateParams } from "./protocol.ts";
-import type { AntigravityExecutionRecord, AntigravitySessionRecord, AntigravityStore } from "./store.ts";
+import type { AcpSessionUpdateParams } from "./protocol.ts";
+import type { AntigravitySessionRecord, AntigravityStore } from "./store.ts";
 
-export type AcpClientFactory = (generation: number, cwd: string, callbacks: AcpClientCallbacks, appDataDir?: string | undefined) => AcpClient;
+export type { AcpClientFactory };
 
 interface SessionActor {
   sessionId: string; cwd: string; client: AcpClient | null; generation: number;
@@ -36,6 +37,10 @@ export class AntigravitySessionManager {
 
   /** Synchronously execute `session/new` + model/effort setup, then dispatch `session/prompt` asynchronously. */
   async create(input: CreateRequest): Promise<SourceResult> {
+    const isDesktopTarget = input.clientTarget === "desktop";
+    if (isDesktopTarget && this.deps.externalSessionsEnabled === false) {
+      return { state: "failed", sessionId: null, errorCode: "desktop_session_read_only" };
+    }
     const project = this.deps.getAllowedProjects().find((p) => p.id === input.projectId);
     if (!project) return { state: "failed", sessionId: null, errorCode: "invalid_project" };
     let resolvedModel: { baseModelId: string; reasoningEffort: string | null; variantId: string } | null = null;
@@ -43,9 +48,12 @@ export class AntigravitySessionManager {
       resolvedModel = await this.deps.modelCatalog.resolveSelection(input.modelId, input.reasoningEffort);
       if (!resolvedModel) return { state: "failed", sessionId: null, errorCode: "invalid_model" };
     }
+    const spawnAppDataDir = isDesktopTarget
+      ? (this.deps.desktopAppDataDir ? path.basename(this.deps.desktopAppDataDir) : "antigravity")
+      : this.deps.appDataDir;
     const generation = this.nextGeneration++;
     let boundSessionId: string | null = null;
-    const client = this.spawnClient(generation, project.rootPath, () => boundSessionId, this.deps.appDataDir);
+    const client = this.spawnClient(generation, project.rootPath, () => boundSessionId, spawnAppDataDir);
     try {
       const capSnap = this.deps.capabilityGate.recordHandshake(await client.initialize());
       if (!capSnap.protocolCompatible) { client.close(); return { state: "failed", sessionId: null, errorCode: "protocol_incompatible" }; }
@@ -58,8 +66,10 @@ export class AntigravitySessionManager {
       const effectiveEffort = setupRes.configOptions?.find((c) => c.id === "thought_level")?.currentValue ?? resolvedModel?.reasoningEffort ?? null;
       const effectiveMode = setupRes.configOptions?.find((c) => c.id === "mode")?.currentValue ?? "default";
       const now = Date.now();
+      const clientTarget = isDesktopTarget ? "desktop" : input.clientTarget === "cli" ? "cli" : null;
       const sessionRecord: AntigravitySessionRecord = {
-        sessionId, nativeSessionId: sessionId, sessionOrigin: "sea_bridge", projectId: project.id, cwd: project.rootPath,
+        sessionId, nativeSessionId: sessionId, sessionOrigin: isDesktopTarget ? "desktop" : "sea_bridge",
+        clientTarget, appDataDir: spawnAppDataDir ?? null, projectId: project.id, cwd: project.rootPath,
         title: input.prompt.trim().slice(0, 80) || sessionId, modelId: effectiveModelId, reasoningEffort: effectiveEffort,
         modeId: effectiveMode, status: "running", completeHistory: true, snapshotGeneration: 1,
         lastExecutionId: null, lastExecutionEpoch: 0, createdAt: now, updatedAt: now,
@@ -67,11 +77,11 @@ export class AntigravitySessionManager {
       this.deps.store.upsertSession(sessionRecord);
       input.onSessionKnown(sessionId);
       if (resolvedModel) {
-        const applied = await this.applyModelConfig(client, sessionId, resolvedModel.baseModelId, resolvedModel.reasoningEffort);
+        const applied = await applyAcpModelConfig(client, sessionId, resolvedModel.baseModelId, resolvedModel.reasoningEffort);
         Object.assign(sessionRecord, { modelId: applied.modelId, reasoningEffort: applied.reasoningEffort, updatedAt: Date.now() });
         this.deps.store.upsertSession(sessionRecord);
       }
-      const actor: SessionActor = { sessionId, cwd: project.rootPath, client, generation, retireWorkerAfterTurn: false, activeTurn: null, replaying: null };
+      const actor: SessionActor = { sessionId, cwd: project.rootPath, client, generation, retireWorkerAfterTurn: isDesktopTarget, activeTurn: null, replaying: null };
       this.actors.set(sessionId, actor);
       return { state: "queued", sessionId, turnId: this.startAsyncPromptTurn(actor, sessionRecord, input.operationId, input.prompt) };
     } catch {
@@ -139,7 +149,7 @@ export class AntigravitySessionManager {
     if (actor?.activeTurn || actor?.replaying || session.status === "running" || session.status === "cancelling") throw new Error("session_busy");
     const resolved = await this.deps.modelCatalog.resolveSelection(modelId, reasoningEffort);
     if (!resolved) throw new Error("invalid_model");
-    if (actor?.client && !actor.client.identity().closed) await this.applyModelConfig(actor.client, sessionId, resolved.baseModelId, resolved.reasoningEffort);
+    if (actor?.client && !actor.client.identity().closed) await applyAcpModelConfig(actor.client, sessionId, resolved.baseModelId, resolved.reasoningEffort);
     this.deps.store.upsertSession({ ...session, status: session.status === "unknown" ? "idle" : session.status, modelId: resolved.baseModelId, reasoningEffort: resolved.reasoningEffort, updatedAt: Date.now() });
     this.deps.onSessionEvent?.(sessionId);
     return { status: "updated", model: { id: resolved.baseModelId, displayName: resolved.displayName }, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) };
@@ -212,25 +222,31 @@ export class AntigravitySessionManager {
   }
 
   private resolveOrAdoptSession(sessionId: string): { session?: AntigravitySessionRecord; errorCode?: string } {
+    const reader = this.deps.desktopReader;
+    const inspectExt = () => reader?.inspectAnyExternalSession
+      ? reader.inspectAnyExternalSession(sessionId)
+      : reader ? { ...reader.inspectExternalSession(sessionId), clientKind: "desktop" as const, appDataDirPath: this.deps.desktopAppDataDir ?? null } : null;
     const existing = this.deps.store.getSession(sessionId);
     if (existing) {
       if (existing.sessionOrigin === "desktop") {
         if (!this.deps.externalSessionsEnabled) return { errorCode: "desktop_session_read_only" };
-        if (this.deps.desktopReader?.inspectExternalSession(sessionId).externallyRunning && !this.actors.get(sessionId)?.activeTurn) {
-          return { errorCode: "session_busy" };
-        }
+        if (inspectExt()?.externallyRunning && !this.actors.get(sessionId)?.activeTurn) return { errorCode: "session_busy" };
+      } else if (existing.clientTarget === "cli" && !this.actors.get(sessionId)?.activeTurn && inspectExt()?.externallyRunning) {
+        return { errorCode: "session_busy" };
       }
       return { session: existing };
     }
-    if (!this.deps.desktopReader) return { errorCode: "session_not_found" };
-    const ext = this.deps.desktopReader.inspectExternalSession(sessionId);
-    if (!ext.found) return { errorCode: "session_not_found" };
+    const ext = inspectExt();
+    if (!ext || !ext.found) return { errorCode: "session_not_found" };
     if (!this.deps.externalSessionsEnabled) return { errorCode: "desktop_session_read_only" };
     if (ext.externallyRunning) return { errorCode: "session_busy" };
     if (!ext.projectId || !ext.cwd) return { errorCode: "invalid_project" };
+    const desktopDirName = this.deps.desktopAppDataDir ? path.basename(this.deps.desktopAppDataDir) : "antigravity";
+    const extDirName = ext.appDataDirPath ? path.basename(ext.appDataDirPath) : desktopDirName;
     const now = Date.now();
     const adopted: AntigravitySessionRecord = {
-      sessionId, nativeSessionId: sessionId, sessionOrigin: "desktop",
+      sessionId, nativeSessionId: sessionId, sessionOrigin: extDirName === desktopDirName ? "desktop" : "sea_bridge",
+      clientTarget: ext.clientKind, appDataDir: extDirName,
       projectId: ext.projectId, cwd: ext.cwd, title: ext.title || sessionId,
       modelId: null, reasoningEffort: null, modeId: "default", status: "idle",
       completeHistory: true, snapshotGeneration: 1, lastExecutionId: null, lastExecutionEpoch: 0,
@@ -241,6 +257,7 @@ export class AntigravitySessionManager {
   }
 
   private targetAppDataDir(session: AntigravitySessionRecord): string | undefined {
+    if (session.appDataDir) return session.appDataDir;
     return session.sessionOrigin === "desktop"
       ? (this.deps.desktopAppDataDir ? path.basename(this.deps.desktopAppDataDir) : "antigravity")
       : this.deps.appDataDir;
@@ -257,7 +274,7 @@ export class AntigravitySessionManager {
     if (caps.resumeSupported) await client.sessionResume(session.sessionId, session.cwd);
     else if (caps.loadSupported) await client.sessionLoad(session.sessionId, session.cwd);
     else { client.close(); throw new Error("resume_unavailable"); }
-    if (session.modelId) await this.applyModelConfig(client, session.sessionId, session.modelId, session.reasoningEffort ?? null);
+    if (session.modelId) await applyAcpModelConfig(client, session.sessionId, session.modelId, session.reasoningEffort ?? null);
     const actor: SessionActor = {
       sessionId: session.sessionId, cwd: session.cwd, client, generation, retireWorkerAfterTurn: false, activeTurn: null, replaying: null,
     };
@@ -366,40 +383,18 @@ export class AntigravitySessionManager {
     if (updated) this.deps.onSessionEvent?.(targetId);
   }
 
-  private async applyModelConfig(client: AcpClient, sessionId: string, baseModelId: string, reasoningEffort: string | null) {
-    const modelRes = await client.setConfigOption(sessionId, "model", baseModelId);
-    let updatedOptions: AcpConfigOption[] = modelRes.configOptions;
-    const hasThoughtOption = updatedOptions.some((c) => c.id === "thought_level");
-    if (reasoningEffort && hasThoughtOption) {
-      updatedOptions = (await client.setConfigOption(sessionId, "thought_level", reasoningEffort)).configOptions;
-    }
-    return {
-      modelId: updatedOptions.find((c) => c.id === "model")?.currentValue ?? baseModelId,
-      reasoningEffort: updatedOptions.find((c) => c.id === "thought_level")?.currentValue ?? (hasThoughtOption ? reasoningEffort : null),
-    };
-  }
-
   private spawnClient(generation: number, cwd: string, getSessionId: () => string | null, appDataDir = this.deps.appDataDir): AcpClient {
-    const autoApprove = this.deps.approvalPolicy === "auto";
-    const callbacks: AcpClientCallbacks = {
-      onSessionUpdate: (update, gen) => this.handleSessionUpdate(getSessionId(), update, gen),
-      onPermissionRequest: async (id, req, gen) => {
-        const targetId = getSessionId() ?? req.sessionId;
+    return spawnAcpWorker({
+      generation, cwd, cliPath: this.deps.cliPath, geminiDir: this.deps.geminiDir, appDataDir,
+      approvalPolicy: this.deps.approvalPolicy, clientFactory: this.deps.clientFactory, approvalBridge: this.deps.approvalBridge,
+      getSessionId, onSessionUpdate: (sid, upd, gen) => this.handleSessionUpdate(sid, upd, gen),
+      resolveActiveExecution: (targetId, gen) => {
         const actor = this.actors.get(targetId);
-        if (!actor || actor.generation !== gen || !actor.activeTurn) return { outcome: { outcome: "cancelled" } };
+        if (!actor || actor.generation !== gen || !actor.activeTurn) return null;
         this.markTurnAccepted(actor.activeTurn);
-        const allowOpt = autoApprove ? (req.options.find((o) => o.kind.startsWith("allow") || o.optionId === "allow") ?? req.options[0]) : undefined;
-        if (allowOpt) return { outcome: { outcome: "selected", optionId: allowOpt.optionId } };
-        const { promise } = this.deps.approvalBridge.requestPermission({
-          sessionId: targetId, executionId: actor.activeTurn.executionId, processGeneration: gen, rpcRequestId: id, request: req,
-        });
-        this.deps.onSessionEvent?.(targetId);
-        return await promise;
+        return actor.activeTurn.executionId;
       },
-    };
-    if (this.deps.clientFactory) { const custom = this.deps.clientFactory(generation, cwd, callbacks, appDataDir); custom.start(); return custom; }
-    const args = ["acp", ...(autoApprove ? ["--dangerously-skip-permissions"] : []), ...(this.deps.geminiDir ? [`--gemini-dir=${this.deps.geminiDir}`] : []), ...(appDataDir ? [`--app-data-dir=${appDataDir}`] : [])];
-    const client = new AcpClient({ cliPath: this.deps.cliPath, args, cwd, processGeneration: generation }, callbacks);
-    client.start(); return client;
+      onSessionEvent: this.deps.onSessionEvent,
+    });
   }
 }

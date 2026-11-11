@@ -1,5 +1,5 @@
 import type { CatalogItem, ExecutionEvidence, WebSourceCapabilities } from "../web/sources/types.ts";
-import type { WebClientApp, WebDevice, WebOperation, WebOperationSource } from "../web/store.ts";
+import type { WebClientApp, WebClientTarget, WebDevice, WebOperation, WebOperationSource } from "../web/store.ts";
 
 /** Structured error returned by the private local Unix socket bridge. */
 export class LocalBridgeError extends Error {
@@ -115,4 +115,15 @@ export function readClientApp(value: unknown): WebClientApp {
     return value;
   }
   throw new LocalBridgeError(400, "invalid_client_app");
+}
+
+/** Validate an optional session creation client target (`cli` | `desktop` | null). */
+export function readClientTarget(value: unknown, source: WebOperationSource): WebClientTarget | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (value !== "cli" && value !== "desktop") {
+    throw new LocalBridgeError(400, "invalid_client_target");
+  }
+  return source === "dsh" ? null : value;
 }

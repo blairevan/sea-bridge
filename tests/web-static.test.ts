@@ -61,7 +61,7 @@ test("static shell has local assets and no unsafe rendering or persistent body c
   expect(script).toContain('const session = await requestApi("/api/auth/session")');
   expect(script).toContain('const settings = await requestApi("/api/settings")');
   expect(script).toContain("stream.readyState !== EventSource.OPEN");
-  expect(script).toContain('new Set(["invalid_field", "invalid_source", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict"])');
+  expect(script).toContain('new Set(["invalid_field", "invalid_source", "invalid_client_target", "invalid_operation_id", "body_too_large", "source_unavailable", "csrf_denied", "operation_conflict", "desktop_session_read_only"])');
   expect(css).toContain("#console{height:100dvh;display:flex;flex-direction:column;overflow:hidden}");
   expect(css).toContain(".workspace{display:flex;flex:1;min-height:0;overflow:hidden}");
   expect(css).toContain(".notice-text{flex:1;min-width:0;line-height:1.55");

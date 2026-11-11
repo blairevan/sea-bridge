@@ -84,13 +84,15 @@ export function projectManagedWebSession(
     state = "unknown";
   }
 
+  const clientKind = session.clientTarget ?? (session.sessionOrigin === "desktop" ? "desktop" : "sea_bridge");
+
   return {
-    source: "antigravity" as any,
+    source: "antigravity",
     id: session.sessionId,
     title: session.title || session.sessionId,
     updatedAt: session.updatedAt,
     projectId: session.projectId,
-    creationClient: { kind: session.sessionOrigin === "desktop" ? "desktop" : "sea_bridge", evidence: "explicit" },
+    creationClient: { kind: clientKind, evidence: "explicit" },
     ...(sessionMeta ? { sessionMeta } : {}),
     state,
     sendEnabled: options.sendEnabled && session.status !== "running" && session.status !== "cancelling",
