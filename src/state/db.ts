@@ -338,6 +338,8 @@ export class StateDb {
     ensureColumn(this.db, "observed_sessions", "metadata_observed_at", "INTEGER");
     ensureColumn(this.db, "desktop_codex_catalog", "model", "TEXT");
     ensureColumn(this.db, "desktop_codex_catalog", "reasoning_effort", "TEXT");
+    ensureColumn(this.db, "desktop_codex_catalog", "cwd", "TEXT");
+    ensureColumn(this.db, "desktop_codex_catalog", "project_id", "TEXT");
 
     migrateDshBridgeTables(this.db);
     migrateAntigravityBridgeTables(this.db);

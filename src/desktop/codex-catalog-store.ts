@@ -38,23 +38,27 @@ export class CodexCatalogStore implements CodexThreadReader {
   listActive(): CodexThread[] {
     if (this.identityMismatch()) return [];
     const rows = this.state.db.query(`
-      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort
+      SELECT thread_id,title,rollout_path,created_at_ms,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort,cwd,project_id
       FROM desktop_codex_catalog
       ORDER BY updated_at_ms DESC,thread_id
     `).all() as Array<{
       thread_id: string;
       title: string;
       rollout_path: string | null;
+      created_at_ms: number;
       updated_at_ms: number;
       creation_client_kind: CreationClient["kind"];
       creation_client_evidence: CreationClient["evidence"];
       model: string | null;
       reasoning_effort: string | null;
+      cwd: string | null;
+      project_id: string | null;
     }>;
     return rows.map((row) => ({
       id: row.thread_id,
       title: row.title,
       rolloutPath: row.rollout_path,
+      createdAtMs: Number(row.created_at_ms),
       updatedAtMs: Number(row.updated_at_ms),
       creationClient: {
         kind: row.creation_client_kind,
@@ -62,29 +66,35 @@ export class CodexCatalogStore implements CodexThreadReader {
       },
       model: row.model,
       reasoningEffort: row.reasoning_effort,
+      cwd: row.cwd,
+      projectId: row.project_id,
     }));
   }
 
   getThread(threadId: string): CodexThread | null {
     if (this.identityMismatch()) return null;
     const row = this.state.db.query(`
-      SELECT thread_id,title,rollout_path,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort
+      SELECT thread_id,title,rollout_path,created_at_ms,updated_at_ms,creation_client_kind,creation_client_evidence,model,reasoning_effort,cwd,project_id
       FROM desktop_codex_catalog WHERE thread_id=?
     `).get(threadId) as {
       thread_id: string;
       title: string;
       rollout_path: string | null;
+      created_at_ms: number;
       updated_at_ms: number;
       creation_client_kind: CreationClient["kind"];
       creation_client_evidence: CreationClient["evidence"];
       model: string | null;
       reasoning_effort: string | null;
+      cwd: string | null;
+      project_id: string | null;
     } | null;
     if (!row) return null;
     return {
       id: row.thread_id,
       title: row.title,
       rolloutPath: row.rollout_path,
+      createdAtMs: Number(row.created_at_ms),
       updatedAtMs: Number(row.updated_at_ms),
       creationClient: {
         kind: row.creation_client_kind,
@@ -92,6 +102,8 @@ export class CodexCatalogStore implements CodexThreadReader {
       },
       model: row.model,
       reasoningEffort: row.reasoning_effort,
+      cwd: row.cwd,
+      projectId: row.project_id,
     };
   }
 
@@ -177,8 +189,8 @@ export class CodexCatalogStore implements CodexThreadReader {
     this.state.db.query(`
       INSERT INTO desktop_codex_catalog(
         thread_id,title,rollout_path,created_at_ms,updated_at_ms,recency_at_ms,
-        creation_client_kind,creation_client_evidence,observed_at,missing_count,model,reasoning_effort
-      ) VALUES(?,?,?,?,?,?,?,?,?,0,?,?)
+        creation_client_kind,creation_client_evidence,observed_at,missing_count,model,reasoning_effort,cwd,project_id
+      ) VALUES(?,?,?,?,?,?,?,?,?,0,?,?,?,?)
       ON CONFLICT(thread_id) DO UPDATE SET
         title=excluded.title,
         rollout_path=excluded.rollout_path,
@@ -190,7 +202,9 @@ export class CodexCatalogStore implements CodexThreadReader {
         observed_at=excluded.observed_at,
         missing_count=0,
         model=excluded.model,
-        reasoning_effort=excluded.reasoning_effort
+        reasoning_effort=excluded.reasoning_effort,
+        cwd=excluded.cwd,
+        project_id=excluded.project_id
     `).run(
       thread.id,
       thread.title,
@@ -203,6 +217,8 @@ export class CodexCatalogStore implements CodexThreadReader {
       observedAt,
       thread.model ?? null,
       thread.reasoningEffort ?? null,
+      thread.cwd ?? null,
+      thread.projectId ?? null,
     );
   }
 

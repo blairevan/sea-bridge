@@ -1,5 +1,12 @@
 # Sea-Bridge 版本规则
 
+## v1.7.0
+
+- 扩展本地私有会话桥 `GET /v1/sessions` 批量活跃/近期会话发现接口，支撑 ToolHub 任务中心自动同步 4 大外部客户端与 Sea-Bridge 会话：
+  1. **Codex 工作区与临时会话元数据增强**：`CodexReadService` / `CodexCatalogStore` / `CodexThreadStore` 只读补齐 `cwd`、`projectId`、`createdAtMs` 投影，并在读取阶段自动拦截 `ephemeral=true` 临时探针会话（`state_db` 幂等迁移补齐 `desktop_codex_catalog.cwd` 与 `project_id`）。
+  2. **零路径泄露的内部工作区解析 (`SessionBridgeWorkspace`)**：在不向公共 Web `/api/sessions` 暴露宿主机私有路径的前提下，为 `CodexWebSource` 与 `AntigravityWebSource` 新增内部桥接专用的 `bridgeWorkspaces(sessionIds)`，按「显式注册 `projectId` → 已注册项目最长目录前缀匹配 → 未注册目录 `dir:<slug>-<sha256_8>` 脱敏指纹」三级策略归属项目。
+  3. **两阶段有界轮询 `GET /v1/sessions?sinceMs=&limit=`**：聚合 `codex`（`Codex · Desktop` / `Codex · CLI`）与 `antigravity`（`Antigravity · Desktop` / `Antigravity · CLI`）活跃（`running` / `waiting_external_approval` / `waiting_user_input`）及 `updatedAt >= sinceMs` 的会话，先执行 `limit: 0` 轻量目录过滤再按有界批次精确探测运行态，自动剔除非交互 `codex exec` 会话并向后兼容归一化状态。
+
 ## v1.6.0
 
 - 新增 Antigravity `ask_question`（等待用户输入）全链路识别、跨端实时通知与 Web / Telegram 直接接管作答能力：

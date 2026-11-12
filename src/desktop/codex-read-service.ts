@@ -22,6 +22,8 @@ export interface CodexReadThread {
   id: string;
   title: string;
   rolloutPath: string | null;
+  cwd?: string | null;
+  projectId?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
   recencyAtMs: number | null;
@@ -64,6 +66,9 @@ interface ThreadWire {
   name?: unknown;
   preview?: unknown;
   path?: unknown;
+  cwd?: unknown;
+  projectId?: unknown;
+  ephemeral?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
   recencyAt?: unknown;
@@ -154,7 +159,12 @@ function boundedString(value: unknown, max = 10_000): string | null {
 function isHiddenThread(value: ThreadWire): boolean {
   const parentThreadId = boundedString(value.parentThreadId, 200);
   const source = value.source;
-  return Boolean(parentThreadId || value.threadSource === "subagent" || (source && typeof source === "object" && "subAgent" in source));
+  return Boolean(
+    value.ephemeral === true
+    || parentThreadId
+    || value.threadSource === "subagent"
+    || (source && typeof source === "object" && "subAgent" in source),
+  );
 }
 
 function normalizeThread(value: ThreadWire): CodexReadThread | null {
@@ -168,10 +178,14 @@ function normalizeThread(value: ThreadWire): CodexReadThread | null {
   const title = name || preview || `未命名会话 · ${id.slice(-8)}`;
   const originator = boundedString(value.originator, 200);
   const sourceForClassification = typeof source === "string" ? source : null;
+  const cwd = boundedString(value.cwd, 4_096)?.trim() || null;
+  const projectId = boundedString(value.projectId, 200)?.trim() || null;
   return {
     id,
     title,
     rolloutPath: boundedString(value.path, 32_000),
+    cwd,
+    projectId,
     createdAtMs: milliseconds(value.createdAt) ?? 0,
     updatedAtMs: milliseconds(value.updatedAt) ?? 0,
     recencyAtMs: milliseconds(value.recencyAt),
