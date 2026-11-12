@@ -8,7 +8,9 @@ function item(id: string, updatedAtMs: number): CodexReadThread {
     id,
     title: `title-${id}`,
     rolloutPath: `/tmp/${id}.jsonl`,
-    createdAtMs: 1,
+    cwd: `/workspace/${id}`,
+    projectId: `proj-${id}`,
+    createdAtMs: 1000,
     updatedAtMs,
     recencyAtMs: updatedAtMs,
     source: "cli",
@@ -27,7 +29,13 @@ describe("CodexCatalogStore", () => {
     const store = new CodexCatalogStore(state, "/home/codex");
     store.commitFull([item("a", 10), item("b", 20)], 100);
     expect(store.listActive().map((thread) => thread.id)).toEqual(["b", "a"]);
-    expect(store.getThread("a")).toMatchObject({ model: "model-a", reasoningEffort: "medium" });
+    expect(store.getThread("a")).toMatchObject({
+      model: "model-a",
+      reasoningEffort: "medium",
+      cwd: "/workspace/a",
+      projectId: "proj-a",
+      createdAtMs: 1000,
+    });
 
     store.commitFull([item("b", 30)], 200);
     expect(store.listActive().map((thread) => thread.id).sort()).toEqual(["a", "b"]);

@@ -6,11 +6,13 @@ import type { AntigravityModelCatalog } from "../../antigravity/model-catalog.ts
 import { projectManagedWebHistory, projectManagedWebSession } from "../../antigravity/projection.ts";
 import type { AntigravitySessionManager } from "../../antigravity/session-manager.ts";
 import type { AntigravityStore } from "../../antigravity/store.ts";
+import { resolveWorkspaceProject } from "../../bridge/session-feed.ts";
 import type { WebStore } from "../store.ts";
 import type {
   CatalogItem,
   CreateRequest,
   ExecutionEvidence,
+  SessionBridgeWorkspace,
   SessionListOptions,
   SourceResult,
   SourceSendOptions,
@@ -75,6 +77,47 @@ export class AntigravityWebSource implements WebSource {
       id: p.id,
       name: p.name,
     }));
+  }
+
+  /** Resolve internal bridge workspace metadata for managed and external Antigravity sessions. */
+  async bridgeWorkspaces(sessionIds: readonly string[]): Promise<ReadonlyMap<string, SessionBridgeWorkspace>> {
+    const projects = this.deps.store.listProjects().map((p) => ({
+      id: p.id,
+      name: p.name,
+      primaryRoot: p.rootPath,
+      roots: [p.rootPath],
+    }));
+    const resolved = new Map<string, SessionBridgeWorkspace>();
+    for (const id of sessionIds) {
+      const managed = this.deps.store.getSession(id);
+      if (managed) {
+        resolved.set(
+          id,
+          resolveWorkspaceProject({
+            explicitProjectId: managed.projectId,
+            cwd: managed.cwd,
+            projects,
+            createdAtMs: managed.createdAt,
+          }),
+        );
+        continue;
+      }
+      if (this.deps.config.desktopReadEnabled) {
+        const ext = this.deps.desktopReader.inspectAnyExternalSession(id);
+        if (ext.found) {
+          resolved.set(
+            id,
+            resolveWorkspaceProject({
+              explicitProjectId: ext.projectId,
+              cwd: ext.cwd,
+              projects,
+              createdAtMs: ext.updatedAt,
+            }),
+          );
+        }
+      }
+    }
+    return resolved;
   }
 
   async models(): Promise<CatalogItem[]> {

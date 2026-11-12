@@ -5,6 +5,7 @@ import type { WebRedaction } from "../web/redaction.ts";
 import type { WebOperation, WebOperationSource, WebStore } from "../web/store.ts";
 import { dispatchWebOperation } from "../web/operations.ts";
 import type { ExecutionEvidence, WebHistory, WebSession, WebSource } from "../web/sources/types.ts";
+import { buildBridgeSessionFeed, parseSessionFeedQuery } from "./session-feed.ts";
 import {
   LocalBridgeError,
   readBoundedString,
@@ -16,6 +17,7 @@ import {
   type BridgeHealthResponse,
   type BridgeLoginResponse,
   type BridgeOperationStatus,
+  type BridgeSessionFeedResponse,
   type BridgeSessionSummary,
   type BridgeSourceCatalog,
   type BridgeVerifyResponse,
@@ -111,6 +113,15 @@ export class LocalBridgeService {
       });
     }
     return { webBaseUrl: this.deps.webBaseUrl, sources };
+  }
+
+  /** Aggregate active and recent Codex & Antigravity sessions across CLI and Desktop for ToolHub sync. */
+  async listSessions(searchParams: URLSearchParams): Promise<BridgeSessionFeedResponse> {
+    const query = parseSessionFeedQuery(searchParams);
+    return await buildBridgeSessionFeed(
+      { sources: this.deps.sources, redaction: this.deps.redaction },
+      query,
+    );
   }
 
   /** Create a native session and dispatch its initial task prompt idempotently. */

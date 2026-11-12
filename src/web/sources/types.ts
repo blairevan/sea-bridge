@@ -96,11 +96,20 @@ export interface CreateRequest {
 /** Web adapter boundary independent of Telegram IDs and preferences. */
 export type WebSourceStatusState = "limited" | "stale" | "unavailable" | "protocol_incompatible" | "reinitialize_required";
 
+/** Internal workspace resolution metadata exposed only to the private Unix socket bridge. */
+export interface SessionBridgeWorkspace {
+  projectId: string;
+  projectName: string;
+  createdAtMs: number | null;
+}
+
 export interface WebSource {
   statusDetails?(): Record<string, string>;
   statusState?(): WebSourceStatusState;
   /** Actively sample read-only capabilities for status pages instead of relying on prior user actions. */
   probeCapabilities?(): Promise<void>;
+  /** Resolve workspace project mapping and creation timestamp for private local bridge synchronization. */
+  bridgeWorkspaces?(sessionIds: readonly string[]): Promise<ReadonlyMap<string, SessionBridgeWorkspace>>;
   attachment?(id: string, messageId: string, index: number): Promise<{ bytes: Uint8Array; contentType: string }>;
   openDesktop?(id: string): Promise<void>;
   capabilities(): WebSourceCapabilities;

@@ -1,5 +1,10 @@
 # Sea-Bridge 部署与运维指南
 
+## v1.7.0 本地私有会话桥 `GET /v1/sessions` 多源外部会话同步支持
+
+- **`GET /v1/sessions?sinceMs=<epoch_ms>&limit=<1..200>` 批量会话发现**：在本地私有 Unix Socket (`~/Library/Application Support/SeaBridge/run/bridge.sock`) 上新增只读聚合接口，供 ToolHub 任务中心自动发现本机 `Codex · Desktop`、`Codex · CLI`、`Antigravity · Desktop`、`Antigravity · CLI` 及 `Sea-Bridge` 发起的活跃与近期会话（`DSH` 保持仅手工派发，不进入自动同步流）。
+- **Codex 目录元数据与噪声过滤**：`state_db` 启动时幂等为 `desktop_codex_catalog` 补齐 `cwd` 与 `project_id` 列；读取层自动过滤 `ephemeral=true` 临时会话、子代理线程及非交互 `codex exec` 会话，不向公共 Web `/api/sessions` 泄露宿主机绝对路径，未注册工作区统一投影为 `dir:<slug>-<sha256_8>` 稳定标识。
+
 ## v1.6.0 Antigravity `ask_question` 等待输入识别、通知与跨端接管作答
 
 - **外部轨迹 `ask_question` 解析与 `waiting_user_input` 状态投影**：识别 `PLANNER_RESPONSE` 末尾未作答的 `ask_question` 调用（支持数组/字符串参数与 `transcript_full.jsonl` 截断水合），在 Web 投影为 `waiting_user_input` 与多选/自定义问题卡片，在 `bridge.sock` 向后兼容映射为 `waiting_external_approval`。

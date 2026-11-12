@@ -113,6 +113,9 @@ export function createLocalBridgeHandler(service: LocalBridgeService): (request:
       if (path === "/v1/catalog" && method === "GET") {
         return json(await service.catalog());
       }
+      if (path === "/v1/sessions" && method === "GET") {
+        return json(await service.listSessions(url.searchParams));
+      }
       if (path === "/v1/sessions" && method === "POST") {
         return json(await service.createSession(await readJsonBody(request)));
       }

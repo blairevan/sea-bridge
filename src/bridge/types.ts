@@ -59,6 +59,27 @@ export interface BridgeSessionSummary {
   canOpenDesktop: boolean;
 }
 
+/** Normalized active/recent session item exposed over `GET /v1/sessions` for ToolHub sync. */
+export interface BridgeSessionFeedItem {
+  source: "codex" | "antigravity";
+  sessionId: string;
+  clientTarget: "cli" | "desktop" | null;
+  title: string;
+  projectId: string;
+  projectName: string;
+  modelId: string | null;
+  reasoningEffort: string | null;
+  state: "running" | "idle" | "unknown" | "waiting_external_approval";
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+/** Batch session feed response returned over `GET /v1/sessions`. */
+export interface BridgeSessionFeedResponse {
+  items: BridgeSessionFeedItem[];
+  partial: boolean;
+}
+
 /** Operation status paired with live execution evidence. */
 export interface BridgeOperationStatus {
   operation: WebOperation;

@@ -87,12 +87,18 @@ test("optional native metadata is projected field-wise and bounded", () => {
     db.exec("ALTER TABLE threads ADD COLUMN reasoning_effort TEXT");
     db.exec("ALTER TABLE threads ADD COLUMN sandbox_policy TEXT");
     db.exec("ALTER TABLE threads ADD COLUMN approval_mode TEXT");
-    db.exec("INSERT INTO threads(id,rollout_path,title,recency_at_ms,archived,model,reasoning_effort,sandbox_policy,approval_mode) VALUES('one','/fixture','one',1,0,'gpt-5.6','high','danger-full-access','never')");
+    db.exec("ALTER TABLE threads ADD COLUMN cwd TEXT");
+    db.exec("ALTER TABLE threads ADD COLUMN project_id TEXT");
+    db.exec("ALTER TABLE threads ADD COLUMN created_at INTEGER");
+    db.exec("INSERT INTO threads(id,rollout_path,title,recency_at_ms,archived,model,reasoning_effort,sandbox_policy,approval_mode,cwd,project_id,created_at) VALUES('one','/fixture','one',1,0,'gpt-5.6','high','danger-full-access','never','/opt/app/demo','proj-demo',42)");
     expect(store.getThread("one")).toMatchObject({
       model: "gpt-5.6",
       reasoningEffort: "high",
       sandboxPolicy: "danger-full-access",
       approvalMode: "never",
+      cwd: "/opt/app/demo",
+      projectId: "proj-demo",
+      createdAtMs: 42000,
     });
     db.query("UPDATE threads SET model=? WHERE id='one'").run("x".repeat(201));
     expect(store.getThread("one")?.model).toBeNull();

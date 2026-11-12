@@ -6,6 +6,9 @@ export interface CodexThread {
   rolloutPath: string | null;
   title: string;
   updatedAtMs: number;
+  createdAtMs?: number | null;
+  cwd?: string | null;
+  projectId?: string | null;
   creationClient?: CreationClient;
   model?: string | null;
   reasoningEffort?: string | null;
@@ -49,6 +52,10 @@ const OPTIONAL_COLUMNS = {
   reasoning_effort: "reasoning_effort",
   sandbox_policy: "sandbox_policy",
   approval_mode: "approval_mode",
+  cwd: "cwd",
+  project_id: "project_id",
+  created_at_ms: "created_at_ms",
+  created_at: "created_at",
 } as const;
 
 type OptionalColumn = keyof typeof OPTIONAL_COLUMNS;
@@ -63,6 +70,17 @@ function boundedMetadata(value: unknown, max = 200): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized && normalized.length <= max ? normalized : null;
+}
+
+/** Resolve millisecond creation timestamp from optional `created_at_ms` or seconds `created_at`. */
+function resolveCreatedAtMs(createdAtMs: unknown, createdAtSec: unknown): number | null {
+  if (typeof createdAtMs === "number" && Number.isFinite(createdAtMs) && createdAtMs > 0) {
+    return createdAtMs;
+  }
+  if (typeof createdAtSec === "number" && Number.isFinite(createdAtSec) && createdAtSec > 0) {
+    return createdAtSec * 1000;
+  }
+  return null;
 }
 
 /** Read native user-facing thread metadata while retaining diagnostic point lookups. */
@@ -92,13 +110,16 @@ export class CodexThreadStore implements CodexThreadReader {
     try {
       const row = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE id=?`,
-      ).get(threadId)) as { source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number } | null;
+      ).get(threadId)) as { source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; cwd: unknown; project_id: unknown; created_at_ms: unknown; created_at: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number } | null;
       if (!row) return null;
       return {
         id: row.id,
         rolloutPath: row.rollout_path,
         title: threadTitle(row),
         updatedAtMs: Number(row.recency_at_ms),
+        createdAtMs: resolveCreatedAtMs(row.created_at_ms, row.created_at),
+        cwd: boundedMetadata(row.cwd, 4096),
+        projectId: boundedMetadata(row.project_id),
         creationClient: classifyCreationClient(row.source, row.originator),
         model: boundedMetadata(row.model),
         reasoningEffort: boundedMetadata(row.reasoning_effort, 80),
@@ -116,12 +137,15 @@ export class CodexThreadStore implements CodexThreadReader {
     try {
       const rows = this.read(db, (projection) => db.query(
         `SELECT id,rollout_path,name,title,recency_at_ms,${projection} FROM threads WHERE archived=0 AND COALESCE(thread_source, '')<>'subagent' ORDER BY recency_at_ms ASC`,
-      ).all()) as Array<{ source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number }>;
+      ).all()) as Array<{ source: unknown; originator: unknown; model: unknown; reasoning_effort: unknown; sandbox_policy: unknown; approval_mode: unknown; cwd: unknown; project_id: unknown; created_at_ms: unknown; created_at: unknown; id: string; rollout_path: string; name: string | null; title: string | null; recency_at_ms: number }>;
       return rows.map((row) => ({
         id: row.id,
         rolloutPath: row.rollout_path,
         title: threadTitle(row),
         updatedAtMs: Number(row.recency_at_ms),
+        createdAtMs: resolveCreatedAtMs(row.created_at_ms, row.created_at),
+        cwd: boundedMetadata(row.cwd, 4096),
+        projectId: boundedMetadata(row.project_id),
         creationClient: classifyCreationClient(row.source, row.originator),
         model: boundedMetadata(row.model),
         reasoningEffort: boundedMetadata(row.reasoning_effort, 80),

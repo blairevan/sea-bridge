@@ -11,7 +11,8 @@ import type { ProcessCodexQueueClient } from "../../desktop/codex-queue-client.t
 import type { CodexQueueSnapshot } from "../../desktop/codex-queue-store.ts";
 import { readCodexTranscript, readCodexMessage, readCodexActivity, type CodexActivity } from "../codex-transcript.ts";
 import { CatalogCache } from "./cache.ts";
-import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, WebSessionMeta, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence, SessionListOptions } from "./types.ts";
+import { resolveWorkspaceProject } from "../../bridge/session-feed.ts";
+import type { WebSource, WebSourceCapabilities, WebSourceStatusState, WebSession, WebSessionMeta, SessionBridgeWorkspace, CatalogItem, WebHistory, WebTurnControl, CreateRequest, SourceResult, ExecutionEvidence, SessionListOptions } from "./types.ts";
 
 /** Narrow existing-source dependencies, with evidence injected at composition. */
 export interface CodexSourceDependencies {
@@ -277,17 +278,24 @@ export class CodexWebSource implements WebSource {
     } catch { this.projectsReadable = false; throw new Error("projects_unavailable"); }
   }
 
+  /** Resolve internal bridge workspace metadata without exposing host paths on public WebSession payloads. */
+  async bridgeWorkspaces(sessionIds: readonly string[]): Promise<ReadonlyMap<string, SessionBridgeWorkspace>> {
+    const projects = (await this.projectCache.get().catch(() => [] as ProjectItem[])).filter((p) => this.deps.pathExists(p.primaryRoot));
+    const activeById = new Map(this.deps.threads.listActive().map((t) => [t.id, t]));
+    const resolved = new Map<string, SessionBridgeWorkspace>();
+    for (const id of sessionIds) {
+      const thread = this.deps.threads.getThread?.(id) ?? activeById.get(id) ?? null;
+      if (thread) resolved.set(id, resolveWorkspaceProject({ explicitProjectId: thread.projectId ?? null, cwd: thread.cwd ?? null, projects, createdAtMs: thread.createdAtMs ?? null }));
+    }
+    return resolved;
+  }
+
   /** Discover models rather than hardcoding an account's options; names only enrich an already-known model ID. */
   async models(): Promise<CatalogItem[]> {
     try {
       const models = await this.modelCache.get(); this.modelsReadable = true;
       for (const model of models) this.modelNames.set(model.id, model.displayName);
-      return models.map((model) => ({
-        id: model.id,
-        name: model.displayName,
-        ...(model.defaultReasoningEffort ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
-        ...(model.supportedReasoningEfforts && model.supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts: model.supportedReasoningEfforts } : {}),
-      }));
+      return models.map((m) => ({ id: m.id, name: m.displayName, ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}), ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}) }));
     } catch { this.modelsReadable = false; throw new Error("models_unavailable"); }
   }
 
@@ -351,9 +359,7 @@ export class CodexWebSource implements WebSource {
     if (result.status === "turn_changed") throw new Error("active_turn_changed");
     if (result.status === "already_finished") throw new Error("interrupt_already_finished");
     if (result.status === "provider_unavailable") throw new Error("interrupt_provider_unavailable");
-    const thread = this.deps.threads.getThread?.(id)
-      ?? this.deps.threads.listActive().find((item) => item.id === id)
-      ?? null;
+    const thread = this.deps.threads.getThread?.(id) ?? this.deps.threads.listActive().find((item) => item.id === id) ?? null;
     if (!thread) throw new Error("session_missing");
     throw new Error("interrupt_provider_unverified");
   }
@@ -361,26 +367,21 @@ export class CodexWebSource implements WebSource {
   /** Start a raw Web prompt with explicit request-local model selection. */
   async create(input: CreateRequest): Promise<SourceResult> {
     let projects: ProjectItem[];
-    try { projects = await this.projectCache.get(); }
-    catch { return { state: "failed", sessionId: null, errorCode: "projects_unavailable" }; }
+    try { projects = await this.projectCache.get(); } catch { return { state: "failed", sessionId: null, errorCode: "projects_unavailable" }; }
     const project = projects.find((item) => item.id === input.projectId);
     if (!project || !this.deps.pathExists(project.primaryRoot)) return { state: "failed", sessionId: null, errorCode: "project_missing" };
     if (input.modelId) {
       let models: CatalogItem[];
-      try { models = await this.models(); }
-      catch { return { state: "failed", sessionId: null, errorCode: "models_unavailable" }; }
+      try { models = await this.models(); } catch { return { state: "failed", sessionId: null, errorCode: "models_unavailable" }; }
       const matched = models.find((model) => model.id === input.modelId);
       if (!matched) return { state: "failed", sessionId: null, errorCode: "model_unavailable" };
-      if (input.reasoningEffort && (!matched.supportedReasoningEfforts || !matched.supportedReasoningEfforts.includes(input.reasoningEffort))) {
-        return { state: "failed", sessionId: null, errorCode: "reasoning_effort_unavailable" };
-      }
+      if (input.reasoningEffort && !matched.supportedReasoningEfforts?.includes(input.reasoningEffort)) return { state: "failed", sessionId: null, errorCode: "reasoning_effort_unavailable" };
     }
     let known: string | null = null;
     try {
       const result = await this.actions.startThreadAndTurn({
         projectId: project.id, cwd: project.primaryRoot, prompt: input.prompt,
-        ...(input.modelId ? { model: input.modelId } : {}),
-        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+        ...(input.modelId ? { model: input.modelId } : {}), ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         onThreadStarted: (id) => { known = id; this.owners.add(id); input.onSessionKnown(id); this.deps.registerCreatedThread?.(id); },
         onOwnershipReleased: (id) => { this.owners.delete(id); },
       });

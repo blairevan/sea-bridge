@@ -46,6 +46,9 @@ function thread(id: string, overrides: Record<string, unknown> = {}) {
     name: null,
     preview: `Preview ${id}`,
     path: `/tmp/${id}.jsonl`,
+    cwd: `/workspace/${id}`,
+    projectId: null,
+    ephemeral: false,
     createdAt: 10,
     updatedAt: 20,
     recencyAt: 20,
@@ -72,8 +75,8 @@ describe("CodexReadService", () => {
         return proc.send({
           id: message.id,
           result: message.params.cursor == null
-            ? { data: [thread("a"), thread("sub", { parentThreadId: "parent" })], nextCursor: "next" }
-            : { data: [thread("b", { originator: "Codex Desktop", source: "vscode" })], nextCursor: null },
+            ? { data: [thread("a"), thread("sub", { parentThreadId: "parent" }), thread("eph", { ephemeral: true })], nextCursor: "next" }
+            : { data: [thread("b", { originator: "Codex Desktop", source: "vscode", projectId: "proj-b" })], nextCursor: null },
         });
       }
       if (message.method === "thread/turns/list") {
@@ -90,8 +93,9 @@ describe("CodexReadService", () => {
 
     expect(threads.map((item) => item.id)).toEqual(["a", "b"]);
     expect(threads[0]?.creationClient).toEqual({ kind: "cli", evidence: "originator" });
-    expect(threads[0]).toMatchObject({ model: "gpt-5.6", reasoningEffort: "high" });
+    expect(threads[0]).toMatchObject({ model: "gpt-5.6", reasoningEffort: "high", cwd: "/workspace/a", projectId: null });
     expect(threads[1]?.creationClient).toEqual({ kind: "desktop", evidence: "originator" });
+    expect(threads[1]).toMatchObject({ cwd: "/workspace/b", projectId: "proj-b" });
     expect(turns).toEqual([{ id: "turn", status: "completed", startedAtMs: 30_000, completedAtMs: 31_000, itemsView: "summary" }]);
     expect(envs).toHaveLength(1);
     expect(envs[0]?.CODEX_HOME).toBe("/home/codex");
